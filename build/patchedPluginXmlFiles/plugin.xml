@@ -1,0 +1,14 @@
+<idea-plugin>
+  <version>0.1.0</version>
+  <idea-version since-build="211" until-build="241.*" />
+  <id>com.gitee.prviewer</id>
+  <name>PR Branch Compare</name>
+  <vendor email="mazb.nevo@qq.com" url="https://example.com">PR Viewer Team</vendor>
+  <description>本地pr插件demo,测试本地对比能力ddddddddddddddddddddd</description>
+  <depends>com.intellij.modules.platform</depends>
+  <depends>Git4Idea</depends>
+  <!--    <idea-version since-build="2024.1"/>-->
+  <extensions defaultExtensionNs="com.intellij">
+    <toolWindow id="PR Manager" anchor="bottom" factoryClass="com.gitee.prviewer.toolwindow.PrManagerToolWindowFactory" />
+  </extensions>
+</idea-plugin>

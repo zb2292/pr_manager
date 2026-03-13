@@ -1,0 +1,28 @@
+{
+  "code": 200,
+  "msg": "",
+  "data": {
+    "total": 2,
+    "pageSize": 10,
+    "prList": [
+      {
+        "id": 101,
+        "title": "优化登录流程",
+        "status": "open",
+        "sourceBranch": "origin/dev",
+        "targetBranch": "origin/master",
+        "author": "alice",
+        "createTime": "2026-02-12 10:00:00"
+      },
+      {
+        "id": 100,
+        "title": "修复统计页崩溃",
+        "status": "merged",
+        "sourceBranch": "origin/compatibility/2020-1",
+        "targetBranch": "origin/master",
+        "author": "bob",
+        "createTime": "2026-02-11 18:20:00"
+      }
+    ]
+  }
+}

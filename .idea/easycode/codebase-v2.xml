@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="com.obiscr.chatgpt.settings.EasyCodeState">
+    <option name="projectFiles" value="$PROJECT_DIR$/src/main/kotlin/com/gitee/prviewer/comment/DiffEditorBinder.kt;/Users/zhangbo/CodeBuddy/20260113104520/src/main/kotlin/com/gitee/prviewer/comment/LineComment.kt;/Users/zhangbo/CodeBuddy/20260113104520/src/main/kotlin/com/gitee/prviewer/comment/LineCommentManager.kt;/Users/zhangbo/CodeBuddy/20260113104520/src/main/kotlin/com/gitee/prviewer/comment/LineCommentStore.kt;/Users/zhangbo/CodeBuddy/20260113104520/src/main/kotlin/com/gitee/prviewer/model/ChangeItem.kt;/Users/zhangbo/CodeBuddy/20260113104520/src/main/kotlin/com/gitee/prviewer/model/CompareResult.kt;/Users/zhangbo/CodeBuddy/20260113104520/src/main/kotlin/com/gitee/prviewer/service/BranchCompareService.kt;/Users/zhangbo/CodeBuddy/20260113104520/src/main/kotlin/com/gitee/prviewer/toolwindow/PrManagerPanel.kt;/Users/zhangbo/CodeBuddy/20260113104520/src/main/kotlin/com/gitee/prviewer/toolwindow/PrManagerToolWindowFactory.kt;/Users/zhangbo/CodeBuddy/20260113104520/build.gradle.kts;/Users/zhangbo/CodeBuddy/20260113104520/index.html;/Users/zhangbo/CodeBuddy/20260113104520/script.js;/Users/zhangbo/CodeBuddy/20260113104520/styles.css" />
+  </component>
+</project>

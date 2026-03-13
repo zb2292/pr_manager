@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>最佳游戏排行榜</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <header class="header">
+        <div class="container">
+            <div class="header-content">
+                <div class="logo">
+                    <h1>🎮 GameRank</h1>
+                </div>
+                <nav class="nav">
+                    <ul class="nav-list">
+                        <li><a href="#" class="nav-link active" data-category="all">全部</a></li>
+                        <li><a href="#" class="nav-link" data-category="action">动作</a></li>
+                        <li><a href="#" class="nav-link" data-category="rpg">角色扮演</a></li>
+                        <li><a href="#" class="nav-link" data-category="strategy">策略</a></li>
+                        <li><a href="#" class="nav-link" data-category="sports">体育</a></li>
+                        <li><a href="#" class="nav-link" data-category="racing">竞速</a></li>
+                    </ul>
+                </nav>
+                <div class="search-box">
+                    <input type="text" id="searchInput" placeholder="搜索游戏...">
+                    <button class="search-btn">🔍</button>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main class="main">
+        <div class="container">
+            <div class="hero-section">
+                <h2 class="hero-title">🏆 2026年度最佳游戏排行榜</h2>
+                <p class="hero-subtitle">发现最受欢迎的游戏，找到你的下一个最爱</p>
+            </div>
+
+            <div class="controls-section">
+                <div class="sort-controls">
+                    <label for="sortSelect">排序方式：</label>
+                    <select id="sortSelect">
+                        <option value="rating">评分最高</option>
+                        <option value="popularity">最受欢迎</option>
+                        <option value="release">最新发布</option>
+                        <option value="name">名称排序</option>
+                    </select>
+                </div>
+                <div class="view-controls">
+                    <button class="view-btn active" data-view="grid">网格</button>
+                    <button class="view-btn" data-view="list">列表</button>
+                </div>
+            </div>
+
+            <div class="games-grid" id="gamesContainer">
+                <!-- 游戏卡片将通过JavaScript动态生成 -->
+            </div>
+
+            <div class="load-more-section">
+                <button class="load-more-btn" id="loadMoreBtn">加载更多</button>
+            </div>
+        </div>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <p>&copy; 2026 GameRank. 所有权利保留。</p>
+        </div>
+    </footer>
+
+    <script src="script.js"></script>
+</body>
+</html>

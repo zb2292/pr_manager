@@ -269,7 +269,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         refreshButton.toolTipText = "刷新"
         refreshButton.preferredSize = Dimension(JBUI.scale(28), JBUI.scale(28))
 
-        val searchHint = "标题/源分支/目标分支/创建人"
+        val searchHint = "标题"
         searchField.emptyText.text = searchHint
 
         val searchWrapper = JPanel(BorderLayout())
@@ -421,7 +421,15 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         panel.add(section("选择合并方式", mergeTypeField))
         deleteBranchCheck.alignmentX = Component.LEFT_ALIGNMENT
         panel.add(deleteBranchCheck)
-        return panel
+
+        return JBScrollPane(
+            panel,
+            ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
+            ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+        ).apply {
+            border = JBUI.Borders.empty()
+            verticalScrollBar.unitIncrement = JBUI.scale(16)
+        }
     }
 
     private fun buildReviewerRow(field: JBTextField, hint: JBLabel): JComponent {
@@ -943,14 +951,14 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
         val fileType = FileTypeManager.getInstance().getFileTypeByFileName(change.filePath)
         val contentFactory = DiffContentFactory.getInstance()
-        val left = contentFactory.create(project, sourceContent ?: "", fileType)
-        val right = contentFactory.create(project, targetContent ?: "", fileType)
+        val left = contentFactory.create(project, targetContent ?: "", fileType)
+        val right = contentFactory.create(project, sourceContent ?: "", fileType)
         val request = SimpleDiffRequest(
-            "${change.filePath} ($source..$target)",
+            "${change.filePath} ($target..$source)",
             left,
             right,
-            source,
-            target
+            target,
+            source
         )
         diffBinder.bindNextDiff(change.filePath)
         DiffManager.getInstance().showDiff(project, request)
@@ -1171,7 +1179,24 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         SwingUtilities.invokeLater { loadMoreLabel.isVisible = visible }
     }
 
-    private inner class ChangeTreeCellRenderer : DefaultTreeCellRenderer() {
+    private inner class ChangeTreeCellRenderer : javax.swing.tree.TreeCellRenderer {
+        private val fallbackRenderer = DefaultTreeCellRenderer()
+        private val rowPanel = JPanel().apply {
+            val flow = FlowLayout(FlowLayout.LEFT, 0, 0)
+            flow.alignOnBaseline = true
+            layout = flow
+            isOpaque = true
+        }
+        private val mainLabel = javax.swing.JLabel()
+        private val unresolvedLabel = javax.swing.JLabel()
+        private val totalLabel = javax.swing.JLabel()
+
+        init {
+            rowPanel.add(mainLabel)
+            rowPanel.add(unresolvedLabel)
+            rowPanel.add(totalLabel)
+        }
+
         override fun getTreeCellRendererComponent(
             tree: javax.swing.JTree?,
             value: Any?,
@@ -1181,40 +1206,56 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             row: Int,
             hasFocus: Boolean
         ): Component {
-            val component = super.getTreeCellRendererComponent(tree, value, sel, expanded, leaf, row, hasFocus)
+            val base = fallbackRenderer.getTreeCellRendererComponent(tree, value, sel, expanded, leaf, row, hasFocus)
             val node = value as? DefaultMutableTreeNode
             val userObject = node?.userObject
-            when (userObject) {
-                is ChangeItem -> {
-                    val fileName = userObject.filePath.substringAfterLast('/')
-                    val typeLabel = changeTypeFullText(userObject.changeType)
-                    val fromPath = userObject.fromFilePath
-                    val renameHint = if (typeLabel.startsWith("RENAMED") && !fromPath.isNullOrBlank()) " from $fromPath" else ""
-                    val issueBadge = issueCountByFile(userObject.filePath)
-                    val baseText = "$fileName ($typeLabel$renameHint)"
-                    text = if (issueBadge == null) {
-                        baseText
-                    } else {
-                        val (unresolved, total) = issueBadge
-                        if (sel) {
-                            "$baseText  $unresolved/$total"
-                        } else {
-                            "<html>$baseText&nbsp;&nbsp;<span style='color:#D93025;'>$unresolved</span>/$total</html>"
-                        }
-                    }
-                    icon = changeTypeIcon(userObject.changeType)
-                    font = font.deriveFont(Font.PLAIN, globalUiFontSize)
-                    if (!sel) {
-                        foreground = changeTypeColor(userObject.changeType)
-                    }
+
+            if (userObject !is ChangeItem) {
+                if (base is javax.swing.JComponent) {
+                    base.font = base.font.deriveFont(Font.PLAIN, globalUiFontSize)
                 }
-                is String -> {
-                    text = userObject
-                    icon = null
-                    font = font.deriveFont(Font.PLAIN, globalUiFontSize)
-                }
+                return base
             }
-            return component
+
+            val fileName = userObject.filePath.substringAfterLast('/')
+            val typeLabel = changeTypeFullText(userObject.changeType)
+            val fromPath = userObject.fromFilePath
+            val renameHint = if (typeLabel.startsWith("RENAMED") && !fromPath.isNullOrBlank()) " from $fromPath" else ""
+            val baseText = "$fileName ($typeLabel$renameHint)"
+            val issueBadge = issueCountByFile(userObject.filePath)
+
+            val font = fallbackRenderer.font.deriveFont(Font.PLAIN, globalUiFontSize)
+            mainLabel.font = font
+            unresolvedLabel.font = font
+            totalLabel.font = font
+            mainLabel.icon = changeTypeIcon(userObject.changeType)
+            mainLabel.verticalAlignment = SwingConstants.CENTER
+            unresolvedLabel.verticalAlignment = SwingConstants.CENTER
+            totalLabel.verticalAlignment = SwingConstants.CENTER
+
+            if (sel) {
+                rowPanel.background = fallbackRenderer.backgroundSelectionColor
+                mainLabel.foreground = fallbackRenderer.textSelectionColor
+                unresolvedLabel.foreground = fallbackRenderer.textSelectionColor
+                totalLabel.foreground = fallbackRenderer.textSelectionColor
+            } else {
+                rowPanel.background = fallbackRenderer.backgroundNonSelectionColor
+                mainLabel.foreground = changeTypeColor(userObject.changeType)
+                unresolvedLabel.foreground = JBColor(Color(0xD93025), Color(0xF47067))
+                totalLabel.foreground = JBColor(Color(0x5F6368), Color(0x9AA0A6))
+            }
+
+            if (issueBadge == null) {
+                mainLabel.text = baseText
+                unresolvedLabel.text = ""
+                totalLabel.text = ""
+            } else {
+                val (unresolved, total) = issueBadge
+                mainLabel.text = "$baseText  "
+                unresolvedLabel.text = unresolved.toString()
+                totalLabel.text = "/$total"
+            }
+            return rowPanel
         }
     }
 

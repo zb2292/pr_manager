@@ -275,7 +275,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         val searchWrapper = JPanel(BorderLayout())
         searchWrapper.border = JBUI.Borders.emptyLeft(6)
         searchWrapper.add(searchField, BorderLayout.CENTER)
-        val fixedSearchWidth = searchField.getFontMetrics(searchField.font).stringWidth(searchHint) + JBUI.scale(28)
+        val fixedSearchWidth = (searchField.getFontMetrics(searchField.font).stringWidth(searchHint) + JBUI.scale(28)) * 3
         val fixedSearchSize = Dimension(fixedSearchWidth, searchField.preferredSize.height)
         val minimumSearchSize = Dimension(JBUI.scale(180), searchField.preferredSize.height)
         searchWrapper.preferredSize = fixedSearchSize
@@ -418,7 +418,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         panel.add(section("描述", descScroll))
         panel.add(section("关键评审人员", buildReviewerRow(keyReviewersField, keyReviewerHint)))
         panel.add(section("普通评审人员", buildReviewerRow(reviewersField, reviewerHint)))
-        panel.add(section("选择合并方式", mergeTypeField))
+        panel.add(section("合并方式", buildSingleFieldRow(mergeTypeField)))
         deleteBranchCheck.alignmentX = Component.LEFT_ALIGNMENT
         panel.add(deleteBranchCheck)
 
@@ -435,10 +435,31 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private fun buildReviewerRow(field: JBTextField, hint: JBLabel): JComponent {
         val row = JPanel(BorderLayout())
         row.alignmentX = Component.LEFT_ALIGNMENT
-        field.preferredSize = Dimension(JBUI.scale(260), field.preferredSize.height)
-        row.add(field, BorderLayout.WEST)
+        row.isOpaque = false
+
+        val fieldSize = Dimension(JBUI.scale(347), field.preferredSize.height)
+        field.preferredSize = fieldSize
+        field.minimumSize = fieldSize
+        field.maximumSize = fieldSize
+
         hint.border = JBUI.Borders.emptyLeft(8)
+
+        row.add(field, BorderLayout.WEST)
         row.add(hint, BorderLayout.CENTER)
+        return row
+    }
+
+    private fun buildSingleFieldRow(field: JBTextField): JComponent {
+        val row = JPanel(BorderLayout())
+        row.alignmentX = Component.LEFT_ALIGNMENT
+        row.isOpaque = false
+
+        val fieldSize = Dimension(JBUI.scale(347), field.preferredSize.height)
+        field.preferredSize = fieldSize
+        field.minimumSize = fieldSize
+        field.maximumSize = fieldSize
+
+        row.add(field, BorderLayout.WEST)
         return row
     }
 
@@ -686,11 +707,11 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         overviewDesc.text = detail.overview.desc
         keyReviewersField.text = detail.overview.keyReviewers.joinToString(",")
         keyReviewersField.toolTipText = detail.overview.keyReviewers.joinToString(",")
-        keyReviewerHint.text = "至少需要${detail.overview.needKeyReviewers}名关键评审成员评审通过后可合并"
+        keyReviewerHint.text = "<html>至少需要 <b>${detail.overview.needKeyReviewers}</b> 名关键评审成员评审通过后可合并</html>"
 
         reviewersField.text = detail.overview.reviewers.joinToString(",")
         reviewersField.toolTipText = detail.overview.reviewers.joinToString(",")
-        reviewerHint.text = "至少需要${detail.overview.needReviewers}名普通评审成员评审通过后可合并"
+        reviewerHint.text = "<html>至少需要 <b>${detail.overview.needReviewers}</b> 名普通评审成员评审通过后可合并</html>"
 
         mergeTypeField.text = detail.overview.mergedType
         deleteBranchCheck.isSelected = detail.overview.deleteBranchAfterMerged
@@ -817,7 +838,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private fun loadFileChanges(source: String, target: String) {
         ApplicationManager.getApplication().executeOnPooledThread {
-            val result = branchService.compare(source, target)
+            val result = branchService.compare(target, source)
             SwingUtilities.invokeLater {
                 if (result.error != null) {
                     changeTreeRoot.removeAllChildren()
@@ -913,16 +934,29 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun issueCountByFile(filePath: String): Pair<Int, Int>? {
-        val prId = currentDetail?.id ?: return null
-        val stats = PrIssueCache.get(prId) ?: return null
-        val normalized = normalizeFilePath(filePath)
-        val fileIssues = stats.issues.filter {
-            val issuePath = normalizeFilePath(it.file)
-            issuePath == normalized || issuePath.endsWith(normalized) || normalized.endsWith(issuePath)
-        }
+        val fileIssues = issueItemsByFile(filePath)
         if (fileIssues.isEmpty()) return null
         val unresolved = fileIssues.count { it.status.trim().lowercase() == "open" }
         return unresolved to fileIssues.size
+    }
+
+    private fun issueLineSetByFile(filePath: String): Set<Int> {
+        return issueItemsByFile(filePath)
+            .mapNotNull { issue ->
+                val line = issue.line
+                if (line <= 0) null else line - 1
+            }
+            .toSet()
+    }
+
+    private fun issueItemsByFile(filePath: String): List<IssueItem> {
+        val prId = currentDetail?.id ?: return emptyList()
+        val stats = PrIssueCache.get(prId) ?: return emptyList()
+        val normalized = normalizeFilePath(filePath)
+        return stats.issues.filter {
+            val issuePath = normalizeFilePath(it.file)
+            issuePath == normalized || issuePath.endsWith(normalized) || normalized.endsWith(issuePath)
+        }
     }
 
     private fun normalizeFilePath(path: String): String {
@@ -960,6 +994,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             target,
             source
         )
+        commentManager.updateIssueLines(change.filePath, issueLineSetByFile(change.filePath))
         diffBinder.bindNextDiff(change.filePath)
         DiffManager.getInstance().showDiff(project, request)
     }

@@ -53,6 +53,7 @@ class LineCommentManager(private val project: Project) {
     private val commentHighlightersByEditorLine = WeakHashMap<Editor, MutableMap<Int, RangeHighlighter>>()
     private val hoverHighlighterByEditor = WeakHashMap<Editor, RangeHighlighter?>()
     private val hoveredLineByEditor = WeakHashMap<Editor, Int?>()
+    private val remoteIssueLinesByFile = mutableMapOf<String, Set<Int>>()
 
     init {
         LineCommentStore.addListener { refreshAllEditors() }
@@ -71,6 +72,20 @@ class LineCommentManager(private val project: Project) {
         }
     }
 
+    fun updateIssueLines(filePath: String, lines: Set<Int>) {
+        val normalized = normalizeFilePath(filePath)
+        if (lines.isEmpty()) {
+            remoteIssueLinesByFile.remove(normalized)
+        } else {
+            remoteIssueLinesByFile[normalized] = lines
+        }
+        refreshAllEditors()
+    }
+
+    private fun normalizeFilePath(path: String): String {
+        return path.trim().replace('\\', '/').removePrefix("./")
+    }
+
     private fun refreshAllEditors() {
         editors.forEach { refreshEditor(it) }
     }
@@ -87,17 +102,22 @@ class LineCommentManager(private val project: Project) {
         val lineMap = mutableMapOf<Int, RangeHighlighter>()
         val newHighlighters = mutableListOf<RangeHighlighter>()
         val lineCount = editor.document.lineCount
+        val remoteIssueLines = remoteIssueLinesByFile[normalizeFilePath(context.filePath)].orEmpty()
         for (line in 0 until lineCount) {
             val roots = LineCommentStore.getComments(context.filePath, line, context.side)
                 .filter { it.parentId == null }
-            if (roots.isEmpty()) continue
-
-            val totalCount = roots.size
-            val unresolvedCount = roots.count { !it.resolved }
-            val allResolved = unresolvedCount == 0
+            val hasRemoteIssue = remoteIssueLines.contains(line)
+            if (roots.isEmpty() && !hasRemoteIssue) continue
 
             val highlighter = editor.markupModel.addLineHighlighter(line, HighlighterLayer.ADDITIONAL_SYNTAX, null)
-            applyNormalLineRenderers(context, line, highlighter, unresolvedCount, totalCount, allResolved)
+            if (roots.isNotEmpty()) {
+                val totalCount = roots.size
+                val unresolvedCount = roots.count { !it.resolved }
+                val allResolved = unresolvedCount == 0
+                applyNormalLineRenderers(context, line, highlighter, unresolvedCount, totalCount, allResolved)
+            } else if (context.side == Side.RIGHT) {
+                highlighter.gutterIconRenderer = ExistingIssueGutterRenderer(context, line)
+            }
 
             lineMap[line] = highlighter
             newHighlighters.add(highlighter)
@@ -112,6 +132,7 @@ class LineCommentManager(private val project: Project) {
 
     private inner class CommentMouseListener(private val context: EditorContext) : EditorMouseListener {
         override fun mouseClicked(event: EditorMouseEvent) {
+            if (context.side != Side.RIGHT) return
             if (event.area != EditorMouseEventArea.LINE_MARKERS_AREA && event.area != EditorMouseEventArea.LINE_NUMBERS_AREA) {
                 return
             }
@@ -163,10 +184,18 @@ class LineCommentManager(private val project: Project) {
         if (commentHighlighter != null) {
             val roots = LineCommentStore.getComments(context.filePath, line, context.side)
                 .filter { it.parentId == null }
-            val totalCount = roots.size
-            val unresolvedCount = roots.count { !it.resolved }
-            val allResolved = totalCount > 0 && unresolvedCount == 0
-            applyNormalLineRenderers(context, line, commentHighlighter, unresolvedCount, totalCount, allResolved)
+            if (roots.isNotEmpty()) {
+                val totalCount = roots.size
+                val unresolvedCount = roots.count { !it.resolved }
+                val allResolved = totalCount > 0 && unresolvedCount == 0
+                applyNormalLineRenderers(context, line, commentHighlighter, unresolvedCount, totalCount, allResolved)
+            } else if (context.side == Side.RIGHT) {
+                val hasRemoteIssue = remoteIssueLinesByFile[normalizeFilePath(context.filePath)]?.contains(line) == true
+                if (hasRemoteIssue) {
+                    commentHighlighter.gutterIconRenderer = ExistingIssueGutterRenderer(context, line)
+                    commentHighlighter.lineMarkerRenderer = null
+                }
+            }
             return
         }
 
@@ -177,6 +206,7 @@ class LineCommentManager(private val project: Project) {
     }
 
     private fun applyHoverForLine(context: EditorContext, line: Int) {
+        if (context.side != Side.RIGHT) return
         val editor = context.editor
         val commentLineMap = commentHighlightersByEditorLine[editor]
         val commentHighlighter = commentLineMap?.get(line)
@@ -210,9 +240,40 @@ class LineCommentManager(private val project: Project) {
         totalCount: Int,
         allResolved: Boolean
     ) {
-        val icon = if (allResolved) AllIcons.General.InspectionsOK else AllIcons.General.Error
+        val icon = AllIcons.General.Balloon
         highlighter.gutterIconRenderer = LineCommentGutterRenderer(context, line, icon, unresolvedCount, totalCount, allResolved)
         highlighter.lineMarkerRenderer = CommentCountLineMarkerRenderer(icon, unresolvedCount, totalCount, allResolved)
+    }
+
+    private inner class ExistingIssueGutterRenderer(
+        private val context: EditorContext,
+        private val line: Int
+    ) : GutterIconRenderer() {
+        override fun getIcon(): Icon = AllIcons.General.Balloon
+
+        override fun getTooltipText(): String = "该行有评论"
+
+        override fun getClickAction() = object : com.intellij.openapi.actionSystem.AnAction() {
+            override fun actionPerformed(e: AnActionEvent) {
+                val editor = CommonDataKeys.EDITOR.getData(e.dataContext) ?: return
+                showPopup(editor, context.filePath, line, context.side)
+            }
+        }
+
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is ExistingIssueGutterRenderer) return false
+            return context.filePath == other.context.filePath &&
+                context.side == other.context.side &&
+                line == other.line
+        }
+
+        override fun hashCode(): Int {
+            var result = context.filePath.hashCode()
+            result = 31 * result + context.side.hashCode()
+            result = 31 * result + line
+            return result
+        }
     }
 
     private inner class LineCommentGutterRenderer(
@@ -233,7 +294,7 @@ class LineCommentManager(private val project: Project) {
         override fun getClickAction() = object : com.intellij.openapi.actionSystem.AnAction() {
             override fun actionPerformed(e: AnActionEvent) {
                 val editor = CommonDataKeys.EDITOR.getData(e.dataContext) ?: return
-                showPopup(editor, context.filePath, line, context.side, openComposerOnly = true)
+                showPopup(editor, context.filePath, line, context.side)
             }
         }
 
@@ -270,7 +331,7 @@ class LineCommentManager(private val project: Project) {
         override fun getClickAction() = object : com.intellij.openapi.actionSystem.AnAction() {
             override fun actionPerformed(e: AnActionEvent) {
                 val editor = CommonDataKeys.EDITOR.getData(e.dataContext) ?: return
-                showPopup(editor, context.filePath, line, context.side, openComposerOnly = true)
+                showPopup(editor, context.filePath, line, context.side)
             }
         }
 

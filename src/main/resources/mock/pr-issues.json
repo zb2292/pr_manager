@@ -11,8 +11,8 @@
         "createBy": "bob",
         "msg": "用户名校验缺少空值判断",
         "createTime": "2026-02-12 10:20:00",
-        "file": "contracts/src/main/kotlin/net/ntworld/mergeRequest/Change.kt",
-        "line": 7,
+        "file": "merge-request-integration/src/main/kotlin/net/ntworld/mergeRequestIntegration/commandHandler/ApproveMergeRequestCommandHandler.kt",
+        "line": 11,
         "status": "open",
         "replies": [
           {
@@ -30,8 +30,8 @@
         "createBy": "alice",
         "msg": "用户名校验缺少空值判断",
         "createTime": "2026-02-13 10:20:00",
-        "file": "contracts/src/main/kotlin/net/ntworld/mergeRequest/Change.kt",
-        "line": 7,
+        "file": "merge-request-integration/src/main/kotlin/net/ntworld/mergeRequestIntegration/commandHandler/DeleteCommentCommandHandler.kt",
+        "line": 11,
         "status": "fixed",
         "replies": [
           {
@@ -49,8 +49,8 @@
         "createBy": "bob",
         "msg": "用户名校验缺少空值判断",
         "createTime": "2026-02-12 10:20:00",
-        "file": "contracts/src/main/kotlin/net/ntworld/mergeRequest/Comment.kt",
-        "line": 26,
+        "file": "merge-request-integration/src/main/kotlin/net/ntworld/mergeRequestIntegration/commandHandler/DeleteCommentCommandHandler.kt",
+        "line": 12,
         "status": "fixed",
         "replies": [
           {

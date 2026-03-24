@@ -25,7 +25,8 @@ class DiffEditorBinder(
                 if (!DiffUtil.isDiffEditor(editor)) return
                 if (editor.project != project) return
 
-                val side = resolveSide(editor)
+                val fallbackSide = if (boundCount == 0) Side.LEFT else Side.RIGHT
+                val side = resolveSide(editor, fallbackSide)
                 commentManager.registerEditor(editor, filePath, side)
                 boundCount += 1
                 if (boundCount >= 2) {
@@ -37,7 +38,7 @@ class DiffEditorBinder(
         editorFactory.addEditorFactoryListener(listener, disposable)
     }
 
-    private fun resolveSide(editor: Editor): Side {
-        return editor.getUserData(DiffUserDataKeys.MASTER_SIDE) ?: Side.LEFT
+    private fun resolveSide(editor: Editor, fallback: Side): Side {
+        return editor.getUserData(DiffUserDataKeys.MASTER_SIDE) ?: fallback
     }
 }

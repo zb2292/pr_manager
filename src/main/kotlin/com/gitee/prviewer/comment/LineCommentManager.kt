@@ -27,6 +27,7 @@ import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.JBUI
 import java.awt.*
+import kotlin.math.max
 import java.awt.event.FocusAdapter
 import java.awt.event.FocusEvent
 import java.awt.event.MouseAdapter
@@ -35,6 +36,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.WeakHashMap
+import javax.swing.Box
 import javax.swing.BoxLayout
 import javax.swing.Icon
 import javax.swing.JButton
@@ -655,14 +657,14 @@ class LineCommentManager(private val project: Project) {
             isCollapsed: Boolean,
             onToggle: () -> Unit
         ): JComponent {
-            val row = JPanel(BorderLayout())
+            val row = JPanel(GridBagLayout())
             row.isOpaque = false
 
             val left = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
             left.isOpaque = false
             left.add(createUserBadge(comment.author, AllIcons.General.User))
             left.add(JBLabel(" "))
-            val seqLabel = JBLabel("序号 $seq")
+            val seqLabel = JBLabel("#$seq")
             seqLabel.foreground = textSecondary
             left.add(seqLabel)
             left.add(JBLabel(" "))
@@ -676,7 +678,7 @@ class LineCommentManager(private val project: Project) {
                 val statusLabel = JBLabel(statusText)
                 statusLabel.foreground = statusColor
                 right.add(statusLabel)
-                right.add(JBLabel(" "))
+                right.add(Box.createHorizontalStrut(JBUI.scale(4)))
             }
             val toggle = JButton(if (isCollapsed) AllIcons.General.ArrowRight else AllIcons.General.ArrowDown)
             toggle.isOpaque = false
@@ -685,8 +687,21 @@ class LineCommentManager(private val project: Project) {
             toggle.addActionListener { onToggle() }
             right.add(toggle)
 
-            row.add(left, BorderLayout.WEST)
-            row.add(right, BorderLayout.EAST)
+            val leftConstraints = GridBagConstraints().apply {
+                gridx = 0
+                gridy = 0
+                weightx = 1.0
+                anchor = GridBagConstraints.WEST
+                fill = GridBagConstraints.HORIZONTAL
+            }
+            val rightConstraints = GridBagConstraints().apply {
+                gridx = 1
+                gridy = 0
+                weightx = 0.0
+                anchor = GridBagConstraints.EAST
+            }
+            row.add(left, leftConstraints)
+            row.add(right, rightConstraints)
             return row
         }
 
@@ -729,19 +744,26 @@ class LineCommentManager(private val project: Project) {
             left.isOpaque = false
             left.add(createUserBadge(reply.author, AllIcons.General.User))
             left.add(JBLabel(" "))
-            val seqLabel = JBLabel("序号 $seq")
+            val seqLabel = JBLabel("#$seq")
             seqLabel.foreground = textSecondary
             left.add(seqLabel)
             left.add(JBLabel(" "))
             val timeLabel = JBLabel(timeFormatter.format(Date(reply.createdAt)))
             timeLabel.foreground = textHint
             left.add(timeLabel)
+            val replyFloor = reply.replyFloorNum
+            if (replyFloor != null && replyFloor > 0) {
+                left.add(JBLabel(" "))
+                val replyLabel = JBLabel("回复#$replyFloor")
+                replyLabel.foreground = textSecondary
+                left.add(replyLabel)
+            }
             header.add(left, BorderLayout.WEST)
             replyCard.add(header)
 
             val contentRow = JPanel(BorderLayout())
             contentRow.isOpaque = false
-            contentRow.border = JBUI.Borders.emptyTop(4)
+            contentRow.border = JBUI.Borders.emptyTop(2)
             contentRow.add(buildContentRow(reply.content), BorderLayout.CENTER)
             replyCard.add(contentRow)
 
@@ -749,7 +771,7 @@ class LineCommentManager(private val project: Project) {
                 replyComposerOpenById.add(reply.id)
                 rebuild()
             })
-            actions.border = JBUI.Borders.emptyTop(4)
+            actions.border = JBUI.Borders.emptyTop(2)
             replyCard.add(actions)
 
             if (replyComposerOpenById.contains(reply.id)) {
@@ -761,7 +783,7 @@ class LineCommentManager(private val project: Project) {
                     replyComposerOpenById.remove(reply.id)
                     rebuild()
                 })
-                replyComposer.border = JBUI.Borders.emptyTop(6)
+                replyComposer.border = JBUI.Borders.emptyTop(4)
                 replyCard.add(replyComposer)
             }
 
@@ -806,7 +828,7 @@ class LineCommentManager(private val project: Project) {
 
             val contentRow = JPanel(BorderLayout())
             contentRow.isOpaque = false
-            contentRow.border = JBUI.Borders.emptyTop(4)
+            contentRow.border = JBUI.Borders.emptyTop(2)
             contentRow.add(buildContentRow(root.content), BorderLayout.CENTER)
             wrapper.add(contentRow)
 
@@ -822,7 +844,7 @@ class LineCommentManager(private val project: Project) {
                     rebuild()
                 }
             })
-            actions.border = JBUI.Borders.emptyTop(4)
+            actions.border = JBUI.Borders.emptyTop(2)
             wrapper.add(actions)
 
             if (replyComposerOpenById.contains(root.id)) {
@@ -834,7 +856,7 @@ class LineCommentManager(private val project: Project) {
                     replyComposerOpenById.remove(root.id)
                     rebuild()
                 })
-                replyComposer.border = JBUI.Borders.emptyTop(6)
+                replyComposer.border = JBUI.Borders.emptyTop(4)
                 wrapper.add(replyComposer)
             }
 
@@ -842,7 +864,7 @@ class LineCommentManager(private val project: Project) {
                 val repliesPanel = JPanel()
                 repliesPanel.layout = BoxLayout(repliesPanel, BoxLayout.Y_AXIS)
                 repliesPanel.isOpaque = false
-                repliesPanel.border = JBUI.Borders.emptyTop(6)
+                repliesPanel.border = JBUI.Borders.emptyTop(4)
 
                 if (replies.isEmpty()) {
                     val empty = JBLabel("暂无回复")
@@ -851,12 +873,12 @@ class LineCommentManager(private val project: Project) {
                 } else {
                     replies.forEachIndexed { index, reply ->
                         repliesPanel.add(buildReplyUnit(reply, seqMap[reply.id] ?: (index + 2), rebuild))
-                        repliesPanel.add(JPanel().apply { isOpaque = false; preferredSize = Dimension(1, JBUI.scale(6)) })
+                        repliesPanel.add(JPanel().apply { isOpaque = false; preferredSize = Dimension(1, JBUI.scale(4)) })
                     }
                 }
 
                 val repliesScroll = JBScrollPane(repliesPanel)
-                repliesScroll.border = JBUI.Borders.emptyTop(6)
+                repliesScroll.border = JBUI.Borders.emptyTop(4)
                 repliesScroll.horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
                 repliesScroll.preferredSize = Dimension(JBUI.scale(520), JBUI.scale(160))
                 repliesScroll.viewport.isOpaque = false
@@ -979,7 +1001,7 @@ class LineCommentManager(private val project: Project) {
                 } else {
                     roots.forEach { root ->
                         unitsWrapper.add(buildCommentUnit(root, all, commentById) { rebuild() })
-                        unitsWrapper.add(JPanel().apply { isOpaque = false; preferredSize = Dimension(1, JBUI.scale(8)) })
+                        unitsWrapper.add(JPanel().apply { isOpaque = false; preferredSize = Dimension(1, JBUI.scale(6)) })
                     }
                 }
 
@@ -994,10 +1016,28 @@ class LineCommentManager(private val project: Project) {
 
             footerPanel.add(buildPartCPreComment { rebuild() }, BorderLayout.CENTER)
 
+            val contentHeight = middlePanel.preferredSize.height + footerPanel.preferredSize.height + JBUI.scale(24)
+            val baseWidth = JBUI.scale(560)
+            val minScrollHeight = JBUI.scale(150)
+            val newScrollHeight = max(minScrollHeight, contentHeight)
+            scrollPane.preferredSize = Dimension(baseWidth, newScrollHeight)
+
             middlePanel.revalidate()
             middlePanel.repaint()
             footerPanel.revalidate()
             footerPanel.repaint()
+
+            SwingUtilities.invokeLater {
+                val popupSize = popup?.size
+                val preferred = container.preferredSize
+                if (popupSize != null) {
+                    val width = max(popupSize.width, preferred.width)
+                    val height = preferred.height
+                    if (width != popupSize.width || height != popupSize.height) {
+                        popup?.size = Dimension(width, height)
+                    }
+                }
+            }
         }
 
         container.add(scrollPane, BorderLayout.CENTER)

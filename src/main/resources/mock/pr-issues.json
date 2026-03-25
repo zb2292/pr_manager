@@ -63,7 +63,7 @@
             "note": "用户名校验缺少空值判断2",
             "root_id": 1146,
             "root_node": true,
-            "resolved_enabled": false,
+            "resolved_enabled": true,
             "floor_num": 1,
             "reply_floor_num": 0,
             "children": [
@@ -83,39 +83,39 @@
                   "name": "bob",
                   "username": "bob"
                 }
-              },
+              }
+            ]
+          },
+          {
+            "author": {
+              "name": "bob",
+              "username": "bob"
+            },
+            "created_at": "2026-03-18T06:14:32.534683Z",
+            "id": 1147,
+            "note": "用户名校验缺少空值判断2",
+            "root_id": 1147,
+            "root_node": true,
+            "resolved_enabled": false,
+            "floor_num": 1,
+            "reply_floor_num": 0,
+            "children": [
               {
                 "author": {
-                  "name": "bob",
-                  "username": "bob2"
+                  "name": "alice",
+                  "username": "alice"
                 },
-                "created_at": "2026-03-18T06:14:32.534683Z",
-                "id": 1147,
-                "note": "用户名校验缺少空值判断3",
+                "created_at": "2026-03-20T01:30:23.890049Z",
+                "id": 1165,
+                "note": "已补充判空",
                 "root_id": 1147,
-                "root_node": true,
-                "resolved_enabled": true,
-                "floor_num": 1,
-                "reply_floor_num": 0,
-                "children": [
-                  {
-                    "author": {
-                      "name": "alice",
-                      "username": "alice"
-                    },
-                    "created_at": "2026-03-20T01:30:23.890049Z",
-                    "id": 1174,
-                    "note": "已补充判空",
-                    "root_id": 1147,
-                    "root_node": false,
-                    "floor_num": 2,
-                    "reply_floor_num": 1,
-                    "reply_user": {
-                      "name": "bob",
-                      "username": "bob"
-                    }
-                  }
-                ]
+                "root_node": false,
+                "floor_num": 2,
+                "reply_floor_num": 1,
+                "reply_user": {
+                  "name": "bob",
+                  "username": "bob"
+                }
               }
             ]
           }

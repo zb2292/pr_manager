@@ -415,7 +415,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         val descScroll = JBScrollPane(overviewDesc)
         val descLineHeight = overviewDesc.getFontMetrics(overviewDesc.font).height
         val descHeight = descLineHeight * 4 + JBUI.scale(12)
-        val descSize = Dimension(JBUI.scale(520), descHeight)
+        val descSize = Dimension(JBUI.scale(780), descHeight)
         descScroll.preferredSize = descSize
         descScroll.minimumSize = descSize
 
@@ -426,6 +426,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         panel.add(section("描述", descScroll))
         panel.add(section("关键评审人员", buildReviewerRow(keyReviewersField, keyReviewerHint)))
         panel.add(section("普通评审人员", buildReviewerRow(reviewersField, reviewerHint)))
+        panel.add(Box.createVerticalGlue())
 
         return JBScrollPane(
             panel,
@@ -442,13 +443,16 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         row.alignmentX = Component.LEFT_ALIGNMENT
         row.isOpaque = false
 
-        val fieldHeight = field.getFontMetrics(field.font).height + JBUI.scale(6)
+        val fieldHeight = field.getFontMetrics(field.font).height + JBUI.scale(10)
         val fieldSize = Dimension(JBUI.scale(347), fieldHeight)
         field.preferredSize = fieldSize
         field.minimumSize = fieldSize
         field.maximumSize = fieldSize
 
         hint.border = JBUI.Borders.emptyLeft(8)
+        hint.minimumSize = Dimension(0, fieldHeight)
+        hint.preferredSize = Dimension(0, fieldHeight)
+        hint.maximumSize = Dimension(Int.MAX_VALUE, fieldHeight)
 
         row.add(field, BorderLayout.WEST)
         row.add(hint, BorderLayout.CENTER)
@@ -460,7 +464,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         row.alignmentX = Component.LEFT_ALIGNMENT
         row.isOpaque = false
 
-        val fieldHeight = field.getFontMetrics(field.font).height + JBUI.scale(6)
+        val fieldHeight = field.getFontMetrics(field.font).height + JBUI.scale(2)
         val fieldSize = Dimension(JBUI.scale(347), fieldHeight)
         field.preferredSize = fieldSize
         field.minimumSize = fieldSize
@@ -479,6 +483,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         wrapper.add(label, BorderLayout.NORTH)
         wrapper.add(component, BorderLayout.CENTER)
         wrapper.border = JBUI.Borders.emptyBottom(10)
+        wrapper.maximumSize = Dimension(Int.MAX_VALUE, wrapper.preferredSize.height)
         return wrapper
     }
 
@@ -823,11 +828,11 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         overviewDesc.text = detail.overview.desc
         keyReviewersField.text = detail.overview.keyReviewers.joinToString(",")
         keyReviewersField.toolTipText = detail.overview.keyReviewers.joinToString(",")
-        keyReviewerHint.text = "<html>至少需要 <b>${detail.overview.needKeyReviewers}</b> 名关键评审成员评审通过后可合并</html>"
+        keyReviewerHint.text = "至少需要 ${detail.overview.needKeyReviewers} 名关键评审成员评审通过后可合并"
 
         reviewersField.text = detail.overview.reviewers.joinToString(",")
         reviewersField.toolTipText = detail.overview.reviewers.joinToString(",")
-        reviewerHint.text = "<html>至少需要 <b>${detail.overview.needReviewers}</b> 名普通评审成员评审通过后可合并</html>"
+        reviewerHint.text = "至少需要 ${detail.overview.needReviewers} 名普通评审成员评审通过后可合并"
 
         setupReviewAction(detail)
     }
@@ -1334,17 +1339,19 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 val notes = entry.get("notes")
                 if (notes == null || !notes.isArray) return@forEach
 
-                notes.forEach { note ->
+                val noteList = notes.toList()
+
+                noteList.forEach { note ->
                     val noteId = note.readText("id", "nodeId")
                     val rootId = note.readText("root_id").ifBlank { noteId }
-                    val author = note.get("author")?.readText("name", "username", "login").orEmpty()
+                    val author = note.get("author")?.readText("username", "login", "name").orEmpty()
                     val content = note.readText("note", "content", "body")
                     val createdAt = parseEpoch(note.readText("created_at", "createdAt"))
                     val floorNum = note.get("floor_num")?.asInt()
                     val replyFloorNum = note.get("reply_floor_num")?.asInt()
                     val resolved = note.get("resolved_enabled")?.asBoolean()
-            ?: note.get("resolved")?.asBoolean()
-            ?: false
+                        ?: note.get("resolved")?.asBoolean()
+                        ?: false
                     val commentId = noteId.ifBlank { rootId.ifBlank { "${filePath}#$newLine#${createdAt}" } }
 
                     comments.add(
@@ -1364,13 +1371,26 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                         )
                     )
 
-                    val replyList = mutableListOf<IssueReply>()
+                    issues.add(
+                        IssueItem(
+                            id = commentId,
+                            number = floorNum?.toString().orEmpty(),
+                            createBy = author,
+                            msg = content,
+                            createTime = note.readText("created_at", "createdAt"),
+                            file = filePath,
+                            line = newLine,
+                            status = if (resolved) "fixed" else "open",
+                            replies = emptyList()
+                        )
+                    )
+
                     val children = note.get("children")
                     if (children != null && children.isArray) {
                         children.forEach { child ->
                             val childId = child.readText("id", "nodeId")
                             val childRootId = child.readText("root_id").ifBlank { rootId }
-                            val childAuthor = child.get("author")?.readText("name", "username", "login").orEmpty()
+                            val childAuthor = child.get("author")?.readText("username", "login", "name").orEmpty()
                             val childContent = child.readText("note", "content", "body")
                             val childCreatedAt = parseEpoch(child.readText("created_at", "createdAt"))
                             val childFloorNum = child.get("floor_num")?.asInt()
@@ -1398,34 +1418,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                                     resolved = childResolved
                                 )
                             )
-
-                            val responseTo = child.get("reply_user")?.readText("name", "username", "login").orEmpty()
-                            replyList.add(
-                                IssueReply(
-                                    num = childFloorNum?.toString().orEmpty(),
-                                    createBy = childAuthor,
-                                    msg = childContent,
-                                    createTime = child.readText("created_at", "createdAt"),
-                                    responseTo = responseTo
-                                )
-                            )
                         }
                     }
-
-                    issues.add(
-                        IssueItem(
-                            id = commentId,
-                            number = floorNum?.toString().orEmpty(),
-                            createBy = author,
-                            msg = content,
-                            createTime = note.readText("created_at", "createdAt"),
-                            file = filePath,
-                            line = newLine,
-                            status = if (resolved) "fixed" else "open",
-                            replies = replyList
-                        )
-                    )
                 }
+
             }
         }
 

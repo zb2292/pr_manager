@@ -18,8 +18,9 @@ object LineCommentStore {
     }
 
     fun addComment(filePath: String, line: Int, side: Side, content: String, author: String): LineComment {
+        val id = UUID.randomUUID().toString()
         val comment = LineComment(
-            id = UUID.randomUUID().toString(),
+            id = id,
             filePath = filePath,
             line = line,
             side = side,
@@ -27,6 +28,7 @@ object LineCommentStore {
             author = author,
             createdAt = System.currentTimeMillis(),
             parentId = null,
+            rootId = id,
             resolved = false
         )
         val key = Key(filePath, line, side)
@@ -34,6 +36,56 @@ object LineCommentStore {
         list.add(comment)
         notifyChanged()
         return comment
+    }
+
+    fun addReply(
+        filePath: String,
+        line: Int,
+        side: Side,
+        parentId: String,
+        content: String,
+        author: String,
+        rootId: String = parentId
+    ): LineComment {
+        val id = UUID.randomUUID().toString()
+        val comment = LineComment(
+            id = id,
+            filePath = filePath,
+            line = line,
+            side = side,
+            content = content,
+            author = author,
+            createdAt = System.currentTimeMillis(),
+            parentId = parentId,
+            rootId = rootId,
+            resolved = false
+        )
+        val key = Key(filePath, line, side)
+        val list = comments.getOrPut(key) { mutableListOf() }
+        list.add(comment)
+        notifyChanged()
+        return comment
+    }
+
+    fun replaceForFile(filePath: String, side: Side, newComments: List<LineComment>) {
+        val keysToRemove = comments.keys.filter { it.filePath == filePath && it.side == side }
+        keysToRemove.forEach { comments.remove(it) }
+        newComments.forEach { comment ->
+            val key = Key(comment.filePath, comment.line, comment.side)
+            val list = comments.getOrPut(key) { mutableListOf() }
+            list.add(comment)
+        }
+        notifyChanged()
+    }
+
+    fun replaceForSide(side: Side, newComments: List<LineComment>) {
+        val keysToRemove = comments.keys.filter { it.side == side }
+        keysToRemove.forEach { comments.remove(it) }
+        val grouped = newComments.groupBy { Key(it.filePath, it.line, it.side) }
+        grouped.forEach { (key, items) ->
+            comments[key] = items.toMutableList()
+        }
+        notifyChanged()
     }
 
     fun removeComment(filePath: String, line: Int, side: Side, commentId: String) {
@@ -57,24 +109,6 @@ object LineCommentStore {
         notifyChanged()
     }
 
-    fun addReply(filePath: String, line: Int, side: Side, parentId: String, content: String, author: String): LineComment {
-        val comment = LineComment(
-            id = UUID.randomUUID().toString(),
-            filePath = filePath,
-            line = line,
-            side = side,
-            content = content,
-            author = author,
-            createdAt = System.currentTimeMillis(),
-            parentId = parentId,
-            resolved = false
-        )
-        val key = Key(filePath, line, side)
-        val list = comments.getOrPut(key) { mutableListOf() }
-        list.add(comment)
-        notifyChanged()
-        return comment
-    }
 
     fun resolveComment(filePath: String, line: Int, side: Side, commentId: String) {
         val key = Key(filePath, line, side)

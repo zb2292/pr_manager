@@ -1,32 +1,23 @@
 {
-  "code": 200,
-  "msg": "",
-  "data": {
-    "id": 101,
-    "title": "优化登录流程",
-    "status": "open",
-    "sourceBranch": "origin/dev",
-    "targetBranch": "origin/master",
-    "author": "alice",
-    "createTime": "2026-02-12 10:00:00",
-    "reviewPass": true,
-    "mergeCondition": ["canMerged", "sourceBranchResolvedConflicts"],
-    "overview": {
-      "desc": "优化登录流程，提升稳定性和错误提示体验。",
-      "keyReviewers": ["alice"],
-      "needKeyReviewers": 1,
-      "reviewers": ["bob", "carol"],
-      "needReviewers": 2,
-      "mergedType": "Merged",
-      "deleteBranchAfterMerged": true
-    },
-    "commits": [
-      {
-        "commitBy": "alice",
-        "commitId": "a1b2c3d",
-        "commitMsg": "优化登录表单校验",
-        "commitTime": "2026-02-12 09:45:00"
-      }
-    ]
+  "result": {
+    "code": 200,
+    "message": null,
+    "success": true,
+    "data": {
+      "pullRequestsBaseInfo": {
+        "title": "优化登录流程",
+        "id": 101,
+        "iid": 1,
+        "sourceBranch": "origin/dev",
+        "targetBranch": "origin/master",
+        "baseCommitSha": "b177aac50231d4f176b5838cf237d01d650d28c9",
+        "headCommitSha": "f8635c2e8d70b3d6244f8c8eb3c95103d1fe8031",
+        "userName": "alice",
+        "state": "opened",
+        "createdAt": "2026-02-12 10:00:00"
+      },
+      "pullRequestCommit": [
+      ]
+    }
   }
 }

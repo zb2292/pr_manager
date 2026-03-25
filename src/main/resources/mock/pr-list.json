@@ -1,28 +1,52 @@
 {
   "code": 200,
-  "msg": "",
-  "data": {
-    "total": 2,
-    "pageSize": 10,
-    "prList": [
-      {
-        "id": 101,
-        "title": "优化登录流程",
-        "status": "open",
-        "sourceBranch": "origin/dev",
-        "targetBranch": "origin/master",
-        "author": "alice",
-        "createTime": "2026-02-12 10:00:00"
+  "message": null,
+  "success": true,
+  "data": [
+    {
+      "id": 101,
+      "iid": 1,
+      "title": "优化登录流程",
+      "state": "opened",
+      "source_branch": "origin/dev",
+      "target_branch": "origin/master",
+      "author": {
+        "username": "alice"
       },
-      {
-        "id": 100,
-        "title": "修复统计页崩溃",
-        "status": "merged",
-        "sourceBranch": "origin/compatibility/2020-1",
-        "targetBranch": "origin/master",
-        "author": "bob",
-        "createTime": "2026-02-11 18:20:00"
-      }
-    ]
-  }
+      "primary_reviewers": [
+        { "username": "alice" }
+      ],
+      "general_reviewers": [
+        { "username": "bob" },
+        { "username": "carol" }
+      ],
+      "primary_reviewer_num": 1,
+      "general_reviewer_num": 2,
+      "can_be_merge": true
+    },
+    {
+      "id": 100,
+      "iid": 2,
+      "title": "修复统计页崩溃",
+      "state": "merged",
+      "source_branch": "origin/compatibility/2020-1",
+      "target_branch": "origin/master",
+      "author": {
+        "username": "bob"
+      },
+      "primary_reviewers": [
+        { "username": "carol" }
+      ],
+      "general_reviewers": [
+        { "username": "alice" }
+      ],
+      "primary_reviewer_num": 1,
+      "general_reviewer_num": 1,
+      "can_be_merge": false
+    }
+  ],
+  "hasPage": true,
+  "page": 1,
+  "totalPage": 1,
+  "totalSize": 2
 }

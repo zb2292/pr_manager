@@ -1,67 +1,127 @@
 {
-  "code": 200,
-  "msg": "",
-  "data": {
-    "total": 3,
-    "unresolved": 1,
-    "issues": [
+  "result": {
+    "code": 200,
+    "message": null,
+    "success": true,
+    "data": [
       {
-        "id": "I-1001",
-        "number": "1",
-        "createBy": "bob",
-        "msg": "用户名校验缺少空值判断",
-        "createTime": "2026-02-12 10:20:00",
-        "file": "merge-request-integration/src/main/kotlin/net/ntworld/mergeRequestIntegration/commandHandler/ApproveMergeRequestCommandHandler.kt",
-        "line": 11,
-        "status": "open",
-        "replies": [
+        "id": 1146,
+        "diff_position": {
+          "new_path": "merge-request-integration/src/main/kotlin/net/ntworld/mergeRequestIntegration/commandHandler/ApproveMergeRequestCommandHandler.kt",
+          "new_line": 11
+        },
+        "notes": [
           {
-            "num": "2",
-            "createBy": "alice",
-            "msg": "已补充判空",
-            "createTime": "2026-02-12 10:30:00",
-            "responseTo": "bob"
+            "author": {
+              "name": "bob",
+              "username": "bob"
+            },
+            "created_at": "2026-03-18T06:14:32.534683Z",
+            "id": 1146,
+            "note": "用户名校验缺少空值判断",
+            "root_id": 1146,
+            "root_node": true,
+            "resolved_enabled": true,
+            "floor_num": 1,
+            "reply_floor_num": 0,
+            "children": [
+              {
+                "author": {
+                  "name": "alice",
+                  "username": "alice"
+                },
+                "created_at": "2026-03-20T01:30:23.890049Z",
+                "id": 1164,
+                "note": "已补充判空",
+                "root_id": 1146,
+                "root_node": false,
+                "floor_num": 2,
+                "reply_floor_num": 1,
+                "reply_user": {
+                  "name": "bob",
+                  "username": "bob"
+                }
+              }
+            ]
           }
         ]
       },
       {
-        "id": "I-1002",
-        "number": "1",
-        "createBy": "alice",
-        "msg": "用户名校验缺少空值判断",
-        "createTime": "2026-02-13 10:20:00",
-        "file": "merge-request-integration/src/main/kotlin/net/ntworld/mergeRequestIntegration/commandHandler/DeleteCommentCommandHandler.kt",
-        "line": 11,
-        "status": "fixed",
-        "replies": [
+        "id": 1146,
+        "diff_position": {
+          "new_path": "merge-request-integration/src/main/kotlin/net/ntworld/mergeRequestIntegration/commandHandler/DeleteCommentCommandHandler.kt",
+          "new_line": 11
+        },
+        "notes": [
           {
-            "num": "2",
-            "createBy": "alice",
-            "msg": "已补充判空",
-            "createTime": "2026-02-13 10:30:00",
-            "responseTo": "bob"
-          }
-        ]
-      },
-      {
-        "id": "I-1003",
-        "number": "1",
-        "createBy": "bob",
-        "msg": "用户名校验缺少空值判断",
-        "createTime": "2026-02-12 10:20:00",
-        "file": "merge-request-integration/src/main/kotlin/net/ntworld/mergeRequestIntegration/commandHandler/DeleteCommentCommandHandler.kt",
-        "line": 12,
-        "status": "fixed",
-        "replies": [
-          {
-            "num": "2",
-            "createBy": "alice",
-            "msg": "已补充判空",
-            "createTime": "2026-02-12 10:30:00",
-            "responseTo": "bob"
+            "author": {
+              "name": "bob",
+              "username": "bob"
+            },
+            "created_at": "2026-03-18T06:14:32.534683Z",
+            "id": 1146,
+            "note": "用户名校验缺少空值判断2",
+            "root_id": 1146,
+            "root_node": true,
+            "resolved_enabled": false,
+            "floor_num": 1,
+            "reply_floor_num": 0,
+            "children": [
+              {
+                "author": {
+                  "name": "alice",
+                  "username": "alice"
+                },
+                "created_at": "2026-03-20T01:30:23.890049Z",
+                "id": 1164,
+                "note": "已补充判空",
+                "root_id": 1146,
+                "root_node": false,
+                "floor_num": 2,
+                "reply_floor_num": 1,
+                "reply_user": {
+                  "name": "bob",
+                  "username": "bob"
+                }
+              },
+              {
+                "author": {
+                  "name": "bob",
+                  "username": "bob2"
+                },
+                "created_at": "2026-03-18T06:14:32.534683Z",
+                "id": 1147,
+                "note": "用户名校验缺少空值判断3",
+                "root_id": 1147,
+                "root_node": true,
+                "resolved_enabled": true,
+                "floor_num": 1,
+                "reply_floor_num": 0,
+                "children": [
+                  {
+                    "author": {
+                      "name": "alice",
+                      "username": "alice"
+                    },
+                    "created_at": "2026-03-20T01:30:23.890049Z",
+                    "id": 1174,
+                    "note": "已补充判空",
+                    "root_id": 1147,
+                    "root_node": false,
+                    "floor_num": 2,
+                    "reply_floor_num": 1,
+                    "reply_user": {
+                      "name": "bob",
+                      "username": "bob"
+                    }
+                  }
+                ]
+              }
+            ]
           }
         ]
       }
     ]
   }
 }
+

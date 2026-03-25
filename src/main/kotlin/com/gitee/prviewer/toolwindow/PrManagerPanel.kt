@@ -6,8 +6,11 @@ import com.gitee.prviewer.comment.DiffEditorBinder
 import com.gitee.prviewer.comment.IssueItem
 import com.gitee.prviewer.comment.IssueReply
 import com.gitee.prviewer.comment.IssueStats
+import com.gitee.prviewer.comment.LineComment
 import com.gitee.prviewer.comment.LineCommentManager
+import com.gitee.prviewer.comment.LineCommentStore
 import com.gitee.prviewer.comment.PrIssueCache
+import com.intellij.diff.util.Side
 import com.gitee.prviewer.model.ChangeItem
 import com.gitee.prviewer.service.BranchCompareService
 import com.intellij.diff.DiffContentFactory
@@ -85,9 +88,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private val mockDetailFile = config.getProperty("prviewer.mock.detail.file", "pr-detail.json").trim()
     private val mockIssuesFile = config.getProperty("prviewer.mock.issues.file", "pr-issues.json").trim()
 
-    private val listUrl = buildUrl(config.getProperty("prviewer.api.list.path", "/api/prs"))
-    private val detailUrl = buildUrl(config.getProperty("prviewer.api.detail.path", "/api/pr/detail"))
-    private val issuesUrl = buildUrl(config.getProperty("prviewer.api.issues.path", "/api/pr/issues"))
+    private val listUrl = buildUrl(config.getProperty("prviewer.api.list.path", "/pset/api/gitee-api/pull-request-reviews/pullRequestsList"))
+    private val detailUrl = buildUrl(config.getProperty("prviewer.api.detail.path", "/pset/api/gitee/selectPullRequestInfos"))
+    private val noteListUrl = buildUrl(config.getProperty("prviewer.api.noteList.path", "/pset/api/gitee/noteList"))
+    private val noteUrl = buildUrl(config.getProperty("prviewer.api.note.path", "/pset/api/gitee/note"))
+    private val replyUrl = buildUrl(config.getProperty("prviewer.api.reply.path", "/pset/api/gitee/replyNote"))
+    private val resolveUrl = buildUrl(config.getProperty("prviewer.api.resolve.path", "/pset/api/gitee/resoveNote"))
     private val reviewUrl = buildUrl(config.getProperty("prviewer.api.review.path", "/api/pr/review"))
     private val mergeUrl = buildUrl(config.getProperty("prviewer.api.merge.path", "/api/pr/merge"))
 
@@ -115,7 +121,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private var activeFilter = PrFilter.OPEN
     private var relatedOnly = false
-    private var currentOffset = -1L
+    private var currentPage = 1
+    private var totalPage = 0
     private var totalCount = 0
     private var isLoading = false
     private val pageSize = config.getProperty("prviewer.api.pageSize", "10").toIntOrNull() ?: 10
@@ -150,6 +157,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         applyGlobalFontSettings()
         setContent(buildMainPanel())
         bindActions()
+        bindCommentActions()
         resetAndLoad()
     }
 
@@ -418,9 +426,6 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         panel.add(section("描述", descScroll))
         panel.add(section("关键评审人员", buildReviewerRow(keyReviewersField, keyReviewerHint)))
         panel.add(section("普通评审人员", buildReviewerRow(reviewersField, reviewerHint)))
-        panel.add(section("合并方式", buildSingleFieldRow(mergeTypeField)))
-        deleteBranchCheck.alignmentX = Component.LEFT_ALIGNMENT
-        panel.add(deleteBranchCheck)
 
         return JBScrollPane(
             panel,
@@ -437,7 +442,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         row.alignmentX = Component.LEFT_ALIGNMENT
         row.isOpaque = false
 
-        val fieldSize = Dimension(JBUI.scale(347), field.preferredSize.height)
+        val fieldHeight = field.getFontMetrics(field.font).height + JBUI.scale(6)
+        val fieldSize = Dimension(JBUI.scale(347), fieldHeight)
         field.preferredSize = fieldSize
         field.minimumSize = fieldSize
         field.maximumSize = fieldSize
@@ -454,7 +460,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         row.alignmentX = Component.LEFT_ALIGNMENT
         row.isOpaque = false
 
-        val fieldSize = Dimension(JBUI.scale(347), field.preferredSize.height)
+        val fieldHeight = field.getFontMetrics(field.font).height + JBUI.scale(6)
+        val fieldSize = Dimension(JBUI.scale(347), fieldHeight)
         field.preferredSize = fieldSize
         field.minimumSize = fieldSize
         field.maximumSize = fieldSize
@@ -535,8 +542,115 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
     }
 
+    private fun bindCommentActions() {
+        commentManager.setRemoteHandler(object : LineCommentManager.CommentRemoteHandler {
+            override fun addComment(filePath: String, line: Int, side: com.intellij.diff.util.Side, content: String) {
+                val detail = currentDetail ?: return
+                if (mockEnabled) {
+                    LineCommentStore.addComment(filePath, line, side, content, System.getenv("USERID").orEmpty())
+                    return
+                }
+                ApplicationManager.getApplication().executeOnPooledThread {
+                    try {
+                        val payload = mapOf(
+                            "prId" to detail.id,
+                            "commitId" to detail.headCommitSha,
+                            "filePath" to filePath,
+                            "context" to content,
+                            "codeLine" to line + 1
+                        )
+                        val request = HttpRequest.newBuilder(URI.create(noteUrl))
+                            .timeout(Duration.ofSeconds(12))
+                            .header("Content-Type", "application/json")
+                            .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(payload)))
+                            .build()
+                        val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString())
+                        if (response.statusCode() !in 200..299) {
+                            updateStatus("评论失败: ${response.statusCode()}")
+                            return@executeOnPooledThread
+                        }
+                        loadNotes(detail)
+                    } catch (e: Exception) {
+                        updateStatus("评论失败: ${e.message ?: "未知错误"}")
+                    }
+                }
+            }
+
+            override fun addReply(filePath: String, line: Int, side: com.intellij.diff.util.Side, parent: LineComment, content: String) {
+                val detail = currentDetail ?: return
+                if (mockEnabled) {
+                    LineCommentStore.addReply(filePath, line, side, parent.id, content, System.getenv("USERID").orEmpty(), parent.rootId)
+                    return
+                }
+                ApplicationManager.getApplication().executeOnPooledThread {
+                    try {
+                        val payload = linkedMapOf(
+                            "prId" to detail.id,
+                            "context" to content,
+                            "filePath" to filePath,
+                            "codeLine" to line + 1
+                        )
+                        if (parent.id.isNotBlank()) {
+                            payload["nodeId"] = parent.id
+                        }
+                        if (parent.floorNum != null) {
+                            payload["replyFloorNum"] = parent.floorNum
+                        }
+                        val request = HttpRequest.newBuilder(URI.create(replyUrl))
+                            .timeout(Duration.ofSeconds(12))
+                            .header("Content-Type", "application/json")
+                            .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(payload)))
+                            .build()
+                        val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString())
+                        if (response.statusCode() !in 200..299) {
+                            updateStatus("回复失败: ${response.statusCode()}")
+                            return@executeOnPooledThread
+                        }
+                        loadNotes(detail)
+                    } catch (e: Exception) {
+                        updateStatus("回复失败: ${e.message ?: "未知错误"}")
+                    }
+                }
+            }
+
+            override fun resolveThread(filePath: String, line: Int, side: com.intellij.diff.util.Side, root: LineComment) {
+                val detail = currentDetail ?: return
+                if (mockEnabled) {
+                    LineCommentStore.getComments(filePath, line, side)
+                        .filter { it.rootId == root.rootId }
+                        .forEach { LineCommentStore.resolveComment(filePath, line, side, it.id) }
+                    return
+                }
+                ApplicationManager.getApplication().executeOnPooledThread {
+                    try {
+                        val payload = mapOf(
+                            "prIid" to detail.iid,
+                            "resolve" to true,
+                            "nodeId" to root.rootId,
+                            "sshPath" to resolveGitAddress()
+                        )
+                        val request = HttpRequest.newBuilder(URI.create(resolveUrl))
+                            .timeout(Duration.ofSeconds(12))
+                            .header("Content-Type", "application/json")
+                            .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(payload)))
+                            .build()
+                        val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString())
+                        if (response.statusCode() !in 200..299) {
+                            updateStatus("问题已解决提交失败: ${response.statusCode()}")
+                            return@executeOnPooledThread
+                        }
+                        loadNotes(detail)
+                    } catch (e: Exception) {
+                        updateStatus("问题已解决提交失败: ${e.message ?: "未知错误"}")
+                    }
+                }
+            }
+        })
+    }
+
     private fun resetAndLoad() {
-        currentOffset = -1L
+        currentPage = 1
+        totalPage = 0
         totalCount = 0
         tableModel.setRows(emptyList(), append = false)
         prTable.clearSelection()
@@ -546,7 +660,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private fun loadPrs(append: Boolean = false) {
         if (isLoading) return
-        if (append && currentOffset < 0) return
+        if (append && totalPage > 0 && currentPage >= totalPage) return
         if (append && totalCount > 0 && tableModel.rowCount >= totalCount) return
         isLoading = true
         statusLabel.text = if (append) "正在加载更多 PR..." else "正在加载 PR 列表..."
@@ -557,7 +671,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 val result = if (mockEnabled) {
                     val mockJson = readMockJson(mockListFile) ?: ""
                     if (mockJson.isBlank()) {
-                        PrListResult(0, emptyList())
+                        PrListResult(0, emptyList(), 0, 0)
                     } else {
                         parsePrList(mockJson)
                     }
@@ -570,7 +684,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                         .build()
                     val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString())
                     if (response.statusCode() !in 200..299) {
-                        PrListResult(0, emptyList())
+                        PrListResult(0, emptyList(), 0, 0)
                     } else {
                         parsePrList(response.body())
                     }
@@ -578,8 +692,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
                 SwingUtilities.invokeLater {
                     totalCount = result.total
+                    totalPage = result.totalPage
+                    currentPage = result.page
                     tableModel.setRows(result.items, append = append)
-                    updateOffsetAfterLoad()
                     val loaded = tableModel.rowCount
                     statusLabel.text = if (totalCount > 0) "已加载 $loaded/$totalCount 条 PR" else "暂无 PR"
                 }
@@ -587,7 +702,6 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 SwingUtilities.invokeLater {
                     if (!append) {
                         tableModel.setRows(emptyList(), append = false)
-                        updateOffsetAfterLoad()
                     }
                     statusLabel.text = "暂无 PR"
                 }
@@ -600,20 +714,26 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private fun buildListRequestBody(append: Boolean): String {
         val status = when (activeFilter) {
-            PrFilter.OPEN -> "open"
+            PrFilter.OPEN -> "opened"
             PrFilter.CLOSED -> "closed"
             PrFilter.MERGED -> "merged"
             PrFilter.ALL -> "all"
         }
-        val offsetValue = if (append) currentOffset else -1L
-        val payload = mapOf(
-            "gitAddress" to resolveGitAddress(),
-            "offSet" to offsetValue,
-            "pageSize" to pageSize,
-            "status" to status,
-            "related" to relatedOnly,
-            "searchContext" to (searchField.text?.trim() ?: "")
+        val pageValue = if (append) currentPage + 1 else 1
+        val currentUser = System.getenv("USERID").orEmpty()
+        val payload = linkedMapOf(
+            "sshPath" to resolveGitAddress(),
+            "page" to pageValue,
+            "perPage" to pageSize,
+            "states" to listOf(status),
+            "sourceBranch" to "",
+            "targetBranch" to "",
+            "keywords" to (searchField.text?.trim() ?: "")
         )
+        if (relatedOnly && currentUser.isNotBlank()) {
+            payload["authorName"] = currentUser
+            payload["reviewerName"] = currentUser
+        }
         return objectMapper.writeValueAsString(payload)
     }
 
@@ -621,11 +741,6 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         val repo = GitRepositoryManager.getInstance(project).repositories.firstOrNull() ?: return ""
         val remote = repo.remotes.firstOrNull { it.name == "origin" } ?: repo.remotes.firstOrNull()
         return remote?.urls?.firstOrNull().orEmpty()
-    }
-
-    private fun updateOffsetAfterLoad() {
-        val lastId = tableModel.lastId()
-        currentOffset = if (lastId >= 0) lastId + 1 else -1L
     }
 
     private fun renderEmptyDetail() {
@@ -665,12 +780,13 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
+                val listItem = tableModel.findById(prId)
                 val detail = if (mockEnabled) {
                     val mockJson = readMockJson(mockDetailFile)
                         ?: throw IllegalStateException("Mock文件不存在: $mockDir/$mockDetailFile")
-                    parseDetail(mockJson)
+                    parseDetail(mockJson, listItem)
                 } else {
-                    val payload = mapOf("id" to prId)
+                    val payload = mapOf("prId" to prId)
                     val request = HttpRequest.newBuilder(URI.create(detailUrl))
                         .timeout(Duration.ofSeconds(12))
                         .header("Content-Type", "application/json")
@@ -681,13 +797,13 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                         updateStatus("详情加载失败: ${response.statusCode()}")
                         return@executeOnPooledThread
                     }
-                    parseDetail(response.body())
+                    parseDetail(response.body(), listItem)
                 }
                 SwingUtilities.invokeLater {
                     currentDetail = detail
                     renderDetail(detail)
                 }
-                loadIssues(prId)
+                loadNotes(detail)
                 loadFileChanges(detail.sourceBranch, detail.targetBranch)
                 loadCommitRecords(detail)
             } catch (e: Exception) {
@@ -712,9 +828,6 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         reviewersField.text = detail.overview.reviewers.joinToString(",")
         reviewersField.toolTipText = detail.overview.reviewers.joinToString(",")
         reviewerHint.text = "<html>至少需要 <b>${detail.overview.needReviewers}</b> 名普通评审成员评审通过后可合并</html>"
-
-        mergeTypeField.text = detail.overview.mergedType
-        deleteBranchCheck.isSelected = detail.overview.deleteBranchAfterMerged
 
         setupReviewAction(detail)
     }
@@ -806,16 +919,19 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
     }
 
-    private fun loadIssues(prId: Long) {
+    private fun loadNotes(detail: PrDetail) {
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
-                val stats = if (mockEnabled) {
+                val result = if (mockEnabled) {
                     val mockJson = readMockJson(mockIssuesFile)
                         ?: throw IllegalStateException("Mock文件不存在: $mockDir/$mockIssuesFile")
-                    parseIssueStats(mockJson)
+                    parseNoteList(mockJson)
                 } else {
-                    val payload = mapOf("id" to prId)
-                    val request = HttpRequest.newBuilder(URI.create(issuesUrl))
+                    val payload = mapOf(
+                        "sshPath" to resolveGitAddress(),
+                        "iid" to detail.iid
+                    )
+                    val request = HttpRequest.newBuilder(URI.create(noteListUrl))
                         .timeout(Duration.ofSeconds(12))
                         .header("Content-Type", "application/json")
                         .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(payload)))
@@ -824,11 +940,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     if (response.statusCode() !in 200..299) {
                         return@executeOnPooledThread
                     }
-                    parseIssueStats(response.body())
+                    parseNoteList(response.body())
                 }
-                PrIssueCache.put(prId, stats)
+                PrIssueCache.put(detail.id, result.stats)
+                LineCommentStore.replaceForSide(Side.RIGHT, result.comments)
                 SwingUtilities.invokeLater {
-                    issueCountLabel.text = "未解决问题: ${stats.unresolved}/${stats.total}"
+                    issueCountLabel.text = "未解决问题: ${result.stats.unresolved}/${result.stats.total}"
                     changeTree.repaint()
                 }
             } catch (_: Exception) {
@@ -995,6 +1112,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             source
         )
         commentManager.updateIssueLines(change.filePath, issueLineSetByFile(change.filePath))
+        commentManager.updateIssueDetails(change.filePath, issueItemsByFile(change.filePath))
         diffBinder.bindNextDiff(change.filePath)
         DiffManager.getInstance().showDiff(project, request)
     }
@@ -1089,41 +1207,89 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun parsePrList(body: String): PrListResult {
-        val root = objectMapper.readTree(body) ?: return PrListResult(0, emptyList())
+        val root = objectMapper.readTree(body) ?: return PrListResult(0, emptyList(), 0, 0)
         val data = root.get("data")
-        val total = data?.get("total")?.asInt() ?: 0
-        val listNode = data?.get("prList")
+        val listNode = if (data != null && data.isArray) data else data?.get("list")
         if (listNode == null || !listNode.isArray) {
-            return PrListResult(total, emptyList())
+            return PrListResult(0, emptyList(), 0, 0)
         }
+
+        val totalSize = root.get("totalSize")?.asInt() ?: listNode.size()
+        val page = root.get("page")?.asInt() ?: 1
+        val totalPage = root.get("totalPage")?.asInt() ?: 0
+
+        fun parseReviewerNames(node: JsonNode?): List<String> {
+            if (node == null || !node.isArray) return emptyList()
+            return node.map { it.readText("username", "login", "name") }.filter { it.isNotBlank() }
+        }
+
         val list = mutableListOf<PrItem>()
         for (node in listNode) {
             val id = node.readText("id").toLongOrNull() ?: -1L
+            val iid = node.readText("iid").toLongOrNull() ?: -1L
             val title = node.readText("title", "name")
             val source = node.readText("sourceBranch", "source_branch", "source")
             val target = node.readText("targetBranch", "target_branch", "target")
-            val author = node.readText("author", "creator", "createdBy", "created_by")
+            val authorNode = node.get("author")
+            val author = authorNode?.readText("name", "username", "login")
+                ?.takeIf { it.isNotBlank() }
+                ?: node.readText("author", "creator", "createdBy", "created_by")
             val statusText = node.readText("status", "state")
             val state = parseState(statusText)
-            list.add(PrItem(id, title, source, target, author, state))
+            val keyReviewers = parseReviewerNames(node.get("primary_reviewers"))
+            val reviewers = parseReviewerNames(node.get("general_reviewers"))
+            val needKeyReviewers = node.get("primary_reviewer_num")?.asInt() ?: keyReviewers.size
+            val needReviewers = node.get("general_reviewer_num")?.asInt() ?: reviewers.size
+            val canBeMerge = node.get("can_be_merge")?.asBoolean() ?: false
+            list.add(
+                PrItem(
+                    id = id,
+                    iid = iid,
+                    title = title,
+                    sourceBranch = source,
+                    targetBranch = target,
+                    author = author,
+                    state = state,
+                    keyReviewers = keyReviewers,
+                    reviewers = reviewers,
+                    needKeyReviewers = needKeyReviewers,
+                    needReviewers = needReviewers,
+                    canBeMerge = canBeMerge
+                )
+            )
         }
-        return PrListResult(total, list)
+        return PrListResult(totalSize, list, page, totalPage)
     }
 
-    private fun parseDetail(body: String): PrDetail {
+    private fun parseDetail(body: String, fallback: PrItem?): PrDetail {
         val root = objectMapper.readTree(body)
-        val data = root.get("data")
-        val overviewNode = data?.get("overview")
+        val result = root.get("result") ?: root
+        val data = result.get("data")
+        val baseInfo = data?.get("pullRequestsBaseInfo") ?: data
+
+        val id = baseInfo?.get("id")?.asLong() ?: fallback?.id ?: -1L
+        val iid = baseInfo?.get("iid")?.asLong() ?: fallback?.iid ?: -1L
+        val title = baseInfo?.get("title")?.asText() ?: fallback?.title ?: ""
+        val status = baseInfo?.get("state")?.asText() ?: fallback?.state?.name?.lowercase() ?: ""
+        val sourceBranch = baseInfo?.get("sourceBranch")?.asText() ?: fallback?.sourceBranch ?: ""
+        val targetBranch = baseInfo?.get("targetBranch")?.asText() ?: fallback?.targetBranch ?: ""
+        val author = baseInfo?.get("userName")?.asText() ?: fallback?.author ?: ""
+        val createTime = baseInfo?.get("createdAt")?.asText() ?: ""
+        val headCommitSha = baseInfo?.get("headCommitSha")?.asText() ?: ""
+        val baseCommitSha = baseInfo?.get("baseCommitSha")?.asText() ?: ""
+
         val overview = PrOverview(
-            desc = overviewNode?.get("desc")?.asText() ?: "",
-            keyReviewers = overviewNode?.get("keyReviewers")?.map { it.asText() } ?: emptyList(),
-            needKeyReviewers = overviewNode?.get("needKeyReviewers")?.asInt() ?: 0,
-            reviewers = overviewNode?.get("reviewers")?.map { it.asText() } ?: emptyList(),
-            needReviewers = overviewNode?.get("needReviewers")?.asInt() ?: 0,
-            mergedType = overviewNode?.get("mergedType")?.asText() ?: "",
-            deleteBranchAfterMerged = overviewNode?.get("deleteBranchAfterMerged")?.asBoolean() ?: false
+            desc = title,
+            keyReviewers = fallback?.keyReviewers ?: emptyList(),
+            needKeyReviewers = fallback?.needKeyReviewers ?: 0,
+            reviewers = fallback?.reviewers ?: emptyList(),
+            needReviewers = fallback?.needReviewers ?: 0,
+            mergedType = "",
+            deleteBranchAfterMerged = false
         )
-        val commits = data?.get("commits")?.map {
+
+        val commitNode = data?.get("pullRequestCommit") ?: data?.get("commits")
+        val commits = commitNode?.map {
             CommitItem(
                 author = it.readText("commitBy", "author", "committer"),
                 hash = it.readText("commitId", "hash", "id"),
@@ -1131,50 +1297,146 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 time = it.readText("commitTime", "time", "date")
             )
         } ?: emptyList()
+
         return PrDetail(
-            id = data?.get("id")?.asLong() ?: -1L,
-            title = data?.get("title")?.asText() ?: "",
-            status = data?.get("status")?.asText() ?: "",
-            sourceBranch = data?.get("sourceBranch")?.asText() ?: "",
-            targetBranch = data?.get("targetBranch")?.asText() ?: "",
-            author = data?.get("author")?.asText() ?: "",
-            createTime = data?.get("createTime")?.asText() ?: "",
-            reviewPass = data?.get("reviewPass")?.asBoolean() ?: false,
+            id = id,
+            iid = iid,
+            title = title,
+            status = status,
+            sourceBranch = sourceBranch,
+            targetBranch = targetBranch,
+            author = author,
+            createTime = createTime,
+            headCommitSha = headCommitSha,
+            baseCommitSha = baseCommitSha,
+            reviewPass = fallback?.canBeMerge ?: false,
             overview = overview,
             commits = commits
         )
     }
 
-    private fun parseIssueStats(body: String): IssueStats {
+    private fun parseNoteList(body: String): NoteListResult {
         val root = objectMapper.readTree(body)
-        val data = root.get("data")
-        return IssueStats(
-            total = data?.get("total")?.asInt() ?: 0,
-            unresolved = data?.get("unresolved")?.asInt() ?: 0,
-            issues = data?.get("issues")?.map { parseIssueItem(it) } ?: emptyList()
-        )
+        val result = root.get("result") ?: root
+        val data = result.get("data")
+
+        val comments = mutableListOf<LineComment>()
+        val issues = mutableListOf<IssueItem>()
+
+        if (data != null && data.isArray) {
+            data.forEach { entry ->
+                val diff = entry.get("diff_position")
+                val filePath = diff?.get("new_path")?.asText()?.trim().orEmpty()
+                val newLine = diff?.get("new_line")?.asInt() ?: 0
+                if (filePath.isBlank() || newLine <= 0) return@forEach
+                val lineIndex = newLine - 1
+
+                val notes = entry.get("notes")
+                if (notes == null || !notes.isArray) return@forEach
+
+                notes.forEach { note ->
+                    val noteId = note.readText("id", "nodeId")
+                    val rootId = note.readText("root_id").ifBlank { noteId }
+                    val author = note.get("author")?.readText("name", "username", "login").orEmpty()
+                    val content = note.readText("note", "content", "body")
+                    val createdAt = parseEpoch(note.readText("created_at", "createdAt"))
+                    val floorNum = note.get("floor_num")?.asInt()
+                    val replyFloorNum = note.get("reply_floor_num")?.asInt()
+                    val resolved = note.get("resolved_enabled")?.asBoolean()
+            ?: note.get("resolved")?.asBoolean()
+            ?: false
+                    val commentId = noteId.ifBlank { rootId.ifBlank { "${filePath}#$newLine#${createdAt}" } }
+
+                    comments.add(
+                        LineComment(
+                            id = commentId,
+                            filePath = filePath,
+                            line = lineIndex,
+                            side = Side.RIGHT,
+                            content = content,
+                            author = author,
+                            createdAt = createdAt,
+                            parentId = null,
+                            rootId = rootId.ifBlank { commentId },
+                            floorNum = floorNum,
+                            replyFloorNum = replyFloorNum,
+                            resolved = resolved
+                        )
+                    )
+
+                    val replyList = mutableListOf<IssueReply>()
+                    val children = note.get("children")
+                    if (children != null && children.isArray) {
+                        children.forEach { child ->
+                            val childId = child.readText("id", "nodeId")
+                            val childRootId = child.readText("root_id").ifBlank { rootId }
+                            val childAuthor = child.get("author")?.readText("name", "username", "login").orEmpty()
+                            val childContent = child.readText("note", "content", "body")
+                            val childCreatedAt = parseEpoch(child.readText("created_at", "createdAt"))
+                            val childFloorNum = child.get("floor_num")?.asInt()
+                            val childReplyFloorNum = child.get("reply_floor_num")?.asInt()
+                            val childResolved = child.get("resolved_enabled")?.asBoolean()
+                                ?: child.get("resolved")?.asBoolean()
+                                ?: false
+                            val childCommentId = childId.ifBlank {
+                                "${childRootId.ifBlank { rootId }}#${childFloorNum ?: childCreatedAt}"
+                            }
+
+                            comments.add(
+                                LineComment(
+                                    id = childCommentId,
+                                    filePath = filePath,
+                                    line = lineIndex,
+                                    side = Side.RIGHT,
+                                    content = childContent,
+                                    author = childAuthor,
+                                    createdAt = childCreatedAt,
+                                    parentId = rootId.ifBlank { commentId },
+                                    rootId = childRootId.ifBlank { rootId.ifBlank { commentId } },
+                                    floorNum = childFloorNum,
+                                    replyFloorNum = childReplyFloorNum,
+                                    resolved = childResolved
+                                )
+                            )
+
+                            val responseTo = child.get("reply_user")?.readText("name", "username", "login").orEmpty()
+                            replyList.add(
+                                IssueReply(
+                                    num = childFloorNum?.toString().orEmpty(),
+                                    createBy = childAuthor,
+                                    msg = childContent,
+                                    createTime = child.readText("created_at", "createdAt"),
+                                    responseTo = responseTo
+                                )
+                            )
+                        }
+                    }
+
+                    issues.add(
+                        IssueItem(
+                            id = commentId,
+                            number = floorNum?.toString().orEmpty(),
+                            createBy = author,
+                            msg = content,
+                            createTime = note.readText("created_at", "createdAt"),
+                            file = filePath,
+                            line = newLine,
+                            status = if (resolved) "fixed" else "open",
+                            replies = replyList
+                        )
+                    )
+                }
+            }
+        }
+
+        val total = issues.size
+        val unresolved = issues.count { it.status.trim().lowercase() == "open" }
+        return NoteListResult(IssueStats(total, unresolved, issues), comments)
     }
 
-    private fun parseIssueItem(node: JsonNode): IssueItem {
-        return IssueItem(
-            id = node.get("id")?.asText() ?: "",
-            number = node.get("number")?.asText() ?: "",
-            createBy = node.get("createBy")?.asText() ?: "",
-            msg = node.get("msg")?.asText() ?: "",
-            createTime = node.get("createTime")?.asText() ?: "",
-            file = node.get("file")?.asText() ?: "",
-            line = node.get("line")?.asInt() ?: 0,
-            status = node.get("status")?.asText() ?: "",
-            replies = node.get("replies")?.map {
-                IssueReply(
-                    num = it.get("num")?.asText() ?: "",
-                    createBy = it.get("createBy")?.asText() ?: "",
-                    msg = it.get("msg")?.asText() ?: "",
-                    createTime = it.get("createTime")?.asText() ?: "",
-                    responseTo = it.get("responseTo")?.asText() ?: ""
-                )
-            } ?: emptyList()
-        )
+    private fun parseEpoch(value: String): Long {
+        if (value.isBlank()) return System.currentTimeMillis()
+        return runCatching { java.time.Instant.parse(value).toEpochMilli() }.getOrElse { System.currentTimeMillis() }
     }
 
     private fun statusColor(status: String): JBColor {
@@ -1184,6 +1446,26 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             "closed" -> JBColor(Color(0xD93025), Color(0xF47067))
             else -> JBColor.GRAY
         }
+    }
+
+    private fun readUserList(node: JsonNode?): List<String> {
+        if (node == null || node.isNull) return emptyList()
+        if (node.isArray) {
+            return node.mapNotNull { item ->
+                val value = when {
+                    item.isTextual -> item.asText()
+                    item.isObject -> item.readText("username", "login", "name", "userName")
+                    else -> item.asText()
+                }
+                value.takeIf { it.isNotBlank() }
+            }
+        }
+        val value = when {
+            node.isTextual -> node.asText()
+            node.isObject -> node.readText("username", "login", "name", "userName")
+            else -> node.asText()
+        }
+        return if (value.isBlank()) emptyList() else listOf(value)
     }
 
     private fun JsonNode.readText(vararg keys: String): String {
@@ -1314,29 +1596,45 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private data class PrListResult(
         val total: Int,
-        val items: List<PrItem>
+        val items: List<PrItem>,
+        val page: Int,
+        val totalPage: Int
     )
 
     private data class PrItem(
         val id: Long,
+        val iid: Long,
         val title: String,
         val sourceBranch: String,
         val targetBranch: String,
         val author: String,
-        val state: PrState
+        val state: PrState,
+        val keyReviewers: List<String>,
+        val reviewers: List<String>,
+        val needKeyReviewers: Int,
+        val needReviewers: Int,
+        val canBeMerge: Boolean
     )
 
     private data class PrDetail(
         val id: Long,
+        val iid: Long,
         val title: String,
         val status: String,
         val sourceBranch: String,
         val targetBranch: String,
         val author: String,
         val createTime: String,
+        val headCommitSha: String,
+        val baseCommitSha: String,
         val reviewPass: Boolean,
         val overview: PrOverview,
         val commits: List<CommitItem>
+    )
+
+    private data class NoteListResult(
+        val stats: IssueStats,
+        val comments: List<LineComment>
     )
 
     private data class PrOverview(
@@ -1380,9 +1678,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
         fun getItemAt(row: Int): PrItem = rows[row]
 
-        fun lastId(): Long {
-            return rows.lastOrNull()?.id ?: -1L
-        }
+        fun findById(id: Long): PrItem? = rows.firstOrNull { it.id == id }
 
         override fun getRowCount(): Int = rows.size
 

@@ -470,7 +470,10 @@ class LineCommentManager(private val project: Project) {
             if (remoteIssueCommentKeys.contains(key)) return
             val content = listOf(issue.number, issue.msg).filter { it.isNotBlank() }.joinToString(" ")
             if (content.isNotBlank()) {
-                LineCommentStore.addComment(filePath, line, side, content, issue.createBy.ifBlank { "系统" })
+                val added = LineCommentStore.addComment(filePath, line, side, content, issue.createBy.ifBlank { "系统" })
+                if (issue.status.trim().lowercase() == "fixed" || issue.status.trim().lowercase() == "resolved") {
+                    LineCommentStore.resolveComment(filePath, line, side, added.id)
+                }
                 remoteIssueCommentKeys.add(key)
             }
         }
@@ -662,28 +665,40 @@ class LineCommentManager(private val project: Project) {
 
             val left = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
             left.isOpaque = false
-            left.add(createUserBadge(comment.author, AllIcons.General.User))
-            left.add(JBLabel(" "))
-            val seqLabel = JBLabel("#$seq")
+            val baseFont = left.font
+            val charWidth = left.getFontMetrics(baseFont).charWidth('0')
+            left.border = JBUI.Borders.emptyLeft(charWidth)
+            val seqLabel = JBLabel("#${seq.toString().padEnd(4)}")
             seqLabel.foreground = textSecondary
+            seqLabel.preferredSize = Dimension(charWidth * 5, seqLabel.preferredSize.height)
             left.add(seqLabel)
-            left.add(JBLabel(" "))
+            val nameLabel = JBLabel(comment.author.padEnd(10))
+            nameLabel.foreground = textSecondary
+            nameLabel.font = nameLabel.font.deriveFont(Font.BOLD)
+            nameLabel.preferredSize = Dimension(charWidth * 10, nameLabel.preferredSize.height)
+            left.add(nameLabel)
             val timeLabel = JBLabel(timeFormatter.format(Date(comment.createdAt)))
             timeLabel.foreground = textHint
             left.add(timeLabel)
 
             val right = JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0))
             right.isOpaque = false
+            right.border = JBUI.Borders.emptyRight(charWidth)
             if (statusText != null) {
                 val statusLabel = JBLabel(statusText)
                 statusLabel.foreground = statusColor
+                statusLabel.preferredSize = Dimension(charWidth * 6, statusLabel.preferredSize.height)
                 right.add(statusLabel)
-                right.add(Box.createHorizontalStrut(JBUI.scale(4)))
+                right.add(Box.createHorizontalStrut(charWidth))
             }
             val toggle = JButton(if (isCollapsed) AllIcons.General.ArrowRight else AllIcons.General.ArrowDown)
             toggle.isOpaque = false
             toggle.isContentAreaFilled = false
             toggle.isBorderPainted = false
+            val toggleSize = Dimension(charWidth * 3, toggle.preferredSize.height)
+            toggle.preferredSize = toggleSize
+            toggle.minimumSize = toggleSize
+            toggle.maximumSize = toggleSize
             toggle.addActionListener { onToggle() }
             right.add(toggle)
 
@@ -719,12 +734,26 @@ class LineCommentManager(private val project: Project) {
             val row = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
             row.isOpaque = false
             val replyButton = JButton("回复")
+            replyButton.isOpaque = false
+            replyButton.isContentAreaFilled = false
+            replyButton.isBorderPainted = false
+            replyButton.border = JBUI.Borders.empty()
+            replyButton.foreground = textLink
+            replyButton.margin = JBUI.insets(0)
+            replyButton.horizontalAlignment = SwingConstants.LEFT
             replyButton.addActionListener { onReply() }
             row.add(replyButton)
 
             if (onResolve != null) {
-                row.add(JBLabel(" "))
+                row.add(Box.createHorizontalStrut(JBUI.scale(1)))
                 val resolveButton = JButton("问题已解决")
+                resolveButton.isOpaque = false
+                resolveButton.isContentAreaFilled = false
+                resolveButton.isBorderPainted = false
+                resolveButton.border = JBUI.Borders.empty()
+                resolveButton.foreground = textLink
+                resolveButton.margin = JBUI.insets(0)
+                resolveButton.horizontalAlignment = SwingConstants.LEFT
                 resolveButton.addActionListener { onResolve() }
                 row.add(resolveButton)
             }
@@ -736,24 +765,30 @@ class LineCommentManager(private val project: Project) {
             replyCard.layout = BoxLayout(replyCard, BoxLayout.Y_AXIS)
             replyCard.isOpaque = true
             replyCard.background = unitBg
-            replyCard.border = JBUI.Borders.compound(JBUI.Borders.customLine(borderColor), JBUI.Borders.empty(8))
+            replyCard.border = JBUI.Borders.compound(JBUI.Borders.customLine(borderColor), JBUI.Borders.empty(6, 2, 2, 2))
 
             val header = JPanel(BorderLayout())
             header.isOpaque = false
             val left = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
             left.isOpaque = false
-            left.add(createUserBadge(reply.author, AllIcons.General.User))
-            left.add(JBLabel(" "))
-            val seqLabel = JBLabel("#$seq")
+            val baseFont = left.font
+            val charWidth = left.getFontMetrics(baseFont).charWidth('0')
+            left.border = JBUI.Borders.emptyLeft(charWidth)
+            val seqLabel = JBLabel("#${seq.toString().padEnd(4)}")
             seqLabel.foreground = textSecondary
+            seqLabel.preferredSize = Dimension(charWidth * 5, seqLabel.preferredSize.height)
             left.add(seqLabel)
-            left.add(JBLabel(" "))
+            val nameLabel = JBLabel(reply.author.padEnd(10))
+            nameLabel.foreground = textSecondary
+            nameLabel.font = nameLabel.font.deriveFont(Font.BOLD)
+            nameLabel.preferredSize = Dimension(charWidth * 10, nameLabel.preferredSize.height)
+            left.add(nameLabel)
             val timeLabel = JBLabel(timeFormatter.format(Date(reply.createdAt)))
             timeLabel.foreground = textHint
             left.add(timeLabel)
             val replyFloor = reply.replyFloorNum
             if (replyFloor != null && replyFloor > 0) {
-                left.add(JBLabel(" "))
+                left.add(Box.createHorizontalStrut(charWidth))
                 val replyLabel = JBLabel("回复#$replyFloor")
                 replyLabel.foreground = textSecondary
                 left.add(replyLabel)
@@ -761,9 +796,11 @@ class LineCommentManager(private val project: Project) {
             header.add(left, BorderLayout.WEST)
             replyCard.add(header)
 
+            val indentWidth = charWidth
             val contentRow = JPanel(BorderLayout())
             contentRow.isOpaque = false
-            contentRow.border = JBUI.Borders.emptyTop(2)
+
+            contentRow.border = JBUI.Borders.emptyLeft(indentWidth)
             contentRow.add(buildContentRow(reply.content), BorderLayout.CENTER)
             replyCard.add(contentRow)
 
@@ -771,7 +808,7 @@ class LineCommentManager(private val project: Project) {
                 replyComposerOpenById.add(reply.id)
                 rebuild()
             })
-            actions.border = JBUI.Borders.emptyTop(2)
+            actions.border = JBUI.Borders.emptyLeft(indentWidth)
             replyCard.add(actions)
 
             if (replyComposerOpenById.contains(reply.id)) {
@@ -794,14 +831,15 @@ class LineCommentManager(private val project: Project) {
             val thread = threadForRoot(root, all, commentById)
             val seqMap = thread.mapIndexed { index, item -> item.id to (item.floorNum ?: (index + 1)) }.toMap()
             val replies = thread.drop(1)
-            val unitResolved = thread.all { it.resolved }
+            val unitResolved = root.resolved
             val isCollapsed = collapsedById.getOrPut(root.id) { true }
 
             val wrapper = JPanel()
             wrapper.layout = BoxLayout(wrapper, BoxLayout.Y_AXIS)
             wrapper.isOpaque = true
             wrapper.background = unitBg
-            wrapper.border = JBUI.Borders.compound(JBUI.Borders.customLine(borderColor), JBUI.Borders.empty(8))
+            wrapper.border = JBUI.Borders.compound(JBUI.Borders.customLine(borderColor), JBUI.Borders.empty(4))
+            val indentWidth = wrapper.getFontMetrics(wrapper.font).charWidth('0')
 
             wrapper.addMouseListener(object : MouseAdapter() {
                 override fun mouseEntered(e: MouseEvent) {
@@ -828,7 +866,7 @@ class LineCommentManager(private val project: Project) {
 
             val contentRow = JPanel(BorderLayout())
             contentRow.isOpaque = false
-            contentRow.border = JBUI.Borders.emptyTop(2)
+            contentRow.border = JBUI.Borders.emptyLeft(indentWidth)
             contentRow.add(buildContentRow(root.content), BorderLayout.CENTER)
             wrapper.add(contentRow)
 
@@ -844,7 +882,7 @@ class LineCommentManager(private val project: Project) {
                     rebuild()
                 }
             })
-            actions.border = JBUI.Borders.emptyTop(2)
+            actions.border = JBUI.Borders.emptyLeft(indentWidth)
             wrapper.add(actions)
 
             if (replyComposerOpenById.contains(root.id)) {
@@ -893,16 +931,23 @@ class LineCommentManager(private val project: Project) {
             val wrapper = JPanel(BorderLayout())
             wrapper.isOpaque = true
             wrapper.background = sectionBg
-            wrapper.border = JBUI.Borders.compound(JBUI.Borders.customLine(borderColor), JBUI.Borders.empty(8))
+            wrapper.border = JBUI.Borders.compound(JBUI.Borders.customLine(borderColor), JBUI.Borders.empty(4))
 
             val topRow = JPanel(BorderLayout())
             topRow.isOpaque = false
 
             val left = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
             left.isOpaque = false
-            left.add(createUserBadge(currentUserName))
+            left.add(JBLabel(currentUserName))
             left.add(JBLabel(" "))
-            val replyButton = JButton("回复")
+            val replyButton = JButton("评论")
+            replyButton.isOpaque = false
+            replyButton.isContentAreaFilled = false
+            replyButton.isBorderPainted = false
+            replyButton.border = JBUI.Borders.empty()
+            replyButton.foreground = textLink
+            replyButton.margin = JBUI.insets(0)
+            replyButton.horizontalAlignment = SwingConstants.LEFT
             left.add(replyButton)
             topRow.add(left, BorderLayout.WEST)
 

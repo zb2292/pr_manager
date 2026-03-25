@@ -116,6 +116,23 @@
                   "name": "bob",
                   "username": "bob"
                 }
+              },
+              {
+                "author": {
+                  "name": "alice",
+                  "username": "alice"
+                },
+                "created_at": "2026-03-20T01:31:23.890049Z",
+                "id": 1166,
+                "note": "已补充判空",
+                "root_id": 1147,
+                "root_node": false,
+                "floor_num": 3,
+                "reply_floor_num": 2,
+                "reply_user": {
+                  "name": "bob",
+                  "username": "bob"
+                }
               }
             ]
           }

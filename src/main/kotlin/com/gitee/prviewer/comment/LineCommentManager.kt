@@ -369,7 +369,7 @@ class LineCommentManager(private val project: Project) {
         override fun getClickAction() = object : com.intellij.openapi.actionSystem.AnAction() {
             override fun actionPerformed(e: AnActionEvent) {
                 val editor = CommonDataKeys.EDITOR.getData(e.dataContext) ?: return
-                showPopup(editor, context.filePath, line, context.side)
+                showPopup(editor, context.filePath, line, context.side, openComposerOnly = true)
             }
         }
 
@@ -659,11 +659,21 @@ class LineCommentManager(private val project: Project) {
 
             val hint = JBLabel(MAX_COMMENT_HINT)
             hint.foreground = textHint
-            val cancel = JButton("取消")
-            val submit = JButton("评论")
+            val cancel = com.intellij.ui.components.ActionLink("取消") { onCancel() }
+            cancel.isOpaque = false
+            cancel.border = JBUI.Borders.empty()
+            cancel.foreground = textLink
+            cancel.isFocusable = false
+
+            val submit = com.intellij.ui.components.ActionLink("评论") { onSubmit(input.text) }
+            submit.isOpaque = false
+            submit.border = JBUI.Borders.empty()
+            submit.foreground = textLink
+            submit.isFocusable = false
 
             val buttons = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(6), 0))
             buttons.isOpaque = false
+            buttons.border = JBUI.Borders.empty(JBUI.scale(4), 0, JBUI.scale(2), 0)
             buttons.add(hint)
             buttons.add(cancel)
             buttons.add(submit)
@@ -674,8 +684,6 @@ class LineCommentManager(private val project: Project) {
             center.add(buttons, BorderLayout.SOUTH)
             wrapper.add(center, BorderLayout.CENTER)
 
-            cancel.addActionListener { onCancel() }
-            submit.addActionListener { onSubmit(input.text) }
             return wrapper
         }
 
@@ -777,20 +785,34 @@ class LineCommentManager(private val project: Project) {
             row.isOpaque = false
             row.border = JBUI.Borders.empty()
             val charWidth = row.getFontMetrics(row.font).charWidth('0')
-            val replyLink = com.intellij.ui.components.ActionLink("回复") { onReply() }
+            val replyLink = JBLabel("回复")
             replyLink.isOpaque = false
-            replyLink.border = JBUI.Borders.empty()
             replyLink.foreground = textLink
-            replyLink.isFocusable = false
+            replyLink.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            replyLink.addMouseListener(object : MouseAdapter() {
+                override fun mouseClicked(e: MouseEvent) {
+                    onReply()
+                }
+            })
+            val replyHeight = replyLink.preferredSize.height
+            val replyWidth = charWidth * 4
+            val replySize = Dimension(replyWidth, replyHeight)
+            replyLink.preferredSize = replySize
+            replyLink.minimumSize = replySize
+            replyLink.maximumSize = replySize
             row.add(replyLink)
 
             if (onResolve != null) {
                 row.add(Box.createHorizontalStrut(charWidth * 2))
-                val resolveLink = com.intellij.ui.components.ActionLink("问题已解决") { onResolve() }
+                val resolveLink = JBLabel("问题已解决")
                 resolveLink.isOpaque = false
-                resolveLink.border = JBUI.Borders.empty()
                 resolveLink.foreground = textLink
-                resolveLink.isFocusable = false
+                resolveLink.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                resolveLink.addMouseListener(object : MouseAdapter() {
+                    override fun mouseClicked(e: MouseEvent) {
+                        onResolve()
+                    }
+                })
                 row.add(resolveLink)
             }
             return row
@@ -847,7 +869,7 @@ class LineCommentManager(private val project: Project) {
                 replyComposerOpenById.add(reply.id)
                 rebuild()
             })
-            actions.border = JBUI.Borders.emptyLeft(JBUI.scale(4))
+            actions.border = JBUI.Borders.empty()
             val actionsHeight = actions.preferredSize.height
             actions.maximumSize = Dimension(contentMaxWidth, actionsHeight)
             actions.preferredSize = Dimension(contentMaxWidth, actionsHeight)
@@ -966,7 +988,7 @@ class LineCommentManager(private val project: Project) {
                     rebuild()
                 }
             })
-            actions.border = JBUI.Borders.emptyLeft(JBUI.scale(4))
+            actions.border = JBUI.Borders.empty()
             val actionsHeight = actions.preferredSize.height
             actions.maximumSize = Dimension(contentMaxWidth, actionsHeight)
             actions.preferredSize = Dimension(contentMaxWidth, actionsHeight)
@@ -1049,23 +1071,31 @@ class LineCommentManager(private val project: Project) {
 
             val card = CardLayout()
             val composer = JPanel(card)
-            composer.isOpaque = false
+            composer.isOpaque = true
+            composer.background = replyUnitBg
             composer.border = JBUI.Borders.emptyTop(8)
             composer.isVisible = false
 
             val collapsed = JPanel(BorderLayout())
-            collapsed.isOpaque = false
+            collapsed.isOpaque = true
+            collapsed.background = replyUnitBg
             val oneLine = JBTextField()
             oneLine.emptyText.text = "新增评论..."
             collapsed.add(oneLine, BorderLayout.CENTER)
 
             val expanded = JPanel(BorderLayout())
-            expanded.isOpaque = false
+            expanded.isOpaque = true
+            expanded.background = replyUnitBg
+            expanded.border = JBUI.Borders.empty(0, JBUI.scale(6), 0, JBUI.scale(6))
             var composerInput: JComponent? = null
             val composerBody = buildComposer("", {
                 if (showComposerOnly) {
-                    popup?.cancel()
-                    return@buildComposer
+                    val hasComments = LineCommentStore.hasComments(filePath, line, side)
+                    if (!hasComments) {
+                        popup?.cancel()
+                        return@buildComposer
+                    }
+                    showComposerOnly = false
                 }
                 composer.isVisible = false
                 card.show(composer, "collapsed")
@@ -1090,17 +1120,14 @@ class LineCommentManager(private val project: Project) {
             card.show(composer, "collapsed")
 
             replyButton.addActionListener {
-                composer.isVisible = true
-                card.show(composer, "expanded")
-                setEditingState(true)
-                composerInput?.requestFocusInWindow()
+                autoOpenComposer = true
+                rebuild()
             }
 
             oneLine.addFocusListener(object : FocusAdapter() {
                 override fun focusGained(e: FocusEvent) {
-                    card.show(composer, "expanded")
-                    setEditingState(true)
-                    composerInput?.requestFocusInWindow()
+                    autoOpenComposer = true
+                    rebuild()
                 }
             })
 
@@ -1148,11 +1175,6 @@ class LineCommentManager(private val project: Project) {
                 middlePanel.add(unitsWrapper)
             }
 
-            footerPanel.add(JPanel().apply {
-                isOpaque = true
-                background = borderColor
-                preferredSize = Dimension(1, JBUI.scale(1))
-            }, BorderLayout.NORTH)
             footerPanel.add(buildPartCPreComment { rebuild() }, BorderLayout.CENTER)
 
             val baseWidth = JBUI.scale(560)

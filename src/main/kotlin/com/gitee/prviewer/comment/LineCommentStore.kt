@@ -88,6 +88,15 @@ object LineCommentStore {
         notifyChanged()
     }
 
+    fun replaceAll(newComments: List<LineComment>) {
+        comments.clear()
+        val grouped = newComments.groupBy { Key(it.filePath, it.line, it.side) }
+        grouped.forEach { (key, items) ->
+            comments[key] = items.toMutableList()
+        }
+        notifyChanged()
+    }
+
     fun removeComment(filePath: String, line: Int, side: Side, commentId: String) {
         val key = Key(filePath, line, side)
         val list = comments[key] ?: return

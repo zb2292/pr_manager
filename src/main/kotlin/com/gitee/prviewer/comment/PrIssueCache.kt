@@ -7,10 +7,19 @@ object PrIssueCache {
         cache[prId] = stats
     }
 
+    fun replaceAll(prId: Long, stats: IssueStats) {
+        cache.clear()
+        cache[prId] = stats
+    }
+
     fun get(prId: Long): IssueStats? = cache[prId]
 
     fun clear(prId: Long) {
         cache.remove(prId)
+    }
+
+    fun clearAll() {
+        cache.clear()
     }
 }
 

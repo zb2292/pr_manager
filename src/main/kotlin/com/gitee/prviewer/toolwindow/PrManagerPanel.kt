@@ -1078,8 +1078,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     }
                     parseNoteList(response.body())
                 }
-                PrIssueCache.put(detail.id, result.stats)
-                LineCommentStore.replaceForSide(Side.RIGHT, result.comments)
+                PrIssueCache.replaceAll(detail.id, result.stats)
+                LineCommentStore.replaceAll(result.comments)
                 SwingUtilities.invokeLater {
                     issueCountLabel.text = "未解决问题: ${result.stats.unresolved}/${result.stats.total}"
                     changeTree.repaint()

@@ -44,19 +44,26 @@ import java.awt.Component
 import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.Font
+import java.awt.Graphics
+import java.awt.Graphics2D
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
+import java.awt.RenderingHints
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
 import java.util.Properties
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
+import java.awt.event.MouseMotionAdapter
 import javax.swing.Box
 import javax.swing.BoxLayout
 import javax.swing.ButtonGroup
 import javax.swing.JButton
 import javax.swing.JComponent
+import javax.swing.Icon
 import javax.swing.JPanel
 import javax.swing.ScrollPaneConstants
 import javax.swing.SwingConstants
@@ -64,6 +71,7 @@ import javax.swing.SwingUtilities
 import javax.swing.JToggleButton
 import javax.swing.event.DocumentEvent
 import javax.swing.table.AbstractTableModel
+import javax.swing.table.TableCellRenderer
 import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.DefaultTreeCellRenderer
 import javax.swing.tree.DefaultTreeModel
@@ -125,6 +133,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private var totalPage = 0
     private var totalCount = 0
     private var isLoading = false
+    private var userTriggeredListScroll = false
     private val pageSize = config.getProperty("prviewer.api.pageSize", "10").toIntOrNull() ?: 10
 
     private val detailCard = JPanel(java.awt.CardLayout())
@@ -327,7 +336,54 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
         val pane = JBScrollPane(prTable)
         pane.border = JBUI.Borders.emptyTop(6)
+        if (prTable.columnModel.columnCount > 4) {
+            prTable.columnModel.getColumn(4).cellRenderer = ReviewerCellRenderer()
+            prTable.columnModel.getColumn(4).preferredWidth = JBUI.scale(140)
+        }
+        prTable.addMouseMotionListener(object : MouseMotionAdapter() {
+            override fun mouseMoved(e: MouseEvent) {
+                val row = prTable.rowAtPoint(e.point)
+                val col = prTable.columnAtPoint(e.point)
+                if (row < 0 || col != 4) {
+                    prTable.toolTipText = null
+                    return
+                }
+                val item = tableModel.getItemAt(row)
+                val reviewers = item.reviewers
+                if (reviewers.isEmpty()) {
+                    prTable.toolTipText = null
+                    return
+                }
+                val cellRect = prTable.getCellRect(row, col, false)
+                val iconSize = JBUI.scale(16)
+                val gap = JBUI.scale(4)
+                val startX = cellRect.x + gap
+                val slot = iconSize + gap
+                val idx = (e.x - startX) / slot
+                if (idx in reviewers.indices) {
+                    val reviewer = reviewers[idx]
+                    val status = reviewer.approveStatus.ifBlank { "unknown" }
+                    prTable.toolTipText = "username: ${reviewer.username}, approve_status: $status"
+                } else {
+                    prTable.toolTipText = null
+                }
+            }
+        })
+        prTable.addMouseListener(object : MouseAdapter() {
+            override fun mouseExited(e: MouseEvent) {
+                prTable.toolTipText = null
+            }
+        })
+        val markUserScroll = { userTriggeredListScroll = true }
+        pane.addMouseWheelListener { markUserScroll() }
+        prTable.addMouseWheelListener { markUserScroll() }
+        pane.verticalScrollBar.addMouseListener(object : MouseAdapter() {
+            override fun mousePressed(e: MouseEvent) {
+                markUserScroll()
+            }
+        })
         pane.verticalScrollBar.addAdjustmentListener {
+            if (!userTriggeredListScroll) return@addAdjustmentListener
             val bar = pane.verticalScrollBar
             val reachedBottom = bar.maximum - (bar.value + bar.visibleAmount) <= JBUI.scale(30)
             if (reachedBottom) {
@@ -507,6 +563,79 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         commitTable.rowHeight = JBUI.scale(26)
         commitTable.setShowGrid(false)
         commitTable.tableHeader.reorderingAllowed = false
+        if (commitTable.columnModel.columnCount > 3) {
+            commitTable.columnModel.getColumn(0).preferredWidth = JBUI.scale(60)
+            commitTable.columnModel.getColumn(1).preferredWidth = JBUI.scale(60)
+            commitTable.columnModel.getColumn(2).preferredWidth = JBUI.scale(360)
+            commitTable.columnModel.getColumn(3).preferredWidth = JBUI.scale(90)
+        }
+
+        commitTable.addMouseMotionListener(object : MouseMotionAdapter() {
+            override fun mouseMoved(e: MouseEvent) {
+                val row = commitTable.rowAtPoint(e.point)
+                val col = commitTable.columnAtPoint(e.point)
+                if (row >= 0 && col == 1) {
+                    val fullHash = commitTableModel.getFullHashAt(row)
+                    commitTable.toolTipText = fullHash.ifBlank { null }
+                } else {
+                    commitTable.toolTipText = null
+                }
+            }
+        })
+        commitTable.addMouseListener(object : MouseAdapter() {
+            override fun mouseExited(e: MouseEvent) {
+                commitTable.toolTipText = null
+            }
+
+            override fun mousePressed(e: MouseEvent) {
+                showCopyHashPopup(e)
+            }
+
+            override fun mouseReleased(e: MouseEvent) {
+                showCopyHashPopup(e)
+            }
+
+            private fun showCopyHashPopup(e: MouseEvent) {
+                if (!e.isPopupTrigger) return
+                val row = commitTable.rowAtPoint(e.point)
+                val col = commitTable.columnAtPoint(e.point)
+                if (row < 0 || col != 1) return
+                commitTable.setRowSelectionInterval(row, row)
+                commitTable.setColumnSelectionInterval(col, col)
+                val fullHash = commitTableModel.getFullHashAt(row)
+                if (fullHash.isBlank()) return
+                val menu = javax.swing.JPopupMenu()
+                val item = javax.swing.JMenuItem("复制提交编号")
+                item.addActionListener {
+                    copyToClipboard(fullHash)
+                    updateStatus("已复制提交编号: ${fullHash.take(7)}")
+                }
+                menu.add(item)
+                menu.show(commitTable, e.x, e.y)
+            }
+        })
+
+        val copyActionKey = "copyCommitHash"
+        commitTable.inputMap.put(javax.swing.KeyStroke.getKeyStroke("meta C"), copyActionKey)
+        commitTable.inputMap.put(javax.swing.KeyStroke.getKeyStroke("ctrl C"), copyActionKey)
+        commitTable.actionMap.put(copyActionKey, object : javax.swing.AbstractAction() {
+            override fun actionPerformed(e: java.awt.event.ActionEvent?) {
+                val row = commitTable.selectedRow
+                val col = commitTable.selectedColumn
+                if (row >= 0 && col == 1) {
+                    val fullHash = commitTableModel.getFullHashAt(row)
+                    if (fullHash.isNotBlank()) {
+                        copyToClipboard(fullHash)
+                        updateStatus("已复制提交编号: ${fullHash.take(7)}")
+                        return
+                    }
+                }
+                if (row >= 0 && col >= 0) {
+                    copyToClipboard(commitTable.getValueAt(row, col)?.toString().orEmpty())
+                }
+            }
+        })
+
         return JBScrollPane(commitTable)
     }
 
@@ -657,6 +786,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         currentPage = 1
         totalPage = 0
         totalCount = 0
+        userTriggeredListScroll = false
         tableModel.setRows(emptyList(), append = false)
         prTable.clearSelection()
         renderEmptyDetail()
@@ -818,7 +948,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun renderDetail(detail: PrDetail) {
-        detailHeaderTitle.text = "#${detail.id} ${detail.title}"
+        val number = if (detail.iid > 0) detail.iid else detail.id
+        detailHeaderTitle.text = "#${number} ${detail.title}"
         detailStatus.text = detail.status
         detailStatus.foreground = statusColor(detail.status)
 
@@ -1125,10 +1256,6 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private fun loadCommitRecords(detail: PrDetail) {
         ApplicationManager.getApplication().executeOnPooledThread {
             val fallbackCommits = detail.commits.sortedByDescending { it.time }
-            if (mockEnabled) {
-                SwingUtilities.invokeLater { commitTableModel.setRows(fallbackCommits) }
-                return@executeOnPooledThread
-            }
 
             val repo = GitRepositoryManager.getInstance(project).repositories.firstOrNull()
             if (repo == null) {
@@ -1136,14 +1263,20 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 return@executeOnPooledThread
             }
 
-            val sourceHead = resolveBranchHead(repo, detail.sourceBranch)
-            val mergeBase = resolveMergeBase(repo, detail.targetBranch, detail.sourceBranch)
+            val sourceRef = toRemoteBranchRef(repo, detail.sourceBranch)
+            val targetRef = toRemoteBranchRef(repo, detail.targetBranch)
+            if (sourceRef.isBlank() || targetRef.isBlank()) {
+                SwingUtilities.invokeLater { commitTableModel.setRows(fallbackCommits) }
+                return@executeOnPooledThread
+            }
+
+            val mergeBase = resolveMergeBase(repo, targetRef, sourceRef)
             val ranges = buildList {
-                if (!mergeBase.isNullOrBlank() && !sourceHead.isNullOrBlank()) {
-                    add("$mergeBase..$sourceHead")
+                if (!mergeBase.isNullOrBlank()) {
+                    add("$mergeBase..$sourceRef")
                 }
-                add("${detail.targetBranch}..${detail.sourceBranch}")
-                add("${detail.targetBranch}...${detail.sourceBranch}")
+                add("$targetRef..$sourceRef")
+                add("$targetRef...$sourceRef")
             }
 
             var commits: List<CommitItem> = emptyList()
@@ -1160,12 +1293,19 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
     }
 
-    private fun resolveBranchHead(repo: git4idea.repo.GitRepository, branch: String): String? {
-        val handler = GitLineHandler(project, repo.root, GitCommand.REV_PARSE)
-        handler.addParameters(branch)
-        val result = Git.getInstance().runCommand(handler)
-        if (!result.success()) return null
-        return result.output.firstOrNull()?.trim().takeUnless { it.isNullOrBlank() }
+    private fun toRemoteBranchRef(repo: git4idea.repo.GitRepository, branch: String): String {
+        val raw = branch.trim()
+        if (raw.isBlank()) return ""
+        if (raw.startsWith("refs/")) return raw
+        if (raw.startsWith("origin/")) return "refs/remotes/$raw"
+
+        if (raw.contains('/')) {
+            val remoteName = raw.substringBefore('/')
+            val isRemote = repo.remotes.any { it.name == remoteName }
+            if (isRemote) return "refs/remotes/$raw"
+        }
+
+        return "refs/remotes/origin/$raw"
     }
 
     private fun resolveMergeBase(repo: git4idea.repo.GitRepository, targetBranch: String, sourceBranch: String): String? {
@@ -1193,10 +1333,11 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private fun parseCommitLine(line: String): CommitItem? {
         val parts = line.split('\t')
         if (parts.size < 4) return null
+        val displayTime = parts[2].replace(Regex("\\s[+-]\\d{4}$"), "")
         return CommitItem(
             hash = parts[0],
             author = parts[1],
-            time = parts[2],
+            time = displayTime,
             message = parts.drop(3).joinToString("\t")
         )
     }
@@ -1223,6 +1364,16 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         val page = root.get("page")?.asInt() ?: 1
         val totalPage = root.get("totalPage")?.asInt() ?: 0
 
+        fun parseReviewerUsers(node: JsonNode?): List<ReviewerInfo> {
+            if (node == null || !node.isArray) return emptyList()
+            return node.mapNotNull { reviewerNode ->
+                val username = reviewerNode.readText("username", "login", "name", "userName")
+                if (username.isBlank()) return@mapNotNull null
+                val approveStatus = reviewerNode.readText("approve_status", "approveStatus", "approval_status")
+                ReviewerInfo(username = username, approveStatus = approveStatus)
+            }
+        }
+
         fun parseReviewerNames(node: JsonNode?): List<String> {
             if (node == null || !node.isArray) return emptyList()
             return node.map { it.readText("username", "login", "name") }.filter { it.isNotBlank() }
@@ -1241,10 +1392,11 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 ?: node.readText("author", "creator", "createdBy", "created_by")
             val statusText = node.readText("status", "state")
             val state = parseState(statusText)
+            val tableReviewers = parseReviewerUsers(node.get("reviewers"))
             val keyReviewers = parseReviewerNames(node.get("primary_reviewers"))
-            val reviewers = parseReviewerNames(node.get("general_reviewers"))
+            val overviewReviewers = parseReviewerNames(node.get("general_reviewers"))
             val needKeyReviewers = node.get("primary_reviewer_num")?.asInt() ?: keyReviewers.size
-            val needReviewers = node.get("general_reviewer_num")?.asInt() ?: reviewers.size
+            val needReviewers = node.get("general_reviewer_num")?.asInt() ?: overviewReviewers.size
             val canBeMerge = node.get("can_be_merge")?.asBoolean() ?: false
             list.add(
                 PrItem(
@@ -1256,7 +1408,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     author = author,
                     state = state,
                     keyReviewers = keyReviewers,
-                    reviewers = reviewers,
+                    reviewers = tableReviewers,
+                    generalReviewers = overviewReviewers,
                     needKeyReviewers = needKeyReviewers,
                     needReviewers = needReviewers,
                     canBeMerge = canBeMerge
@@ -1287,7 +1440,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             desc = title,
             keyReviewers = fallback?.keyReviewers ?: emptyList(),
             needKeyReviewers = fallback?.needKeyReviewers ?: 0,
-            reviewers = fallback?.reviewers ?: emptyList(),
+            reviewers = fallback?.generalReviewers ?: emptyList(),
             needReviewers = fallback?.needReviewers ?: 0,
             mergedType = "",
             deleteBranchAfterMerged = false
@@ -1474,6 +1627,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         return ""
     }
 
+    private fun copyToClipboard(text: String) {
+        if (text.isBlank()) return
+        val selection = java.awt.datatransfer.StringSelection(text)
+        java.awt.Toolkit.getDefaultToolkit().systemClipboard.setContents(selection, null)
+    }
+
     private fun updateStatus(text: String) {
         SwingUtilities.invokeLater { statusLabel.text = text }
     }
@@ -1590,11 +1749,87 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         else -> JBColor(Color(0x5F6368), Color(0x9AA0A6))
     }
 
+    private fun reviewerStatusColor(status: String): JBColor = when (status.trim().lowercase()) {
+        "approved" -> JBColor(Color(0x1E8E3E), Color(0x57D163))
+        "commented" -> JBColor(Color(0xF29900), Color(0xF6C26B))
+        "rejected" -> JBColor(Color(0xD93025), Color(0xF47067))
+        else -> JBColor(Color(0x5F6368), Color(0x9AA0A6))
+    }
+
+    private inner class ReviewerCellRenderer : TableCellRenderer {
+        override fun getTableCellRendererComponent(
+            table: javax.swing.JTable,
+            value: Any?,
+            isSelected: Boolean,
+            hasFocus: Boolean,
+            row: Int,
+            column: Int
+        ): Component {
+            val iconSize = JBUI.scale(16)
+            val gap = JBUI.scale(4)
+            val panel = JPanel(FlowLayout(FlowLayout.LEFT, gap, 0))
+            panel.isOpaque = true
+            panel.background = if (isSelected) table.selectionBackground else table.background
+            val extra = (table.rowHeight - iconSize).coerceAtLeast(0)
+            panel.border = JBUI.Borders.empty(extra / 2, 0, extra - extra / 2, 0)
+
+            val reviewers = (value as? List<*>)?.filterIsInstance<ReviewerInfo>().orEmpty()
+            if (reviewers.isEmpty()) {
+                val empty = JBLabel("-")
+                empty.foreground = if (isSelected) table.selectionForeground else JBColor.GRAY
+                panel.add(empty)
+                return panel
+            }
+
+            reviewers.forEach { reviewer ->
+                val color = reviewerStatusColor(reviewer.approveStatus)
+                val avatar = JBLabel(ReviewerAvatarIcon(reviewer.username, color))
+                val statusText = reviewer.approveStatus.ifBlank { "unknown" }
+                avatar.toolTipText = "${reviewer.username} (${statusText})"
+                panel.add(avatar)
+            }
+            return panel
+        }
+    }
+
+    private class ReviewerAvatarIcon(
+        private val username: String,
+        private val color: Color
+    ) : Icon {
+        private val size = JBUI.scale(16)
+
+        override fun paintIcon(c: Component?, g: Graphics, x: Int, y: Int) {
+            val g2 = g.create() as Graphics2D
+            try {
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                g2.color = color
+                g2.fillOval(x, y, size, size)
+                val initials = username.trim().take(1).ifBlank { "?" }.uppercase()
+                g2.color = Color.WHITE
+                val fm = g2.fontMetrics
+                val tx = x + (size - fm.stringWidth(initials)) / 2
+                val ty = y + (size + fm.ascent - fm.descent) / 2
+                g2.drawString(initials, tx, ty)
+            } finally {
+                g2.dispose()
+            }
+        }
+
+        override fun getIconWidth(): Int = size
+
+        override fun getIconHeight(): Int = size
+    }
+
     private data class PrListResult(
         val total: Int,
         val items: List<PrItem>,
         val page: Int,
         val totalPage: Int
+    )
+
+    private data class ReviewerInfo(
+        val username: String,
+        val approveStatus: String
     )
 
     private data class PrItem(
@@ -1606,7 +1841,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         val author: String,
         val state: PrState,
         val keyReviewers: List<String>,
-        val reviewers: List<String>,
+        val reviewers: List<ReviewerInfo>,
+        val generalReviewers: List<String>,
         val needKeyReviewers: Int,
         val needReviewers: Int,
         val canBeMerge: Boolean
@@ -1664,7 +1900,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private class PrTableModel : AbstractTableModel() {
-        private val columns = arrayOf("标题", "源分支", "目标分支", "创建人")
+        private val columns = arrayOf("标题", "源分支", "目标分支", "创建人", "评审人")
         private var rows: List<PrItem> = emptyList()
 
         fun setRows(items: List<PrItem>, append: Boolean) {
@@ -1689,6 +1925,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 1 -> item.sourceBranch
                 2 -> item.targetBranch
                 3 -> item.author
+                4 -> item.reviewers
                 else -> ""
             }
         }
@@ -1703,6 +1940,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             fireTableDataChanged()
         }
 
+        fun getFullHashAt(row: Int): String = rows.getOrNull(row)?.hash.orEmpty()
+
         override fun getRowCount(): Int = rows.size
 
         override fun getColumnCount(): Int = columns.size
@@ -1713,7 +1952,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             val item = rows[rowIndex]
             return when (columnIndex) {
                 0 -> item.author
-                1 -> item.hash
+                1 -> if (item.hash.length > 7) item.hash.take(7) else item.hash
                 2 -> item.message
                 3 -> item.time
                 else -> ""

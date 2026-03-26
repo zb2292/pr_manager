@@ -13,6 +13,59 @@
       "author": {
         "username": "alice"
       },
+      "reviewers": [
+        {
+          "created_at": "2022-08-16T18:03:20Z",
+          "updated_at": "2022-09-21T18:03:40Z",
+          "id": 16565,
+          "uuid": "15245",
+          "username": "junit-test-user3",
+          "name": "单元测试1",
+          "email": "junit3@escmbc.com.cn",
+          "avatar_url": "/api/facade/rest/v1/companies/osc/users/logo/avatar/user/15245",
+          "url": "",
+          "html_url": "",
+          "avatar": "/api/facade/rest/v1/companies/osc/users/logo/avatar/user/15245",
+          "login": "junit-test-user3",
+          "locale": "zh-CN",
+          "approve_status": "commented",
+          "primary": true
+        },
+        {
+          "created_at": "2022-08-16T18:03:20Z",
+          "updated_at": "2022-09-21T18:03:40Z",
+          "id": 16565,
+          "uuid": "15245",
+          "username": "junit-test-user1",
+          "name": "单元测试1",
+          "email": "junit3@escmbc.com.cn",
+          "avatar_url": "/api/facade/rest/v1/companies/osc/users/logo/avatar/user/15245",
+          "url": "",
+          "html_url": "",
+          "avatar": "/api/facade/rest/v1/companies/osc/users/logo/avatar/user/15245",
+          "login": "junit-test-user3",
+          "locale": "zh-CN",
+          "approve_status": "approved",
+          "primary": true
+        },
+        {
+          "created_at": "2022-08-16T18:03:20Z",
+          "updated_at": "2022-09-21T18:03:40Z",
+          "id": 16565,
+          "uuid": "15245",
+          "username": "junit-test-user2",
+          "name": "单元测试1",
+          "email": "junit3@escmbc.com.cn",
+          "avatar_url": "/api/facade/rest/v1/companies/osc/users/logo/avatar/user/15245",
+          "url": "",
+          "html_url": "",
+          "avatar": "/api/facade/rest/v1/companies/osc/users/logo/avatar/user/15245",
+          "login": "junit-test-user3",
+          "locale": "zh-CN",
+          "approve_status": "rejected",
+          "primary": true
+        }
+      ],
       "primary_reviewers": [
         { "username": "alice" }
       ],

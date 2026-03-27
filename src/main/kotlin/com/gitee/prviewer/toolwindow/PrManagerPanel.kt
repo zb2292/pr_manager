@@ -13,6 +13,8 @@ import com.gitee.prviewer.comment.PrIssueCache
 import com.intellij.diff.util.Side
 import com.gitee.prviewer.model.ChangeItem
 import com.gitee.prviewer.service.BranchCompareService
+import com.gitee.prviewer.service.HttpRequestClient
+import com.gitee.prviewer.service.PrApiService
 import com.intellij.diff.DiffContentFactory
 import com.intellij.diff.DiffManager
 import com.intellij.diff.requests.SimpleDiffRequest
@@ -49,10 +51,6 @@ import java.awt.Graphics2D
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
 import java.awt.RenderingHints
-import java.net.URI
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
 import java.time.Duration
 import java.util.Properties
 import java.awt.event.MouseAdapter
@@ -79,9 +77,7 @@ import javax.swing.tree.TreePath
 
 class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true, true) {
     private val objectMapper = ObjectMapper()
-    private val httpClient = HttpClient.newBuilder()
-        .connectTimeout(Duration.ofSeconds(8))
-        .build()
+    private val httpClient = HttpRequestClient(connectTimeoutSeconds = 8)
     private val config = Properties().apply {
         val stream = PrManagerPanel::class.java.getResourceAsStream("/prviewer.properties")
         if (stream != null) {
@@ -104,6 +100,19 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private val resolveUrl = buildUrl(config.getProperty("prviewer.api.resolve.path", "/pset/api/gitee/resoveNote"))
     private val reviewUrl = buildUrl(config.getProperty("prviewer.api.review.path", "/api/pr/review"))
     private val mergeUrl = buildUrl(config.getProperty("prviewer.api.merge.path", "/api/pr/merge"))
+
+    private val apiService = PrApiService(
+        httpClient = httpClient,
+        objectMapper = objectMapper,
+        listUrl = listUrl,
+        detailUrl = detailUrl,
+        noteListUrl = noteListUrl,
+        noteUrl = noteUrl,
+        replyUrl = replyUrl,
+        resolveUrl = resolveUrl,
+        reviewUrl = reviewUrl,
+        mergeUrl = mergeUrl
+    )
 
     private val branchService = BranchCompareService(project)
     private val commentManager = LineCommentManager(project)
@@ -686,19 +695,13 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 }
                 ApplicationManager.getApplication().executeOnPooledThread {
                     try {
-                        val payload = mapOf(
-                            "prId" to detail.id,
-                            "commitId" to detail.headCommitSha,
-                            "filePath" to filePath,
-                            "context" to content,
-                            "codeLine" to line + 1
+                        val response = apiService.createNote(
+                            prId = detail.id,
+                            commitId = detail.headCommitSha,
+                            filePath = filePath,
+                            context = content,
+                            codeLine = line + 1
                         )
-                        val request = HttpRequest.newBuilder(URI.create(noteUrl))
-                            .timeout(Duration.ofSeconds(12))
-                            .header("Content-Type", "application/json")
-                            .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(payload)))
-                            .build()
-                        val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString())
                         if (response.statusCode() !in 200..299) {
                             updateStatus("评论失败: ${response.statusCode()}")
                             return@executeOnPooledThread
@@ -718,24 +721,14 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 }
                 ApplicationManager.getApplication().executeOnPooledThread {
                     try {
-                        val payload = linkedMapOf(
-                            "prId" to detail.id,
-                            "context" to content,
-                            "filePath" to filePath,
-                            "codeLine" to line + 1
+                        val response = apiService.replyNote(
+                            prId = detail.id,
+                            context = content,
+                            filePath = filePath,
+                            codeLine = line + 1,
+                            nodeId = parent.id.takeIf { it.isNotBlank() },
+                            replyFloorNum = parent.floorNum
                         )
-                        if (parent.id.isNotBlank()) {
-                            payload["nodeId"] = parent.id
-                        }
-                        if (parent.floorNum != null) {
-                            payload["replyFloorNum"] = parent.floorNum
-                        }
-                        val request = HttpRequest.newBuilder(URI.create(replyUrl))
-                            .timeout(Duration.ofSeconds(12))
-                            .header("Content-Type", "application/json")
-                            .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(payload)))
-                            .build()
-                        val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString())
                         if (response.statusCode() !in 200..299) {
                             updateStatus("回复失败: ${response.statusCode()}")
                             return@executeOnPooledThread
@@ -757,18 +750,11 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 }
                 ApplicationManager.getApplication().executeOnPooledThread {
                     try {
-                        val payload = mapOf(
-                            "prIid" to detail.iid,
-                            "resolve" to true,
-                            "nodeId" to root.rootId,
-                            "sshPath" to resolveGitAddress()
+                        val response = apiService.resolveNote(
+                            prIid = detail.iid,
+                            nodeId = root.rootId,
+                            sshPath = resolveGitAddress()
                         )
-                        val request = HttpRequest.newBuilder(URI.create(resolveUrl))
-                            .timeout(Duration.ofSeconds(12))
-                            .header("Content-Type", "application/json")
-                            .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(payload)))
-                            .build()
-                        val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString())
                         if (response.statusCode() !in 200..299) {
                             updateStatus("问题已解决提交失败: ${response.statusCode()}")
                             return@executeOnPooledThread
@@ -812,12 +798,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     }
                 } else {
                     val requestBody = buildListRequestBody(append)
-                    val request = HttpRequest.newBuilder(URI.create(listUrl))
-                        .timeout(Duration.ofSeconds(12))
-                        .header("Content-Type", "application/json")
-                        .POST(HttpRequest.BodyPublishers.ofString(requestBody))
-                        .build()
-                    val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString())
+                    val response = apiService.fetchPrList(requestBody)
                     if (response.statusCode() !in 200..299) {
                         PrListResult(0, emptyList(), 0, 0)
                     } else {
@@ -921,13 +902,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                         ?: throw IllegalStateException("Mock文件不存在: $mockDir/$mockDetailFile")
                     parseDetail(mockJson, listItem)
                 } else {
-                    val payload = mapOf("prId" to prId)
-                    val request = HttpRequest.newBuilder(URI.create(detailUrl))
-                        .timeout(Duration.ofSeconds(12))
-                        .header("Content-Type", "application/json")
-                        .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(payload)))
-                        .build()
-                    val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString())
+                    val response = apiService.fetchPrDetail(prId)
                     if (response.statusCode() !in 200..299) {
                         updateStatus("详情加载失败: ${response.statusCode()}")
                         return@executeOnPooledThread
@@ -999,13 +974,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
-                val payload = mapOf("id" to prId)
-                val request = HttpRequest.newBuilder(URI.create(reviewUrl))
-                    .timeout(Duration.ofSeconds(12))
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(payload)))
-                    .build()
-                val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString())
+                val response = apiService.reviewPass(prId)
                 if (response.statusCode() !in 200..299) {
                     updateStatus("评审失败: ${response.statusCode()}")
                     return@executeOnPooledThread
@@ -1031,19 +1000,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
-                val payload = mapOf(
-                    "id" to prId,
-                    "action" to "delete",
-                    "commitMsg" to commitMsg,
-                    "extMsg" to extMsg,
-                    "deleteBranchAfterMerged" to deleteBranch
+                val response = apiService.mergePr(
+                    id = prId,
+                    commitMsg = commitMsg,
+                    extMsg = extMsg,
+                    deleteBranchAfterMerged = deleteBranch
                 )
-                val request = HttpRequest.newBuilder(URI.create(mergeUrl))
-                    .timeout(Duration.ofSeconds(12))
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(payload)))
-                    .build()
-                val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString())
                 if (response.statusCode() !in 200..299) {
                     updateStatus("合并失败: ${response.statusCode()}")
                     return@executeOnPooledThread
@@ -1063,16 +1025,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                         ?: throw IllegalStateException("Mock文件不存在: $mockDir/$mockIssuesFile")
                     parseNoteList(mockJson)
                 } else {
-                    val payload = mapOf(
-                        "sshPath" to resolveGitAddress(),
-                        "iid" to detail.iid
+                    val response = apiService.fetchNoteList(
+                        sshPath = resolveGitAddress(),
+                        iid = detail.iid
                     )
-                    val request = HttpRequest.newBuilder(URI.create(noteListUrl))
-                        .timeout(Duration.ofSeconds(12))
-                        .header("Content-Type", "application/json")
-                        .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(payload)))
-                        .build()
-                    val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString())
                     if (response.statusCode() !in 200..299) {
                         return@executeOnPooledThread
                     }

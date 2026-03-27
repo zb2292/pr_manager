@@ -10,6 +10,7 @@
     <extensions defaultExtensionNs="com.intellij">
         <toolWindow id="PR Manager"
                     anchor="bottom"
+                    icon="/icons/pr-manager.svg"
                     factoryClass="com.gitee.prviewer.toolwindow.PrManagerToolWindowFactory"/>
     </extensions>
 </idea-plugin>

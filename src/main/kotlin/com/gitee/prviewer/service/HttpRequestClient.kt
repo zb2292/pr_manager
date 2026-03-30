@@ -7,16 +7,23 @@ import java.net.http.HttpResponse
 import java.time.Duration
 
 class HttpRequestClient(
-    connectTimeoutSeconds: Long = 8
+    connectTimeoutSeconds: Long = 8,
+    private val pluginAuthorProvider: (() -> String?)? = null
 ) {
     private val client = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(connectTimeoutSeconds))
         .build()
 
     fun postJson(url: String, body: String, timeoutSeconds: Long = 12): HttpResponse<String> {
-        val request = HttpRequest.newBuilder(URI.create(url))
+        val builder = HttpRequest.newBuilder(URI.create(url))
             .timeout(Duration.ofSeconds(timeoutSeconds))
             .header("Content-Type", "application/json")
+
+        pluginAuthorProvider?.invoke()?.takeIf { it.isNotBlank() }?.let {
+            builder.header("userName", it)
+        }
+
+        val request = builder
             .POST(HttpRequest.BodyPublishers.ofString(body))
             .build()
         return client.send(request, HttpResponse.BodyHandlers.ofString())

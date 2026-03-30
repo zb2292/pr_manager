@@ -16,12 +16,12 @@ class PrApiService(
     private val mergeUrl: String
 ) {
     fun fetchPrList(requestBody: String): HttpResponse<String> {
-        return httpClient.postJson(listUrl, requestBody)
+        return executeApi("fetchPrList", listUrl, requestBody)
     }
 
     fun fetchPrDetail(prId: Long): HttpResponse<String> {
         val payload = mapOf("prId" to prId)
-        return httpClient.postJson(detailUrl, objectMapper.writeValueAsString(payload))
+        return executeApi("fetchPrDetail", detailUrl, objectMapper.writeValueAsString(payload))
     }
 
     fun createNote(prId: Long, commitId: String, filePath: String, context: String, codeLine: Int): HttpResponse<String> {
@@ -32,7 +32,7 @@ class PrApiService(
             "context" to context,
             "codeLine" to codeLine
         )
-        return httpClient.postJson(noteUrl, objectMapper.writeValueAsString(payload))
+        return executeApi("createNote", noteUrl, objectMapper.writeValueAsString(payload))
     }
 
     fun replyNote(
@@ -55,7 +55,7 @@ class PrApiService(
         if (replyFloorNum != null) {
             payload["replyFloorNum"] = replyFloorNum
         }
-        return httpClient.postJson(replyUrl, objectMapper.writeValueAsString(payload))
+        return executeApi("replyNote", replyUrl, objectMapper.writeValueAsString(payload))
     }
 
     fun resolveNote(prIid: Long, nodeId: String, sshPath: String): HttpResponse<String> {
@@ -65,12 +65,12 @@ class PrApiService(
             "nodeId" to nodeId,
             "sshPath" to sshPath
         )
-        return httpClient.postJson(resolveUrl, objectMapper.writeValueAsString(payload))
+        return executeApi("resolveNote", resolveUrl, objectMapper.writeValueAsString(payload))
     }
 
     fun reviewPass(id: Long): HttpResponse<String> {
         val payload = mapOf("id" to id)
-        return httpClient.postJson(reviewUrl, objectMapper.writeValueAsString(payload))
+        return executeApi("reviewPass", reviewUrl, objectMapper.writeValueAsString(payload))
     }
 
     fun mergePr(id: Long, commitMsg: String, extMsg: String, deleteBranchAfterMerged: Boolean): HttpResponse<String> {
@@ -81,7 +81,7 @@ class PrApiService(
             "extMsg" to extMsg,
             "deleteBranchAfterMerged" to deleteBranchAfterMerged
         )
-        return httpClient.postJson(mergeUrl, objectMapper.writeValueAsString(payload))
+        return executeApi("mergePr", mergeUrl, objectMapper.writeValueAsString(payload))
     }
 
     fun fetchNoteList(sshPath: String, iid: Long): HttpResponse<String> {
@@ -89,6 +89,20 @@ class PrApiService(
             "sshPath" to sshPath,
             "iid" to iid
         )
-        return httpClient.postJson(noteListUrl, objectMapper.writeValueAsString(payload))
+        return executeApi("fetchNoteList", noteListUrl, objectMapper.writeValueAsString(payload))
+    }
+
+    private fun executeApi(apiName: String, url: String, requestBody: String): HttpResponse<String> {
+        val requestPreview = requestBody.take(2000)
+        PrManagerFileLogger.info("API[$apiName] request url=$url body=$requestPreview")
+        return try {
+            val response = httpClient.postJson(url, requestBody)
+            val bodyPreview = response.body().orEmpty().take(2000)
+            PrManagerFileLogger.info("API[$apiName] response status=${response.statusCode()} body=$bodyPreview")
+            response
+        } catch (e: Exception) {
+            PrManagerFileLogger.error("API[$apiName] failed url=$url", e)
+            throw e
+        }
     }
 }

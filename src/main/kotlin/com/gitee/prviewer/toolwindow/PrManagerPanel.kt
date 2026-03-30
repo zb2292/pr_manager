@@ -14,7 +14,9 @@ import com.intellij.diff.util.Side
 import com.gitee.prviewer.model.ChangeItem
 import com.gitee.prviewer.service.BranchCompareService
 import com.gitee.prviewer.service.HttpRequestClient
+import com.gitee.prviewer.service.PluginAuthorHeaderEncryptor
 import com.gitee.prviewer.service.PrApiService
+import com.gitee.prviewer.service.PrManagerFileLogger
 import com.intellij.diff.DiffContentFactory
 import com.intellij.diff.DiffManager
 import com.intellij.diff.requests.SimpleDiffRequest
@@ -77,11 +79,23 @@ import javax.swing.tree.TreePath
 
 class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true, true) {
     private val objectMapper = ObjectMapper()
-    private val httpClient = HttpRequestClient(connectTimeoutSeconds = 8)
     private val config = Properties().apply {
         val stream = PrManagerPanel::class.java.getResourceAsStream("/prviewer.properties")
         if (stream != null) {
             stream.use { load(it) }
+        }
+    }
+    private val pluginAuthorPublicKey = config.getProperty("prviewer.security.pluginAuthor.publicKey", "").trim()
+    private val pluginAuthorUsernameEnv = config.getProperty("prviewer.security.pluginAuthor.usernameEnv", "USERID")
+        .trim()
+        .ifBlank { "USERID" }
+    private val httpClient = HttpRequestClient(connectTimeoutSeconds = 8) {
+        val username = System.getenv(pluginAuthorUsernameEnv).orEmpty().trim()
+        if (username.isBlank() || pluginAuthorPublicKey.isBlank()) {
+            PrManagerFileLogger.error("username is empty.")
+            null
+        } else {
+            PluginAuthorHeaderEncryptor.encrypt(username, pluginAuthorPublicKey)
         }
     }
 
@@ -176,6 +190,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         setContent(buildMainPanel())
         bindActions()
         bindCommentActions()
+        PrManagerFileLogger.info("PR Manager panel initialized, mockEnabled=$mockEnabled")
         resetAndLoad()
     }
 
@@ -651,26 +666,31 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private fun bindActions() {
         filterButtons.forEachIndexed { index, button ->
             button.addActionListener {
-                when (index) {
-                    0 -> {
-                        activeFilter = PrFilter.OPEN
-                        relatedOnly = false
+                try {
+                    when (index) {
+                        0 -> {
+                            activeFilter = PrFilter.OPEN
+                            relatedOnly = false
+                        }
+                        1 -> {
+                            activeFilter = PrFilter.MERGED
+                            relatedOnly = false
+                        }
+                        2 -> {
+                            activeFilter = PrFilter.CLOSED
+                            relatedOnly = false
+                        }
+                        else -> {
+                            activeFilter = PrFilter.ALL
+                            relatedOnly = true
+                        }
                     }
-                    1 -> {
-                        activeFilter = PrFilter.MERGED
-                        relatedOnly = false
-                    }
-                    2 -> {
-                        activeFilter = PrFilter.CLOSED
-                        relatedOnly = false
-                    }
-                    else -> {
-                        activeFilter = PrFilter.ALL
-                        relatedOnly = true
-                    }
+                    PrManagerFileLogger.info("Filter changed: index=$index filter=$activeFilter relatedOnly=$relatedOnly")
+                    updateFilterButtonStyles()
+                    resetAndLoad()
+                } catch (e: Exception) {
+                    PrManagerFileLogger.error("Failed to handle filter change", e)
                 }
-                updateFilterButtonStyles()
-                resetAndLoad()
             }
         }
 
@@ -681,7 +701,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         })
 
         refreshButton.addActionListener {
-            resetAndLoad()
+            try {
+                PrManagerFileLogger.info("Refresh button clicked")
+                resetAndLoad()
+            } catch (e: Exception) {
+                PrManagerFileLogger.error("Failed to refresh PR list", e)
+            }
         }
     }
 
@@ -708,6 +733,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                         }
                         loadNotes(detail)
                     } catch (e: Exception) {
+                        PrManagerFileLogger.error("Add comment failed: prId=${detail.id} filePath=$filePath line=${line + 1}", e)
                         updateStatus("评论失败: ${e.message ?: "未知错误"}")
                     }
                 }
@@ -735,6 +761,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                         }
                         loadNotes(detail)
                     } catch (e: Exception) {
+                        PrManagerFileLogger.error("Reply comment failed: prId=${detail.id} filePath=$filePath line=${line + 1} parentId=${parent.id}", e)
                         updateStatus("回复失败: ${e.message ?: "未知错误"}")
                     }
                 }
@@ -761,6 +788,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                         }
                         loadNotes(detail)
                     } catch (e: Exception) {
+                        PrManagerFileLogger.error("Resolve thread failed: prIid=${detail.iid} rootId=${root.rootId}", e)
                         updateStatus("问题已解决提交失败: ${e.message ?: "未知错误"}")
                     }
                 }
@@ -769,6 +797,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun resetAndLoad() {
+        PrManagerFileLogger.info("Reset list state and reload")
         currentPage = 1
         totalPage = 0
         totalCount = 0
@@ -786,6 +815,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         isLoading = true
         statusLabel.text = if (append) "正在加载更多 PR..." else "正在加载 PR 列表..."
         setLoadMoreVisible(append)
+        PrManagerFileLogger.info("Start loading PR list: append=$append currentPage=$currentPage totalPage=$totalPage")
 
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
@@ -800,6 +830,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     val requestBody = buildListRequestBody(append)
                     val response = apiService.fetchPrList(requestBody)
                     if (response.statusCode() !in 200..299) {
+                        PrManagerFileLogger.warn("Load PR list failed, status=${response.statusCode()}")
                         PrListResult(0, emptyList(), 0, 0)
                     } else {
                         parsePrList(response.body())
@@ -814,7 +845,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     val loaded = tableModel.rowCount
                     statusLabel.text = if (totalCount > 0) "已加载 $loaded/$totalCount 条 PR" else "暂无 PR"
                 }
-            } catch (_: Exception) {
+                PrManagerFileLogger.info("Finish loading PR list: append=$append page=${result.page} loaded=${result.items.size} total=${result.total}")
+            } catch (e: Exception) {
+                PrManagerFileLogger.error("Load PR list error", e)
                 SwingUtilities.invokeLater {
                     if (!append) {
                         tableModel.setRows(emptyList(), append = false)
@@ -893,6 +926,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         detailMeta.text = ""
         issueCountLabel.text = "未解决问题: 0/0"
         reviewActionButton.isVisible = false
+        PrManagerFileLogger.info("Start loading PR detail: prId=$prId")
 
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
@@ -904,6 +938,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 } else {
                     val response = apiService.fetchPrDetail(prId)
                     if (response.statusCode() !in 200..299) {
+                        PrManagerFileLogger.warn("Load PR detail failed: prId=$prId status=${response.statusCode()}")
                         updateStatus("详情加载失败: ${response.statusCode()}")
                         return@executeOnPooledThread
                     }
@@ -913,10 +948,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     currentDetail = detail
                     renderDetail(detail)
                 }
+                PrManagerFileLogger.info("PR detail loaded: prId=$prId iid=${detail.iid}")
                 loadNotes(detail)
                 loadFileChanges(detail.sourceBranch, detail.targetBranch)
                 loadCommitRecords(detail)
             } catch (e: Exception) {
+                PrManagerFileLogger.error("Load PR detail error: prId=$prId", e)
                 updateStatus("详情加载失败: ${e.message ?: "未知错误"}")
             }
         }
@@ -976,11 +1013,14 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             try {
                 val response = apiService.reviewPass(prId)
                 if (response.statusCode() !in 200..299) {
+                    PrManagerFileLogger.warn("Review pass failed: prId=$prId status=${response.statusCode()}")
                     updateStatus("评审失败: ${response.statusCode()}")
                     return@executeOnPooledThread
                 }
+                PrManagerFileLogger.info("Review pass success: prId=$prId")
                 updateStatus("评审通过")
             } catch (e: Exception) {
+                PrManagerFileLogger.error("Review pass error: prId=$prId", e)
                 updateStatus("评审失败: ${e.message ?: "未知错误"}")
             }
         }
@@ -1007,11 +1047,14 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     deleteBranchAfterMerged = deleteBranch
                 )
                 if (response.statusCode() !in 200..299) {
+                    PrManagerFileLogger.warn("Merge failed: prId=$prId status=${response.statusCode()}")
                     updateStatus("合并失败: ${response.statusCode()}")
                     return@executeOnPooledThread
                 }
+                PrManagerFileLogger.info("Merge submitted: prId=$prId deleteBranch=$deleteBranch")
                 updateStatus("已提交合并")
             } catch (e: Exception) {
+                PrManagerFileLogger.error("Merge error: prId=$prId", e)
                 updateStatus("合并失败: ${e.message ?: "未知错误"}")
             }
         }
@@ -1030,32 +1073,42 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                         iid = detail.iid
                     )
                     if (response.statusCode() !in 200..299) {
+                        PrManagerFileLogger.warn("Load notes failed: prId=${detail.id} iid=${detail.iid} status=${response.statusCode()}")
                         return@executeOnPooledThread
                     }
                     parseNoteList(response.body())
                 }
                 PrIssueCache.replaceAll(detail.id, result.stats)
                 LineCommentStore.replaceAll(result.comments)
+                PrManagerFileLogger.info("Notes loaded: prId=${detail.id} total=${result.stats.total} unresolved=${result.stats.unresolved}")
                 SwingUtilities.invokeLater {
                     issueCountLabel.text = "未解决问题: ${result.stats.unresolved}/${result.stats.total}"
                     changeTree.repaint()
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                PrManagerFileLogger.error("Load notes error: prId=${detail.id} iid=${detail.iid}", e)
             }
         }
     }
 
     private fun loadFileChanges(source: String, target: String) {
         ApplicationManager.getApplication().executeOnPooledThread {
-            val result = branchService.compare(target, source)
-            SwingUtilities.invokeLater {
-                if (result.error != null) {
-                    changeTreeRoot.removeAllChildren()
-                    changeTree.emptyText.text = result.error
-                    changeTreeModel.reload()
-                    return@invokeLater
+            try {
+                PrManagerFileLogger.info("Start loading file changes: target=$target source=$source")
+                val result = branchService.compare(target, source)
+                SwingUtilities.invokeLater {
+                    if (result.error != null) {
+                        PrManagerFileLogger.warn("Load file changes failed: ${result.error}")
+                        changeTreeRoot.removeAllChildren()
+                        changeTree.emptyText.text = result.error
+                        changeTreeModel.reload()
+                        return@invokeLater
+                    }
+                    buildChangeTree(result.changes)
                 }
-                buildChangeTree(result.changes)
+                PrManagerFileLogger.info("File changes loaded: count=${result.changes.size}")
+            } catch (e: Exception) {
+                PrManagerFileLogger.error("Load file changes error: target=$target source=$source", e)
             }
         }
     }
@@ -1185,67 +1238,82 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun openDiff(change: ChangeItem, source: String, target: String) {
-        val sourceContent = branchService.loadFileContent(source, change.filePath)
-        val targetContent = branchService.loadFileContent(target, change.filePath)
-        if (sourceContent == null && targetContent == null) {
-            updateStatus("无法加载文件内容")
-            return
-        }
+        try {
+            PrManagerFileLogger.info("Open diff: file=${change.filePath} target=$target source=$source")
+            val sourceContent = branchService.loadFileContent(source, change.filePath)
+            val targetContent = branchService.loadFileContent(target, change.filePath)
+            if (sourceContent == null && targetContent == null) {
+                updateStatus("无法加载文件内容")
+                PrManagerFileLogger.warn("Open diff failed, content empty: file=${change.filePath}")
+                return
+            }
 
-        val fileType = FileTypeManager.getInstance().getFileTypeByFileName(change.filePath)
-        val contentFactory = DiffContentFactory.getInstance()
-        val left = contentFactory.create(project, targetContent ?: "", fileType)
-        val right = contentFactory.create(project, sourceContent ?: "", fileType)
-        val request = SimpleDiffRequest(
-            "${change.filePath} ($target..$source)",
-            left,
-            right,
-            target,
-            source
-        )
-        commentManager.updateIssueLines(change.filePath, issueLineSetByFile(change.filePath))
-        commentManager.updateIssueDetails(change.filePath, issueItemsByFile(change.filePath))
-        diffBinder.bindNextDiff(change.filePath)
-        DiffManager.getInstance().showDiff(project, request)
+            val fileType = FileTypeManager.getInstance().getFileTypeByFileName(change.filePath)
+            val contentFactory = DiffContentFactory.getInstance()
+            val left = contentFactory.create(project, targetContent ?: "", fileType)
+            val right = contentFactory.create(project, sourceContent ?: "", fileType)
+            val request = SimpleDiffRequest(
+                "${change.filePath} ($target..$source)",
+                left,
+                right,
+                target,
+                source
+            )
+            commentManager.updateIssueLines(change.filePath, issueLineSetByFile(change.filePath))
+            commentManager.updateIssueDetails(change.filePath, issueItemsByFile(change.filePath))
+            diffBinder.bindNextDiff(change.filePath)
+            DiffManager.getInstance().showDiff(project, request)
+        } catch (e: Exception) {
+            PrManagerFileLogger.error("Open diff error: file=${change.filePath}", e)
+            updateStatus("打开Diff失败: ${e.message ?: "未知错误"}")
+        }
     }
 
     private fun loadCommitRecords(detail: PrDetail) {
         ApplicationManager.getApplication().executeOnPooledThread {
-            val fallbackCommits = detail.commits.sortedByDescending { it.time }
+            try {
+                val fallbackCommits = detail.commits.sortedByDescending { it.time }
 
-            val repo = GitRepositoryManager.getInstance(project).repositories.firstOrNull()
-            if (repo == null) {
-                SwingUtilities.invokeLater { commitTableModel.setRows(fallbackCommits) }
-                return@executeOnPooledThread
-            }
-
-            val sourceRef = toRemoteBranchRef(repo, detail.sourceBranch)
-            val targetRef = toRemoteBranchRef(repo, detail.targetBranch)
-            if (sourceRef.isBlank() || targetRef.isBlank()) {
-                SwingUtilities.invokeLater { commitTableModel.setRows(fallbackCommits) }
-                return@executeOnPooledThread
-            }
-
-            val mergeBase = resolveMergeBase(repo, targetRef, sourceRef)
-            val ranges = buildList {
-                if (!mergeBase.isNullOrBlank()) {
-                    add("$mergeBase..$sourceRef")
+                val repo = GitRepositoryManager.getInstance(project).repositories.firstOrNull()
+                if (repo == null) {
+                    PrManagerFileLogger.warn("Load commit records fallback: repository not found")
+                    SwingUtilities.invokeLater { commitTableModel.setRows(fallbackCommits) }
+                    return@executeOnPooledThread
                 }
-                add("$targetRef..$sourceRef")
-                add("$targetRef...$sourceRef")
-            }
 
-            var commits: List<CommitItem> = emptyList()
-            for (range in ranges) {
-                val rows = loadCommitsByRange(repo, range)
-                if (rows.isNotEmpty()) {
-                    commits = rows
-                    break
+                val sourceRef = toRemoteBranchRef(repo, detail.sourceBranch)
+                val targetRef = toRemoteBranchRef(repo, detail.targetBranch)
+                if (sourceRef.isBlank() || targetRef.isBlank()) {
+                    PrManagerFileLogger.warn("Load commit records fallback: invalid refs sourceRef=$sourceRef targetRef=$targetRef")
+                    SwingUtilities.invokeLater { commitTableModel.setRows(fallbackCommits) }
+                    return@executeOnPooledThread
                 }
-            }
 
-            if (commits.isEmpty()) commits = fallbackCommits
-            SwingUtilities.invokeLater { commitTableModel.setRows(commits) }
+                val mergeBase = resolveMergeBase(repo, targetRef, sourceRef)
+                val ranges = buildList {
+                    if (!mergeBase.isNullOrBlank()) {
+                        add("$mergeBase..$sourceRef")
+                    }
+                    add("$targetRef..$sourceRef")
+                    add("$targetRef...$sourceRef")
+                }
+
+                var commits: List<CommitItem> = emptyList()
+                for (range in ranges) {
+                    val rows = loadCommitsByRange(repo, range)
+                    if (rows.isNotEmpty()) {
+                        commits = rows
+                        break
+                    }
+                }
+
+                if (commits.isEmpty()) commits = fallbackCommits
+                PrManagerFileLogger.info("Commit records loaded: prId=${detail.id} count=${commits.size}")
+                SwingUtilities.invokeLater { commitTableModel.setRows(commits) }
+            } catch (e: Exception) {
+                PrManagerFileLogger.error("Load commit records error: prId=${detail.id}", e)
+                SwingUtilities.invokeLater { commitTableModel.setRows(detail.commits.sortedByDescending { it.time }) }
+            }
         }
     }
 

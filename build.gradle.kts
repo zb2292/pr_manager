@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "com.gitee.prviewer"
-version = "0.1.0"
+version = "0.1.1"
 
 repositories {
     maven("https://maven.aliyun.com/repository/public/")
@@ -34,4 +34,8 @@ tasks.withType<KotlinCompile>().configureEach {
 tasks.patchPluginXml {
     sinceBuild.set("241")
     untilBuild.set("241.*")
+}
+
+tasks.runIde {
+    environment("USERID", "zhangbo1")
 }

@@ -1,6 +1,6 @@
 package com.gitee.prviewer.toolwindow
 
-import com.intellij.openapi.diagnostic.Logger
+import com.gitee.prviewer.service.PrManagerFileLogger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
@@ -16,7 +16,6 @@ import javax.swing.JTextArea
 
 class PrManagerToolWindowFactory : ToolWindowFactory {
     companion object {
-        private val LOG = Logger.getInstance(PrManagerToolWindowFactory::class.java)
         private const val FONT_SIZE_KEY = "prviewer.ui.font.size"
         private const val DEFAULT_FONT_SIZE = 13f
 
@@ -34,7 +33,7 @@ class PrManagerToolWindowFactory : ToolWindowFactory {
         val contentComponent = try {
             PrManagerPanel(project)
         } catch (t: Throwable) {
-            LOG.error("Failed to create PR Manager tool window content", t)
+            PrManagerFileLogger.error("Failed to create PR Manager tool window content", t)
             buildFallbackPanel(t)
         }
 
@@ -63,7 +62,8 @@ class PrManagerToolWindowFactory : ToolWindowFactory {
                     append(": ")
                     append(error.message)
                 }
-                append("\n\n请查看 IDE 日志获取完整堆栈。")
+                append("\n\n日志路径: ")
+                append(PrManagerFileLogger.currentLogPath())
             }
             border = JBUI.Borders.emptyTop(8)
         }

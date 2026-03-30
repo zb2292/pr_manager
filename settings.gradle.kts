@@ -1,1 +1,1 @@
-rootProject.name = "20260113104520"
+rootProject.name = "pr-manager"

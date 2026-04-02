@@ -15,7 +15,12 @@ class BranchCompareService(private val project: Project) {
         val repo = GitRepositoryManager.getInstance(project).repositories.firstOrNull()
             ?: return CompareResult(emptyList(), "未找到 Git 仓库")
 
-        val result = runDiff(repo, sourceBranch, targetBranch)
+        val mergeBase = resolveMergeBase(repo, sourceBranch, targetBranch)
+        val result = if (!mergeBase.isNullOrBlank()) {
+            runDiffFromBase(repo, mergeBase, targetBranch)
+        } else {
+            runDiff(repo, sourceBranch, targetBranch)
+        }
         if (!result.success()) {
             val message = result.errorOutput.joinToString("\n").ifBlank { "分支对比失败" }
             return CompareResult(emptyList(), message)
@@ -40,6 +45,21 @@ class BranchCompareService(private val project: Project) {
                 addParameters("--name-status", "-M", "-C", sourceBranch, targetBranch)
             }
         )
+
+    private fun runDiffFromBase(repo: GitRepository, mergeBase: String, sourceBranch: String) =
+        Git.getInstance().runCommand(
+            GitLineHandler(project, repo.root, GitCommand.DIFF).apply {
+                addParameters("--name-status", "-M", "-C", mergeBase, sourceBranch)
+            }
+        )
+
+    private fun resolveMergeBase(repo: GitRepository, branchA: String, branchB: String): String? {
+        val handler = GitLineHandler(project, repo.root, GitCommand.MERGE_BASE)
+        handler.addParameters(branchA, branchB)
+        val result = Git.getInstance().runCommand(handler)
+        if (!result.success()) return null
+        return result.output.firstOrNull()?.trim().takeUnless { it.isNullOrBlank() }
+    }
 
     private fun parseDiffLine(line: String): ChangeItem? {
         if (line.isBlank()) return null

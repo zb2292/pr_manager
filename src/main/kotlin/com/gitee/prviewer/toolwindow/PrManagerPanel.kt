@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.gitee.prviewer.comment.DiffEditorBinder
 import com.gitee.prviewer.comment.IssueItem
-import com.gitee.prviewer.comment.IssueReply
 import com.gitee.prviewer.comment.IssueStats
 import com.gitee.prviewer.comment.LineComment
 import com.gitee.prviewer.comment.LineCommentManager
@@ -26,7 +25,6 @@ import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.SimpleToolWindowPanel
-import com.intellij.ui.DocumentAdapter
 import com.intellij.ui.JBColor
 import com.intellij.ui.OnePixelSplitter
 import com.intellij.ui.components.JBCheckBox
@@ -50,10 +48,7 @@ import java.awt.FlowLayout
 import java.awt.Font
 import java.awt.Graphics
 import java.awt.Graphics2D
-import java.awt.GridBagConstraints
-import java.awt.GridBagLayout
 import java.awt.RenderingHints
-import java.time.Duration
 import java.util.Properties
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
@@ -69,7 +64,6 @@ import javax.swing.ScrollPaneConstants
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 import javax.swing.JToggleButton
-import javax.swing.event.DocumentEvent
 import javax.swing.table.AbstractTableModel
 import javax.swing.table.TableCellRenderer
 import javax.swing.tree.DefaultMutableTreeNode
@@ -135,6 +129,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private val statusLabel = JBLabel("正在加载 PR 列表...")
     private val tableModel = PrTableModel()
     private val prTable = JBTable(tableModel)
+    private var prTableScrollPane: JBScrollPane? = null
     private val loadMoreLabel = JBLabel("加载更多中...", SwingConstants.CENTER)
     private val searchField = JBTextField()
     private val refreshButton = JButton()
@@ -157,6 +152,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private var totalCount = 0
     private var isLoading = false
     private var userTriggeredListScroll = false
+    private var lastListScrollValue = 0
+    private var hasMorePrs = false
     private val pageSize = config.getProperty("prviewer.api.pageSize", "10").toIntOrNull() ?: 10
 
     private val detailCard = JPanel(java.awt.CardLayout())
@@ -168,6 +165,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private val issueCountLabel = JBLabel("未解决问题: 0/0")
     private val reviewActionButton = JButton()
     private val detailTabs = JBTabbedPane()
+    private val fileChangeTabTitleLabel = JBLabel("文件改动")
+    private val fileChangeTabWarningLabel = JBLabel(CircleWarningIcon()).apply {
+        isVisible = false
+        toolTipText = null
+        border = JBUI.Borders.emptyLeft(6)
+    }
 
     private val overviewDesc = JBTextArea()
     private val keyReviewersField = JBTextField()
@@ -360,6 +363,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
         val pane = JBScrollPane(prTable)
         pane.border = JBUI.Borders.emptyTop(6)
+        pane.verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_ALWAYS
+        prTableScrollPane = pane
         if (prTable.columnModel.columnCount > 4) {
             prTable.columnModel.getColumn(4).cellRenderer = ReviewerCellRenderer()
             prTable.columnModel.getColumn(4).preferredWidth = JBUI.scale(140)
@@ -407,8 +412,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }
         })
         pane.verticalScrollBar.addAdjustmentListener {
-            if (!userTriggeredListScroll) return@addAdjustmentListener
             val bar = pane.verticalScrollBar
+            val currentValue = bar.value
+            val scrollingDown = currentValue > lastListScrollValue
+            lastListScrollValue = currentValue
+            if (!userTriggeredListScroll || !scrollingDown || isLoading || !hasMorePrs) return@addAdjustmentListener
+            if (bar.maximum <= bar.visibleAmount) return@addAdjustmentListener
             val reachedBottom = bar.maximum - (bar.value + bar.visibleAmount) <= JBUI.scale(30)
             if (reachedBottom) {
                 loadPrs(append = true)
@@ -416,7 +425,11 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
 
         loadMoreLabel.isVisible = false
-        loadMoreLabel.border = JBUI.Borders.empty(6, 0)
+        loadMoreLabel.border = JBUI.Borders.empty()
+        val loadMoreHeight = prTable.rowHeight
+        loadMoreLabel.preferredSize = Dimension(0, loadMoreHeight)
+        loadMoreLabel.minimumSize = Dimension(0, loadMoreHeight)
+        loadMoreLabel.maximumSize = Dimension(Int.MAX_VALUE, loadMoreHeight)
 
         return JPanel(BorderLayout()).apply {
             add(pane, BorderLayout.CENTER)
@@ -480,6 +493,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         detailTabs.addTab("概览", buildOverviewPanel())
         detailTabs.addTab("文件改动", buildFileChangePanel())
         detailTabs.addTab("提交记录", buildCommitPanel())
+        setupDetailTabsHeader()
         return detailTabs
     }
 
@@ -663,6 +677,92 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         return JBScrollPane(commitTable)
     }
 
+    private fun setupDetailTabsHeader() {
+        detailTabs.setTabComponentAt(0, createDetailTabHeader("概览", null))
+        detailTabs.setTabComponentAt(1, createDetailTabHeader("文件改动", fileChangeTabWarningLabel))
+        detailTabs.setTabComponentAt(2, createDetailTabHeader("提交记录", null))
+    }
+
+    private fun createDetailTabHeader(title: String, tail: JComponent?): JComponent {
+        val titleLabel = JBLabel(title).apply {
+            font = font.deriveFont(Font.PLAIN, globalUiFontSize)
+        }
+        if (title == "文件改动") {
+            fileChangeTabTitleLabel.font = titleLabel.font
+            fileChangeTabTitleLabel.text = title
+        }
+        return JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
+            isOpaque = false
+            border = JBUI.Borders.emptyRight(20)
+            add(if (title == "文件改动") fileChangeTabTitleLabel else titleLabel)
+            if (tail != null) {
+                add(tail)
+            }
+        }
+    }
+
+    private fun ensureOriginBranch(target: String): String {
+        val raw = target.trim()
+        if (raw.isBlank()) return raw
+        if (raw.startsWith("origin/")) return raw
+        if (raw.startsWith("refs/remotes/origin/")) return "origin/${raw.removePrefix("refs/remotes/origin/")}"
+        if (raw.startsWith("refs/heads/")) return "origin/${raw.removePrefix("refs/heads/")}"
+        if (raw.startsWith("refs/")) return raw
+        return "origin/$raw"
+    }
+
+    private fun normalizeLocalBranchName(sourceBranch: String): String {
+        val raw = sourceBranch.trim()
+        if (raw.isBlank()) return raw
+        return raw
+            .removePrefix("refs/heads/")
+            .removePrefix("refs/remotes/origin/")
+            .removePrefix("origin/")
+    }
+
+    private fun updateFileChangeBranchWarning(sourceBranch: String) {
+        val srBranch = normalizeLocalBranchName(sourceBranch)
+        if (srBranch.isBlank()) {
+            updateFileChangeWarning(false, null)
+            return
+        }
+
+        ApplicationManager.getApplication().executeOnPooledThread {
+            try {
+                val repo = GitRepositoryManager.getInstance(project).repositories.firstOrNull()
+                if (repo == null) {
+                    updateFileChangeWarning(false, null)
+                    return@executeOnPooledThread
+                }
+
+                val handler = GitLineHandler(project, repo.root, GitCommand.DIFF)
+                val remoteBranch = ensureOriginBranch(srBranch)
+                handler.addParameters("--name-only", srBranch, remoteBranch)
+                val result = Git.getInstance().runCommand(handler)
+                val hasDiff = result.success() && result.output.any { it.isNotBlank() }
+                val tip = if (hasDiff) {
+                    "本地源分支$srBranch 与远端源分支 $remoteBranch 存在差异，为防止对比文件差异，请拉取后再进行查看"
+                } else {
+                    null
+                }
+                updateFileChangeWarning(hasDiff, tip)
+            } catch (e: Exception) {
+                PrManagerFileLogger.error("Check local/remote source branch diff failed: sourceBranch=$sourceBranch", e)
+                updateFileChangeWarning(false, null)
+            }
+        }
+    }
+
+    private fun updateFileChangeWarning(visible: Boolean, tooltip: String?) {
+        SwingUtilities.invokeLater {
+            fileChangeTabWarningLabel.isVisible = visible
+            fileChangeTabWarningLabel.toolTipText = tooltip
+            fileChangeTabTitleLabel.toolTipText = tooltip
+            detailTabs.revalidate()
+            detailTabs.repaint()
+        }
+    }
+
     private fun bindActions() {
         filterButtons.forEachIndexed { index, button ->
             button.addActionListener {
@@ -694,11 +794,15 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }
         }
 
-        searchField.document.addDocumentListener(object : DocumentAdapter() {
-            override fun textChanged(e: DocumentEvent) {
+        searchField.addActionListener {
+            try {
+                val keyword = searchField.text?.trim().orEmpty()
+                PrManagerFileLogger.info("Search triggered by Enter: keyword=$keyword filter=$activeFilter relatedOnly=$relatedOnly")
                 resetAndLoad()
+            } catch (e: Exception) {
+                PrManagerFileLogger.error("Failed to search PR list", e)
             }
-        })
+        }
 
         refreshButton.addActionListener {
             try {
@@ -802,7 +906,13 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         totalPage = 0
         totalCount = 0
         userTriggeredListScroll = false
+        lastListScrollValue = 0
+        hasMorePrs = false
+        updateLoadMoreState(loading = false, hasMore = false)
         tableModel.setRows(emptyList(), append = false)
+        SwingUtilities.invokeLater {
+            prTableScrollPane?.verticalScrollBar?.value = 0
+        }
         prTable.clearSelection()
         renderEmptyDetail()
         loadPrs(append = false)
@@ -813,8 +923,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         if (append && totalPage > 0 && currentPage >= totalPage) return
         if (append && totalCount > 0 && tableModel.rowCount >= totalCount) return
         isLoading = true
-        statusLabel.text = if (append) "正在加载更多 PR..." else "正在加载 PR 列表..."
-        setLoadMoreVisible(append)
+        statusLabel.text = "加载中..."
+        updateLoadMoreState(loading = append, hasMore = false)
         PrManagerFileLogger.info("Start loading PR list: append=$append currentPage=$currentPage totalPage=$totalPage")
 
         ApplicationManager.getApplication().executeOnPooledThread {
@@ -824,7 +934,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     if (mockJson.isBlank()) {
                         PrListResult(0, emptyList(), 0, 0)
                     } else {
-                        parsePrList(mockJson)
+                        buildMockPrListResult(mockJson, append)
                     }
                 } else {
                     val requestBody = buildListRequestBody(append)
@@ -843,7 +953,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     currentPage = result.page
                     tableModel.setRows(result.items, append = append)
                     val loaded = tableModel.rowCount
+                    val hasMore = (totalPage > 0 && currentPage < totalPage) || (totalCount > 0 && loaded < totalCount)
+                    hasMorePrs = hasMore
+                    userTriggeredListScroll = false
+                    lastListScrollValue = prTableScrollPane?.verticalScrollBar?.value ?: 0
                     statusLabel.text = if (totalCount > 0) "已加载 $loaded/$totalCount 条 PR" else "暂无 PR"
+                    updateLoadMoreState(loading = false, hasMore = hasMore)
                 }
                 PrManagerFileLogger.info("Finish loading PR list: append=$append page=${result.page} loaded=${result.items.size} total=${result.total}")
             } catch (e: Exception) {
@@ -853,12 +968,60 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                         tableModel.setRows(emptyList(), append = false)
                     }
                     statusLabel.text = "暂无 PR"
+                    hasMorePrs = false
+                    userTriggeredListScroll = false
+                    lastListScrollValue = prTableScrollPane?.verticalScrollBar?.value ?: 0
+                    updateLoadMoreState(loading = false, hasMore = false)
                 }
             } finally {
                 isLoading = false
-                setLoadMoreVisible(false)
             }
         }
+    }
+
+    private fun buildMockPrListResult(mockJson: String, append: Boolean): PrListResult {
+        val parsed = parsePrList(mockJson)
+        val keyword = searchField.text?.trim().orEmpty().lowercase()
+        val currentUser = System.getenv("USERID").orEmpty().trim()
+
+        val filtered = parsed.items.filter { item ->
+            val statusMatched = when (activeFilter) {
+                PrFilter.OPEN -> item.state == PrState.OPEN
+                PrFilter.MERGED -> item.state == PrState.MERGED
+                PrFilter.CLOSED -> item.state == PrState.CLOSED
+                PrFilter.ALL -> true
+            }
+            if (!statusMatched) return@filter false
+
+            if (relatedOnly && currentUser.isNotBlank()) {
+                val relatedMatched = item.author == currentUser ||
+                    item.keyReviewers.contains(currentUser) ||
+                    item.generalReviewers.contains(currentUser) ||
+                    item.reviewers.any { it.username == currentUser }
+                if (!relatedMatched) return@filter false
+            }
+
+            if (keyword.isBlank()) return@filter true
+            item.title.lowercase().contains(keyword) ||
+                item.sourceBranch.lowercase().contains(keyword) ||
+                item.targetBranch.lowercase().contains(keyword) ||
+                item.author.lowercase().contains(keyword)
+        }
+
+        val total = filtered.size
+        val totalPage = if (total == 0) 0 else (total + pageSize - 1) / pageSize
+        val requestedPage = if (append) currentPage + 1 else 1
+        val page = if (totalPage == 0) 1 else requestedPage.coerceAtMost(totalPage)
+        val fromIndex = ((page - 1) * pageSize).coerceAtLeast(0)
+        val toIndex = (fromIndex + pageSize).coerceAtMost(total)
+        val pageItems = if (fromIndex in 0 until toIndex) filtered.subList(fromIndex, toIndex) else emptyList()
+
+        return PrListResult(
+            total = total,
+            items = pageItems,
+            page = page,
+            totalPage = totalPage
+        )
     }
 
     private fun buildListRequestBody(append: Boolean): String {
@@ -894,6 +1057,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private fun renderEmptyDetail() {
         currentDetail = null
+        updateFileChangeWarning(false, null)
         (detailCard.layout as java.awt.CardLayout).show(detailCard, "empty")
 
         detailHeaderTitle.text = "未选择 PR"
@@ -948,7 +1112,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     currentDetail = detail
                     renderDetail(detail)
                 }
-                PrManagerFileLogger.info("PR detail loaded: prId=$prId iid=${detail.iid}")
+                PrManagerFileLogger.info("PR detail loaded: prId=$prId iid=${detail.iid}, srBranch=${detail.sourceBranch}, trBranch=${detail.targetBranch}")
+                updateFileChangeBranchWarning(detail.sourceBranch)
                 loadNotes(detail)
                 loadFileChanges(detail.sourceBranch, detail.targetBranch)
                 loadCommitRecords(detail)
@@ -1094,8 +1259,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private fun loadFileChanges(source: String, target: String) {
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
-                PrManagerFileLogger.info("Start loading file changes: target=$target source=$source")
-                val result = branchService.compare(target, source)
+                val remoteSource = ensureOriginBranch(target = source)
+                val remoteTarget = ensureOriginBranch(target = target)
+                PrManagerFileLogger.info("Start loading file changes: target=$target->$remoteTarget source=$source->$remoteSource")
+                val result = branchService.compare(remoteTarget, remoteSource)
                 SwingUtilities.invokeLater {
                     if (result.error != null) {
                         PrManagerFileLogger.warn("Load file changes failed: ${result.error}")
@@ -1238,34 +1405,47 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun openDiff(change: ChangeItem, source: String, target: String) {
-        try {
-            PrManagerFileLogger.info("Open diff: file=${change.filePath} target=$target source=$source")
-            val sourceContent = branchService.loadFileContent(source, change.filePath)
-            val targetContent = branchService.loadFileContent(target, change.filePath)
-            if (sourceContent == null && targetContent == null) {
-                updateStatus("无法加载文件内容")
-                PrManagerFileLogger.warn("Open diff failed, content empty: file=${change.filePath}")
-                return
-            }
+        val remoteSource = ensureOriginBranch(target = source)
+        val remoteTarget = ensureOriginBranch(target = target)
+        PrManagerFileLogger.info("Open diff: file=${change.filePath} target=$target->$remoteTarget source=$source->$remoteSource")
 
-            val fileType = FileTypeManager.getInstance().getFileTypeByFileName(change.filePath)
-            val contentFactory = DiffContentFactory.getInstance()
-            val left = contentFactory.create(project, targetContent ?: "", fileType)
-            val right = contentFactory.create(project, sourceContent ?: "", fileType)
-            val request = SimpleDiffRequest(
-                "${change.filePath} ($target..$source)",
-                left,
-                right,
-                target,
-                source
-            )
-            commentManager.updateIssueLines(change.filePath, issueLineSetByFile(change.filePath))
-            commentManager.updateIssueDetails(change.filePath, issueItemsByFile(change.filePath))
-            diffBinder.bindNextDiff(change.filePath)
-            DiffManager.getInstance().showDiff(project, request)
-        } catch (e: Exception) {
-            PrManagerFileLogger.error("Open diff error: file=${change.filePath}", e)
-            updateStatus("打开Diff失败: ${e.message ?: "未知错误"}")
+        ApplicationManager.getApplication().executeOnPooledThread {
+            try {
+                val sourceContent = branchService.loadFileContent(remoteSource, change.filePath)
+                val targetContent = branchService.loadFileContent(remoteTarget, change.filePath)
+                if (sourceContent == null && targetContent == null) {
+                    updateStatus("无法加载文件内容")
+                    PrManagerFileLogger.warn("Open diff failed, content empty: file=${change.filePath}")
+                    return@executeOnPooledThread
+                }
+
+                SwingUtilities.invokeLater {
+                    try {
+                        if (project.isDisposed) return@invokeLater
+                        val fileType = FileTypeManager.getInstance().getFileTypeByFileName(change.filePath)
+                        val contentFactory = DiffContentFactory.getInstance()
+                        val left = contentFactory.create(project, targetContent ?: "", fileType)
+                        val right = contentFactory.create(project, sourceContent ?: "", fileType)
+                        val request = SimpleDiffRequest(
+                            "${change.filePath} ($remoteTarget..$remoteSource)",
+                            left,
+                            right,
+                            remoteTarget,
+                            remoteSource
+                        )
+                        commentManager.updateIssueLines(change.filePath, issueLineSetByFile(change.filePath))
+                        commentManager.updateIssueDetails(change.filePath, issueItemsByFile(change.filePath))
+                        diffBinder.bindNextDiff(change.filePath)
+                        DiffManager.getInstance().showDiff(project, request)
+                    } catch (e: Exception) {
+                        PrManagerFileLogger.error("Open diff error on UI thread: file=${change.filePath}", e)
+                        updateStatus("打开Diff失败: ${e.message ?: "未知错误"}")
+                    }
+                }
+            } catch (e: Exception) {
+                PrManagerFileLogger.error("Open diff error: file=${change.filePath}", e)
+                updateStatus("打开Diff失败: ${e.message ?: "未知错误"}")
+            }
         }
     }
 
@@ -1290,22 +1470,13 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 }
 
                 val mergeBase = resolveMergeBase(repo, targetRef, sourceRef)
-                val ranges = buildList {
-                    if (!mergeBase.isNullOrBlank()) {
-                        add("$mergeBase..$sourceRef")
-                    }
-                    add("$targetRef..$sourceRef")
-                    add("$targetRef...$sourceRef")
+                val range = if (!mergeBase.isNullOrBlank()) {
+                    "$mergeBase..$sourceRef"
+                } else {
+                    "$targetRef..$sourceRef"
                 }
 
-                var commits: List<CommitItem> = emptyList()
-                for (range in ranges) {
-                    val rows = loadCommitsByRange(repo, range)
-                    if (rows.isNotEmpty()) {
-                        commits = rows
-                        break
-                    }
-                }
+                var commits = loadCommitsByRange(repo, range)
 
                 if (commits.isEmpty()) commits = fallbackCommits
                 PrManagerFileLogger.info("Commit records loaded: prId=${detail.id} count=${commits.size}")
@@ -1671,8 +1842,23 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
     }
 
-    private fun setLoadMoreVisible(visible: Boolean) {
-        SwingUtilities.invokeLater { loadMoreLabel.isVisible = visible }
+    private fun updateLoadMoreState(loading: Boolean, hasMore: Boolean) {
+        SwingUtilities.invokeLater {
+            when {
+                loading -> {
+                    loadMoreLabel.text = "加载中..."
+                    loadMoreLabel.isVisible = true
+                }
+                hasMore -> {
+                    loadMoreLabel.text = "加载更多"
+                    loadMoreLabel.isVisible = true
+                }
+                else -> {
+                    loadMoreLabel.text = ""
+                    loadMoreLabel.isVisible = false
+                }
+            }
+        }
     }
 
     private inner class ChangeTreeCellRenderer : javax.swing.tree.TreeCellRenderer {
@@ -1814,6 +2000,33 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }
             return panel
         }
+    }
+
+    private class CircleWarningIcon : Icon {
+        private val size = JBUI.scale(12)
+
+        override fun paintIcon(c: Component?, g: Graphics, x: Int, y: Int) {
+            val g2 = g.create() as Graphics2D
+            try {
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                g2.color = Color(0xF29900)
+                g2.fillOval(x, y, size, size)
+                g2.color = Color.WHITE
+                val font = g2.font.deriveFont(Font.BOLD, (size * 0.85f).coerceAtLeast(9f))
+                g2.font = font
+                val fm = g2.fontMetrics
+                val text = "!"
+                val tx = x + (size - fm.stringWidth(text)) / 2
+                val ty = y + (size + fm.ascent - fm.descent) / 2 - 1
+                g2.drawString(text, tx, ty)
+            } finally {
+                g2.dispose()
+            }
+        }
+
+        override fun getIconWidth(): Int = size
+
+        override fun getIconHeight(): Int = size
     }
 
     private class ReviewerAvatarIcon(

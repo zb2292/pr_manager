@@ -890,7 +890,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                         val response = apiService.replyNote(
                             prId = detail.id,
                             context = content,
-                            nodeId = parent.id.takeIf { it.isNotBlank() },
+                            nodeId = parent.rootId.takeIf { it.isNotBlank() },
                             replyNoteId = parent.id.takeIf { it.isNotBlank() },
                             replyUserId = parent.authorId
                         )
@@ -1754,19 +1754,19 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
                     comments.add(
                         LineComment(
-                            id = commentId,
-                            filePath = filePath,
-                            line = lineIndex,
-                            side = Side.RIGHT,
-                            content = content,
-                            author = author,
-                            createdAt = createdAt,
-                            parentId = null,
-                            authorId = authorId,
-                            rootId = rootId.ifBlank { commentId },
-                            floorNum = floorNum,
-                            replyFloorNum = replyFloorNum,
-                            resolved = resolved
+                            commentId,
+                            filePath,
+                            lineIndex,
+                            Side.RIGHT,
+                            content,
+                            author,
+                            createdAt,
+                            null,
+                            rootId.ifBlank { commentId },
+                            floorNum,
+                            replyFloorNum,
+                            resolved,
+                            authorId
                         )
                     )
 
@@ -1805,19 +1805,19 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
                             comments.add(
                                 LineComment(
-                                    id = childCommentId,
-                                    filePath = filePath,
-                                    line = lineIndex,
-                                    side = Side.RIGHT,
-                                    content = childContent,
-                                    author = childAuthor,
-                                    createdAt = childCreatedAt,
-                                    parentId = rootId.ifBlank { commentId },
-                                    authorId = childAuthorId,
-                                    rootId = childRootId.ifBlank { rootId.ifBlank { commentId } },
-                                    floorNum = childFloorNum,
-                                    replyFloorNum = childReplyFloorNum,
-                                    resolved = childResolved
+                                    childCommentId,
+                                    filePath,
+                                    lineIndex,
+                                    Side.RIGHT,
+                                    childContent,
+                                    childAuthor,
+                                    childCreatedAt,
+                                    rootId.ifBlank { commentId },
+                                    childRootId.ifBlank { rootId.ifBlank { commentId } },
+                                    childFloorNum,
+                                    childReplyFloorNum,
+                                    childResolved,
+                                    childAuthorId
                                 )
                             )
                         }

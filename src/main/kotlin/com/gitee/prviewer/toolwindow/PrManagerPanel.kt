@@ -132,7 +132,17 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private var prTableScrollPane: JBScrollPane? = null
     private val loadMoreLabel = JBLabel("加载更多中...", SwingConstants.CENTER)
     private val searchField = JBTextField()
+    private val createdByMeCheck = JBCheckBox("我创建的")
+    private val reviewedByMeCheck = JBCheckBox("我评审的")
+    private val filterCheckPanel = JPanel().apply {
+        layout = BoxLayout(this, BoxLayout.X_AXIS)
+        isOpaque = false
+        add(createdByMeCheck)
+        add(Box.createHorizontalStrut(JBUI.scale(6)))
+        add(reviewedByMeCheck)
+    }
     private val refreshButton = JButton()
+    private var suppressFilterCheckEvent = false
     private val filterTabsPanel = JPanel().apply {
         layout = BoxLayout(this, BoxLayout.X_AXIS)
         isOpaque = false
@@ -141,12 +151,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private val filterButtons = listOf(
         JToggleButton("开启的"),
         JToggleButton("已合并"),
-        JToggleButton("已关闭"),
-        JToggleButton("与我有关")
+        JToggleButton("已关闭")
     )
 
     private var activeFilter = PrFilter.OPEN
-    private var relatedOnly = false
     private var currentPage = 1
     private var totalPage = 0
     private var totalCount = 0
@@ -215,6 +223,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         statusLabel.font = statusLabel.font.deriveFont(Font.PLAIN, globalUiFontSize)
         loadMoreLabel.font = loadMoreLabel.font.deriveFont(Font.PLAIN, globalUiFontSize)
         searchField.font = searchField.font.deriveFont(Font.PLAIN, globalUiFontSize)
+        createdByMeCheck.font = createdByMeCheck.font.deriveFont(Font.PLAIN, globalUiFontSize)
+        reviewedByMeCheck.font = reviewedByMeCheck.font.deriveFont(Font.PLAIN, globalUiFontSize)
 
         prTable.font = prTable.font.deriveFont(Font.PLAIN, globalUiFontSize)
         prTable.tableHeader.font = prTable.tableHeader.font.deriveFont(Font.BOLD, globalUiFontSize)
@@ -302,6 +312,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     filterTabsPanel.add(Box.createHorizontalStrut(JBUI.scale(2)))
                 }
             }
+            filterTabsPanel.add(Box.createHorizontalStrut(JBUI.scale(8)))
+            filterTabsPanel.add(filterCheckPanel)
             filterButtons.first().isSelected = true
             updateFilterButtonStyles()
             filterTabsMinWidth = filterTabsPanel.preferredSize.width
@@ -315,6 +327,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
         val searchHint = "标题"
         searchField.emptyText.text = searchHint
+
+        createdByMeCheck.isOpaque = false
+        reviewedByMeCheck.isOpaque = false
 
         val searchWrapper = JPanel(BorderLayout())
         searchWrapper.border = JBUI.Borders.emptyLeft(6)
@@ -767,25 +782,14 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         filterButtons.forEachIndexed { index, button ->
             button.addActionListener {
                 try {
-                    when (index) {
-                        0 -> {
-                            activeFilter = PrFilter.OPEN
-                            relatedOnly = false
-                        }
-                        1 -> {
-                            activeFilter = PrFilter.MERGED
-                            relatedOnly = false
-                        }
-                        2 -> {
-                            activeFilter = PrFilter.CLOSED
-                            relatedOnly = false
-                        }
-                        else -> {
-                            activeFilter = PrFilter.ALL
-                            relatedOnly = true
-                        }
+                    activeFilter = when (index) {
+                        0 -> PrFilter.OPEN
+                        1 -> PrFilter.MERGED
+                        else -> PrFilter.CLOSED
                     }
-                    PrManagerFileLogger.info("Filter changed: index=$index filter=$activeFilter relatedOnly=$relatedOnly")
+                    PrManagerFileLogger.info(
+                        "Filter changed: index=$index filter=$activeFilter createdByMe=${createdByMeCheck.isSelected} reviewedByMe=${reviewedByMeCheck.isSelected}"
+                    )
                     updateFilterButtonStyles()
                     resetAndLoad()
                 } catch (e: Exception) {
@@ -794,10 +798,42 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }
         }
 
+        val onFilterCheckChanged: (Any?) -> Unit = onFilterCheckChanged@{ source ->
+            if (suppressFilterCheckEvent) return@onFilterCheckChanged
+            try {
+                val createdSelected = createdByMeCheck.isSelected
+                val reviewedSelected = reviewedByMeCheck.isSelected
+                if (createdSelected && reviewedSelected) {
+                    suppressFilterCheckEvent = true
+                    when (source) {
+                        createdByMeCheck -> createdByMeCheck.isSelected = false
+                        reviewedByMeCheck -> reviewedByMeCheck.isSelected = false
+                        else -> {
+                            createdByMeCheck.isSelected = false
+                            reviewedByMeCheck.isSelected = false
+                        }
+                    }
+                    suppressFilterCheckEvent = false
+                    Messages.showInfoMessage("评审人与发起人不能相同", "提示")
+                    return@onFilterCheckChanged
+                }
+                PrManagerFileLogger.info(
+                    "Filter checkbox changed: createdByMe=$createdSelected reviewedByMe=$reviewedSelected"
+                )
+                resetAndLoad()
+            } catch (e: Exception) {
+                PrManagerFileLogger.error("Failed to handle filter checkbox change", e)
+            }
+        }
+        createdByMeCheck.addActionListener { event -> onFilterCheckChanged(event.source) }
+        reviewedByMeCheck.addActionListener { event -> onFilterCheckChanged(event.source) }
+
         searchField.addActionListener {
             try {
                 val keyword = searchField.text?.trim().orEmpty()
-                PrManagerFileLogger.info("Search triggered by Enter: keyword=$keyword filter=$activeFilter relatedOnly=$relatedOnly")
+                PrManagerFileLogger.info(
+                    "Search triggered by Enter: keyword=$keyword filter=$activeFilter createdByMe=${createdByMeCheck.isSelected} reviewedByMe=${reviewedByMeCheck.isSelected}"
+                )
                 resetAndLoad()
             } catch (e: Exception) {
                 PrManagerFileLogger.error("Failed to search PR list", e)
@@ -854,10 +890,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                         val response = apiService.replyNote(
                             prId = detail.id,
                             context = content,
-                            filePath = filePath,
-                            codeLine = line + 1,
                             nodeId = parent.id.takeIf { it.isNotBlank() },
-                            replyFloorNum = parent.floorNum
+                            replyNoteId = parent.id.takeIf { it.isNotBlank() },
+                            replyUserId = parent.authorId
                         )
                         if (response.statusCode() !in 200..299) {
                             updateStatus("回复失败: ${response.statusCode()}")
@@ -993,11 +1028,18 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }
             if (!statusMatched) return@filter false
 
-            if (relatedOnly && currentUser.isNotBlank()) {
-                val relatedMatched = item.author == currentUser ||
-                    item.keyReviewers.contains(currentUser) ||
+            val filterCreated = createdByMeCheck.isSelected
+            val filterReviewed = reviewedByMeCheck.isSelected
+            if ((filterCreated || filterReviewed) && currentUser.isNotBlank()) {
+                val createdMatched = item.author == currentUser
+                val reviewedMatched = item.keyReviewers.contains(currentUser) ||
                     item.generalReviewers.contains(currentUser) ||
                     item.reviewers.any { it.username == currentUser }
+                val relatedMatched = when {
+                    filterCreated && filterReviewed -> createdMatched || reviewedMatched
+                    filterCreated -> createdMatched
+                    else -> reviewedMatched
+                }
                 if (!relatedMatched) return@filter false
             }
 
@@ -1032,7 +1074,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             PrFilter.ALL -> "all"
         }
         val pageValue = if (append) currentPage + 1 else 1
-        val currentUser = System.getenv("USERID").orEmpty()
+        val currentUser = System.getenv("USERID").orEmpty().trim()
+        val filterCreated = createdByMeCheck.isSelected
+        val filterReviewed = reviewedByMeCheck.isSelected
         val payload = linkedMapOf(
             "sshPath" to resolveGitAddress(),
             "page" to pageValue,
@@ -1042,9 +1086,13 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             "targetBranch" to "",
             "keywords" to (searchField.text?.trim() ?: "")
         )
-        if (relatedOnly && currentUser.isNotBlank()) {
-            payload["authorName"] = currentUser
-            payload["reviewerName"] = currentUser
+        if (currentUser.isNotBlank()) {
+            if (filterCreated) {
+                payload["authorName"] = currentUser
+            }
+            if (filterReviewed) {
+                payload["reviewerName"] = currentUser
+            }
         }
         return objectMapper.writeValueAsString(payload)
     }
@@ -1692,7 +1740,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 noteList.forEach { note ->
                     val noteId = note.readText("id", "nodeId")
                     val rootId = note.readText("root_id").ifBlank { noteId }
-                    val author = note.get("author")?.readText("username", "login", "name").orEmpty()
+                    val authorNode = note.get("author")
+                    val author = authorNode?.readText("username", "login", "name").orEmpty()
+                    val authorId = authorNode?.get("id")?.asInt()
                     val content = note.readText("note", "content", "body")
                     val createdAt = parseEpoch(note.readText("created_at", "createdAt"))
                     val floorNum = note.get("floor_num")?.asInt()
@@ -1712,6 +1762,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                             author = author,
                             createdAt = createdAt,
                             parentId = null,
+                            authorId = authorId,
                             rootId = rootId.ifBlank { commentId },
                             floorNum = floorNum,
                             replyFloorNum = replyFloorNum,
@@ -1738,7 +1789,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                         children.forEach { child ->
                             val childId = child.readText("id", "nodeId")
                             val childRootId = child.readText("root_id").ifBlank { rootId }
-                            val childAuthor = child.get("author")?.readText("username", "login", "name").orEmpty()
+                            val childAuthorNode = child.get("author")
+                            val childAuthor = childAuthorNode?.readText("username", "login", "name").orEmpty()
+                            val childAuthorId = childAuthorNode?.get("id")?.asInt()
                             val childContent = child.readText("note", "content", "body")
                             val childCreatedAt = parseEpoch(child.readText("created_at", "createdAt"))
                             val childFloorNum = child.get("floor_num")?.asInt()
@@ -1760,6 +1813,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                                     author = childAuthor,
                                     createdAt = childCreatedAt,
                                     parentId = rootId.ifBlank { commentId },
+                                    authorId = childAuthorId,
                                     rootId = childRootId.ifBlank { rootId.ifBlank { commentId } },
                                     floorNum = childFloorNum,
                                     replyFloorNum = childReplyFloorNum,

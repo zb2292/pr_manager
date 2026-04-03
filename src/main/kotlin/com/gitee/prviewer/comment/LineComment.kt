@@ -14,5 +14,6 @@ data class LineComment(
     val rootId: String = id,
     val floorNum: Int? = null,
     val replyFloorNum: Int? = null,
-    val resolved: Boolean = false
+    val resolved: Boolean = false,
+    val authorId: Int? = null
 )

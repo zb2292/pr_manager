@@ -38,22 +38,22 @@ class PrApiService(
     fun replyNote(
         prId: Long,
         context: String,
-        filePath: String,
-        codeLine: Int,
         nodeId: String? = null,
-        replyFloorNum: Int? = null
+        replyNoteId: String? = null,
+        replyUserId: Int? = null
     ): HttpResponse<String> {
         val payload = linkedMapOf<String, Any>(
             "prId" to prId,
-            "context" to context,
-            "filePath" to filePath,
-            "codeLine" to codeLine
+            "context" to context
         )
         if (!nodeId.isNullOrBlank()) {
             payload["nodeId"] = nodeId
         }
-        if (replyFloorNum != null) {
-            payload["replyFloorNum"] = replyFloorNum
+        if (!replyNoteId.isNullOrBlank()) {
+            payload["replyNoteId"] = replyNoteId
+        }
+        if (replyUserId != null ) {
+            payload["replyUserId"] = replyUserId
         }
         return executeApi("replyNote", replyUrl, objectMapper.writeValueAsString(payload))
     }
@@ -93,12 +93,11 @@ class PrApiService(
     }
 
     private fun executeApi(apiName: String, url: String, requestBody: String): HttpResponse<String> {
-        val requestPreview = requestBody.take(2000)
-        PrManagerFileLogger.info("API[$apiName] request url=$url body=$requestPreview")
+        PrManagerFileLogger.info("API[$apiName] request url=$url body=$requestBody")
         return try {
             val response = httpClient.postJson(url, requestBody)
-            val bodyPreview = response.body().orEmpty().take(2000)
-            PrManagerFileLogger.info("API[$apiName] response status=${response.statusCode()} body=$bodyPreview")
+            val bodyContent = response.body().orEmpty()
+            PrManagerFileLogger.info("API[$apiName] response status=${response.statusCode()} body=$bodyContent")
             response
         } catch (e: Exception) {
             PrManagerFileLogger.error("API[$apiName] failed url=$url", e)

@@ -25,9 +25,9 @@ import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.JBTextField
-import com.intellij.ui.components.labels.ActionLink
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import org.jetbrains.annotations.Nls
 import java.awt.*
 import kotlin.math.max
 import java.awt.event.FocusAdapter
@@ -56,6 +56,10 @@ class LineCommentManager(private val project: Project) {
     companion object {
         private const val MAX_COMMENT_LENGTH = 200
         private const val MAX_COMMENT_HINT = "最多 200 字"
+        @Nls(capitalization = Nls.Capitalization.NotSpecified)
+        private val emptyReplyText = "暂无回复"
+        @Nls(capitalization = Nls.Capitalization.NotSpecified)
+        private val emptyCommentText = "暂无评论"
     }
 
     private val highlightersByEditor = WeakHashMap<Editor, MutableList<RangeHighlighter>>()
@@ -404,7 +408,7 @@ class LineCommentManager(private val project: Project) {
     }
 
     private fun showPopup(editor: Editor, filePath: String, line: Int, side: Side, openComposerOnly: Boolean = false) {
-        val currentUserName = "本地用户"
+        val currentUserName = System.getenv("USERID").orEmpty().ifBlank { "本地用户" }
         val currentUserIcon = AllIcons.General.User
         val timeFormatter = SimpleDateFormat("yyyy.MM.dd HH:mm:ss", Locale.getDefault())
 
@@ -497,6 +501,50 @@ class LineCommentManager(private val project: Project) {
             label.foreground = textSecondary
             panel.add(label)
             return panel
+        }
+
+        fun buildActionLinkLabel(text: String, onClick: () -> Unit): JBLabel {
+            val label = JBLabel(text)
+            label.isOpaque = false
+            label.foreground = textLink
+            label.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            label.addMouseListener(object : MouseAdapter() {
+                override fun mouseClicked(e: MouseEvent) {
+                    onClick()
+                }
+            })
+            return label
+        }
+
+        fun buildHeaderLeftPanel(
+            seqText: String,
+            author: String,
+            createdAt: Long,
+            replyFloorText: String?
+        ): JPanel {
+            val left = JPanel()
+            left.layout = BoxLayout(left, BoxLayout.X_AXIS)
+            left.isOpaque = false
+            left.border = JBUI.Borders.emptyLeft(4)
+            val seqLabel = JBLabel(seqText)
+            seqLabel.foreground = textSecondary
+            left.add(seqLabel)
+            left.add(JBLabel("  "))
+            val nameLabel = JBLabel(author)
+            nameLabel.foreground = textSecondary
+            nameLabel.font = nameLabel.font.deriveFont(Font.BOLD)
+            left.add(nameLabel)
+            left.add(JBLabel(" "))
+            val timeLabel = JBLabel(timeFormatter.format(Date(createdAt)))
+            timeLabel.foreground = textHint
+            left.add(timeLabel)
+            if (!replyFloorText.isNullOrBlank()) {
+                left.add(Box.createHorizontalStrut(JBUI.scale(4)))
+                val replyLabel = JBLabel(replyFloorText)
+                replyLabel.foreground = textSecondary
+                left.add(replyLabel)
+            }
+            return left
         }
 
         fun addRootComment(text: String) {
@@ -648,7 +696,7 @@ class LineCommentManager(private val project: Project) {
             }
             val lineHeight = input.getFontMetrics(input.font).height
             val effectiveLineHeight = if (lineSpacing > 0f) (lineHeight * (1 + lineSpacing)).toInt() else lineHeight
-            input.margin = JBUI.insets(topPadding, JBUI.scale(6), bottomPadding, JBUI.scale(6))
+            input.margin = JBUI.insets(topPadding, 6, bottomPadding, 6)
             val fixedHeight = effectiveLineHeight * rows + topPadding + bottomPadding
             val fixedSize = Dimension(JBUI.scale(520), fixedHeight)
             inputComponent.preferredSize = fixedSize
@@ -716,7 +764,7 @@ class LineCommentManager(private val project: Project) {
 
             val left = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
             left.isOpaque = false
-            left.border = JBUI.Borders.emptyLeft(JBUI.scale(4))
+            left.border = JBUI.Borders.emptyLeft(4)
             val seqLabel = JBLabel("#$seq")
             seqLabel.foreground = textSecondary
             left.add(seqLabel)
@@ -780,20 +828,13 @@ class LineCommentManager(private val project: Project) {
             return content
         }
 
+        @Suppress("DuplicatedCode")
         fun buildActionRow(onReply: () -> Unit, onResolve: (() -> Unit)? = null): JComponent {
             val row = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
             row.isOpaque = false
             row.border = JBUI.Borders.empty()
             val charWidth = row.getFontMetrics(row.font).charWidth('0')
-            val replyLink = JBLabel("回复")
-            replyLink.isOpaque = false
-            replyLink.foreground = textLink
-            replyLink.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-            replyLink.addMouseListener(object : MouseAdapter() {
-                override fun mouseClicked(e: MouseEvent) {
-                    onReply()
-                }
-            })
+            val replyLink = buildActionLinkLabel("回复") { onReply() }
             val replyHeight = replyLink.preferredSize.height
             val replyWidth = charWidth * 4
             val replySize = Dimension(replyWidth, replyHeight)
@@ -804,20 +845,13 @@ class LineCommentManager(private val project: Project) {
 
             if (onResolve != null) {
                 row.add(Box.createHorizontalStrut(charWidth * 2))
-                val resolveLink = JBLabel("问题已解决")
-                resolveLink.isOpaque = false
-                resolveLink.foreground = textLink
-                resolveLink.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-                resolveLink.addMouseListener(object : MouseAdapter() {
-                    override fun mouseClicked(e: MouseEvent) {
-                        onResolve()
-                    }
-                })
+                val resolveLink = buildActionLinkLabel("问题已解决") { onResolve() }
                 row.add(resolveLink)
             }
             return row
         }
 
+        @Suppress("DuplicatedCode")
         fun buildReplyUnit(reply: LineComment, seq: Int, rebuild: () -> Unit): JComponent {
             val replyCard = JPanel()
             replyCard.layout = BoxLayout(replyCard, BoxLayout.Y_AXIS)
@@ -827,29 +861,8 @@ class LineCommentManager(private val project: Project) {
 
             val header = JPanel(BorderLayout())
             header.isOpaque = false
-            val left = JPanel()
-            left.layout = BoxLayout(left, BoxLayout.X_AXIS)
-            left.isOpaque = false
-            left.border = JBUI.Borders.emptyLeft(JBUI.scale(4))
-            val seqLabel = JBLabel("#$seq")
-            seqLabel.foreground = textSecondary
-            left.add(seqLabel)
-            left.add(JBLabel("  "))
-            val nameLabel = JBLabel(reply.author)
-            nameLabel.foreground = textSecondary
-            nameLabel.font = nameLabel.font.deriveFont(Font.BOLD)
-            left.add(nameLabel)
-            left.add(JBLabel(" "))
-            val timeLabel = JBLabel(timeFormatter.format(Date(reply.createdAt)))
-            timeLabel.foreground = textHint
-            left.add(timeLabel)
-            val replyFloor = reply.replyFloorNum
-            if (replyFloor != null && replyFloor > 0) {
-                left.add(Box.createHorizontalStrut(JBUI.scale(4)))
-                val replyLabel = JBLabel("回复#$replyFloor")
-                replyLabel.foreground = textSecondary
-                left.add(replyLabel)
-            }
+            val replyFloorText = reply.replyFloorNum?.takeIf { it > 0 }?.let { "回复#$it" }
+            val left = buildHeaderLeftPanel("#$seq", reply.author, reply.createdAt, replyFloorText)
             header.add(left, BorderLayout.WEST)
             header.maximumSize = Dimension(Int.MAX_VALUE, header.preferredSize.height)
             val rowGap = JBUI.scale(4)
@@ -860,7 +873,7 @@ class LineCommentManager(private val project: Project) {
             val contentRow = JPanel(BorderLayout())
             contentRow.isOpaque = false
 
-            contentRow.border = JBUI.Borders.empty(0, JBUI.scale(4), 0, 0)
+            contentRow.border = JBUI.Borders.emptyLeft(4)
             contentRow.add(buildContentRow(reply.content), BorderLayout.CENTER)
             replyCard.add(contentRow)
             replyCard.add(Box.createVerticalStrut(actionTopGap))
@@ -899,6 +912,7 @@ class LineCommentManager(private val project: Project) {
             return replyCard
         }
 
+        @Suppress("DuplicatedCode")
         fun buildCommentUnit(root: LineComment, all: List<LineComment>, commentById: Map<String, LineComment>, rebuild: () -> Unit): JComponent {
             val thread = threadForRoot(root, all, commentById)
             val seqMap = thread.mapIndexed { index, item -> item.id to (item.floorNum ?: (index + 1)) }.toMap()
@@ -924,22 +938,12 @@ class LineCommentManager(private val project: Project) {
 
             val header = JPanel(BorderLayout())
             header.isOpaque = false
-            val headerLeft = JPanel()
-            headerLeft.layout = BoxLayout(headerLeft, BoxLayout.X_AXIS)
-            headerLeft.isOpaque = false
-            headerLeft.border = JBUI.Borders.emptyLeft(JBUI.scale(4))
-            val seqLabel = JBLabel("#${seqMap[root.id] ?: 1}")
-            seqLabel.foreground = textSecondary
-            headerLeft.add(seqLabel)
-            headerLeft.add(JBLabel("  "))
-            val nameLabel = JBLabel(root.author)
-            nameLabel.foreground = textSecondary
-            nameLabel.font = nameLabel.font.deriveFont(Font.BOLD)
-            headerLeft.add(nameLabel)
-            headerLeft.add(JBLabel(" "))
-            val timeLabel = JBLabel(timeFormatter.format(Date(root.createdAt)))
-            timeLabel.foreground = textHint
-            headerLeft.add(timeLabel)
+            val headerLeft = buildHeaderLeftPanel(
+                "#${seqMap[root.id] ?: 1}",
+                root.author,
+                root.createdAt,
+                null
+            )
 
             val headerRight = JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0))
             headerRight.isOpaque = false
@@ -1021,7 +1025,7 @@ class LineCommentManager(private val project: Project) {
                 repliesPanel.border = JBUI.Borders.emptyTop(4)
 
                 if (replies.isEmpty()) {
-                    val empty = JBLabel("暂无回复")
+                    val empty = JBLabel(emptyReplyText)
                     empty.foreground = textHint
                     repliesPanel.add(empty)
                 } else {
@@ -1051,7 +1055,7 @@ class LineCommentManager(private val project: Project) {
 
             val left = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
             left.isOpaque = false
-            left.border = JBUI.Borders.emptyLeft(JBUI.scale(4))
+            left.border = JBUI.Borders.emptyLeft(4)
             left.add(JBLabel(currentUserName))
             left.add(JBLabel("  "))
             val replyButton = JButton("评论")
@@ -1060,7 +1064,7 @@ class LineCommentManager(private val project: Project) {
             replyButton.isBorderPainted = false
             replyButton.border = JBUI.Borders.empty()
             replyButton.foreground = textLink
-            replyButton.margin = JBUI.insets(0)
+            replyButton.margin = JBUI.emptyInsets()
             replyButton.horizontalAlignment = SwingConstants.LEFT
             left.add(replyButton)
             topRow.add(left, BorderLayout.WEST)
@@ -1160,7 +1164,7 @@ class LineCommentManager(private val project: Project) {
                 unitsWrapper.border = JBUI.Borders.empty(6, 0, 6, 0)
 
                 if (roots.isEmpty()) {
-                    val empty = JBLabel("暂无评论")
+                    val empty = JBLabel(emptyCommentText)
                     empty.foreground = textHint
                     unitsWrapper.add(empty)
                 } else {

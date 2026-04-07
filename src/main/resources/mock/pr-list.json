@@ -8,7 +8,7 @@
       "iid": 1,
       "title": "优化登录流程",
       "state": "opened",
-      "source_branch": "origin/dev",
+      "source_branch": "compatibility/2020-2",
       "target_branch": "origin/master",
       "author": {
         "username": "alice"

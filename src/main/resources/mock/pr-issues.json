@@ -7,8 +7,8 @@
       {
         "id": 1146,
         "diff_position": {
-          "new_path": "merge-request-integration/src/main/kotlin/net/ntworld/mergeRequestIntegration/commandHandler/ApproveMergeRequestCommandHandler.kt",
-          "new_line": 11
+          "new_path": "merge-request-integration-core/src/main/kotlin/net/ntworld/mergeRequestIntegrationIde/compatibility/Version203Adapter.kt",
+          "new_line": 12
         },
         "notes": [
           {

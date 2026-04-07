@@ -59,7 +59,9 @@ import javax.swing.ButtonGroup
 import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.Icon
+import javax.swing.JMenuItem
 import javax.swing.JPanel
+import javax.swing.JPopupMenu
 import javax.swing.ScrollPaneConstants
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
@@ -70,6 +72,44 @@ import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.DefaultTreeCellRenderer
 import javax.swing.tree.DefaultTreeModel
 import javax.swing.tree.TreePath
+
+class StatusBadgeLabel : JBLabel() {
+    private var badgeColor: Color = JBColor.GRAY
+
+    init {
+        isOpaque = false
+        horizontalAlignment = SwingConstants.CENTER
+        verticalAlignment = SwingConstants.CENTER
+        border = JBUI.Borders.empty(2, 10)
+        foreground = Color.WHITE
+    }
+
+    fun setBadge(text: String, color: Color) {
+        this.text = text
+        badgeColor = color
+        foreground = Color.WHITE
+        repaint()
+    }
+
+    override fun paintComponent(g: Graphics) {
+        if (text.isNullOrBlank()) {
+            super.paintComponent(g)
+            return
+        }
+        val g2 = g.create() as Graphics2D
+        try {
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+            val arc = height
+            g2.color = badgeColor
+            g2.fillRoundRect(0, 0, width - 1, height - 1, arc, arc)
+            g2.color = badgeColor
+            g2.drawRoundRect(0, 0, width - 1, height - 1, arc, arc)
+        } finally {
+            g2.dispose()
+        }
+        super.paintComponent(g)
+    }
+}
 
 class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true, true) {
     private val objectMapper = ObjectMapper()
@@ -132,8 +172,14 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private var prTableScrollPane: JBScrollPane? = null
     private val loadMoreLabel = JBLabel("加载更多中...", SwingConstants.CENTER)
     private val searchField = JBTextField()
-    private val createdByMeCheck = JBCheckBox("我创建的")
-    private val reviewedByMeCheck = JBCheckBox("我评审的")
+    private val createdByMeCheck = JBCheckBox("我创建的").apply {
+        isFocusable = false
+        isFocusPainted = false
+    }
+    private val reviewedByMeCheck = JBCheckBox("我评审的").apply {
+        isFocusable = false
+        isFocusPainted = false
+    }
     private val filterCheckPanel = JPanel().apply {
         layout = BoxLayout(this, BoxLayout.X_AXIS)
         isOpaque = false
@@ -168,7 +214,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private val detailEmpty = JPanel(BorderLayout())
     private val detailPanel = JPanel(BorderLayout())
     private val detailHeaderTitle = JBLabel("-")
-    private val detailStatus = JBLabel("-")
+    private val detailStatus: StatusBadgeLabel = StatusBadgeLabel()
     private val detailMeta = JBLabel("-")
     private val issueCountLabel = JBLabel("未解决问题: 0/0")
     private val reviewActionButton = JButton()
@@ -522,6 +568,16 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         overviewDesc.rows = 4
         overviewDesc.isEditable = false
         val descScroll = JBScrollPane(overviewDesc)
+        val panelBackground = panel.background
+        overviewDesc.isOpaque = true
+        overviewDesc.background = panelBackground
+        descScroll.viewport.isOpaque = true
+        descScroll.viewport.background = panelBackground
+        descScroll.background = panelBackground
+        keyReviewersField.background = panelBackground
+        reviewersField.background = panelBackground
+        keyReviewersField.isOpaque = false
+        reviewersField.isOpaque = false
         val descLineHeight = overviewDesc.getFontMetrics(overviewDesc.font).height
         val descHeight = descLineHeight * 4 + JBUI.scale(12)
         val descSize = Dimension(JBUI.scale(780), descHeight)
@@ -551,6 +607,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         val row = JPanel(BorderLayout())
         row.alignmentX = Component.LEFT_ALIGNMENT
         row.isOpaque = false
+        val charWidth = field.getFontMetrics(field.font).charWidth('中')
+        val leftShift = Math.round(charWidth / 5f)
+        row.border = JBUI.Borders.emptyLeft(-leftShift)
 
         val fieldHeight = field.getFontMetrics(field.font).height + JBUI.scale(10)
         val fieldSize = Dimension(JBUI.scale(347), fieldHeight)
@@ -587,11 +646,18 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         val wrapper = JPanel(BorderLayout())
         wrapper.alignmentX = Component.LEFT_ALIGNMENT
         val label = JBLabel(title)
-        label.font = label.font.deriveFont(Font.PLAIN, globalUiFontSize)
-        label.border = JBUI.Borders.emptyBottom(4)
+        val charWidth = label.getFontMetrics(label.font).charWidth('中')
+        val leftInset = Math.round(charWidth / 6f)
+        label.font = label.font.deriveFont(Font.BOLD, globalUiFontSize + 1f)
+        label.border = JBUI.Borders.empty(0, leftInset, 8, 0)
         wrapper.add(label, BorderLayout.NORTH)
-        wrapper.add(component, BorderLayout.CENTER)
-        wrapper.border = JBUI.Borders.emptyBottom(10)
+        val body = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            border = JBUI.Borders.emptyLeft(leftInset)
+            add(component, BorderLayout.CENTER)
+        }
+        wrapper.add(body, BorderLayout.CENTER)
+        wrapper.border = JBUI.Borders.emptyBottom(12)
         wrapper.maximumSize = Dimension(Int.MAX_VALUE, wrapper.preferredSize.height)
         return wrapper
     }
@@ -601,14 +667,37 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         changeTree.cellRenderer = ChangeTreeCellRenderer()
         changeTree.isRootVisible = false
         changeTree.showsRootHandles = true
-        changeTree.toggleClickCount = 1
+        changeTree.toggleClickCount = 0
         changeTree.addTreeSelectionListener {
             val node = changeTree.lastSelectedPathComponent as? DefaultMutableTreeNode ?: return@addTreeSelectionListener
             val selected = node.userObject as? ChangeItem ?: return@addTreeSelectionListener
             val detail = currentDetail ?: return@addTreeSelectionListener
             openDiff(selected, detail.sourceBranch, detail.targetBranch)
         }
-        return JBScrollPane(changeTree)
+        changeTree.addMouseListener(object : MouseAdapter() {
+            override fun mousePressed(e: MouseEvent) {
+                showChangeTreePopup(e)
+            }
+
+            override fun mouseReleased(e: MouseEvent) {
+                showChangeTreePopup(e)
+            }
+
+            override fun mouseClicked(e: MouseEvent) {
+                if (e.clickCount != 2 || !SwingUtilities.isLeftMouseButton(e)) return
+                val path = changeTree.getPathForLocation(e.x, e.y) ?: return
+                val node = path.lastPathComponent as? DefaultMutableTreeNode ?: return
+                if (node.userObject !is String) return
+                if (changeTree.isExpanded(path)) {
+                    changeTree.collapsePath(path)
+                } else {
+                    changeTree.expandPath(path)
+                }
+            }
+        })
+        return JBScrollPane(changeTree).apply {
+            border = JBUI.Borders.empty()
+        }
     }
 
     private fun buildCommitPanel(): JComponent {
@@ -689,7 +778,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }
         })
 
-        return JBScrollPane(commitTable)
+        return JBScrollPane(commitTable).apply {
+            border = JBUI.Borders.empty()
+        }
     }
 
     private fun setupDetailTabsHeader() {
@@ -708,7 +799,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
         return JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
             isOpaque = false
-            border = JBUI.Borders.emptyRight(20)
+            border = JBUI.Borders.empty(0, JBUI.scale(10), 0, JBUI.scale(10))
             add(if (title == "文件改动") fileChangeTabTitleLabel else titleLabel)
             if (tail != null) {
                 add(tail)
@@ -882,7 +973,16 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             override fun addReply(filePath: String, line: Int, side: com.intellij.diff.util.Side, parent: LineComment, content: String) {
                 val detail = currentDetail ?: return
                 if (mockEnabled) {
-                    LineCommentStore.addReply(filePath, line, side, parent.id, content, System.getenv("USERID").orEmpty(), parent.rootId)
+                    LineCommentStore.addReply(
+                        filePath = filePath,
+                        line = line,
+                        side = side,
+                        parentId = parent.id,
+                        content = content,
+                        author = System.getenv("USERID").orEmpty(),
+                        rootId = parent.rootId,
+                        replyFloorNum = parent.floorNum
+                    )
                     return
                 }
                 ApplicationManager.getApplication().executeOnPooledThread {
@@ -1109,8 +1209,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         (detailCard.layout as java.awt.CardLayout).show(detailCard, "empty")
 
         detailHeaderTitle.text = "未选择 PR"
-        detailStatus.text = "-"
-        detailStatus.foreground = JBColor.GRAY
+        detailStatus.isVisible = false
+        detailStatus.setBadge("", JBColor.GRAY)
         detailMeta.text = "请选择左侧 PR 查看详情"
         issueCountLabel.text = "未解决问题: 0/0"
         reviewActionButton.isVisible = false
@@ -1134,7 +1234,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private fun showDetail(prId: Long) {
         (detailCard.layout as java.awt.CardLayout).show(detailCard, "detail")
         detailHeaderTitle.text = "加载中..."
-        detailStatus.text = ""
+        detailStatus.isVisible = false
+        detailStatus.setBadge("", JBColor.GRAY)
         detailMeta.text = ""
         issueCountLabel.text = "未解决问题: 0/0"
         reviewActionButton.isVisible = false
@@ -1175,8 +1276,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private fun renderDetail(detail: PrDetail) {
         val number = if (detail.iid > 0) detail.iid else detail.id
         detailHeaderTitle.text = "#${number} ${detail.title}"
-        detailStatus.text = detail.status
-        detailStatus.foreground = statusColor(detail.status)
+        val badge = statusBadge(detail.status)
+        detailStatus.isVisible = true
+        detailStatus.setBadge(badge.text, badge.color)
 
         val meta = "创建人: ${detail.author}      创建时间: ${detail.createTime}      分支信息: ${detail.sourceBranch} -> ${detail.targetBranch}"
         detailMeta.text = meta
@@ -1410,6 +1512,20 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
     }
 
+    private fun showChangeTreePopup(e: MouseEvent) {
+        if (!e.isPopupTrigger) return
+        val path = changeTree.getPathForLocation(e.x, e.y) ?: return
+        changeTree.selectionPath = path
+        val node = path.lastPathComponent as? DefaultMutableTreeNode ?: return
+        if (node.userObject !is String) return
+
+        val menu = JPopupMenu()
+        val expandItem = JMenuItem("展开目录")
+        expandItem.addActionListener { expandTreePathRecursively(path) }
+        menu.add(expandItem)
+        menu.show(changeTree, e.x, e.y)
+    }
+
     private fun issueCountByFile(filePath: String): Pair<Int, Int>? {
         val fileIssues = issueItemsByFile(filePath)
         if (fileIssues.isEmpty()) return null
@@ -1592,6 +1708,16 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             normalized in setOf("merged", "merge") -> PrState.MERGED
             normalized in setOf("closed", "close") -> PrState.CLOSED
             else -> PrState.OPEN
+        }
+    }
+
+    private data class StatusBadge(val text: String, val color: JBColor)
+
+    private fun statusBadge(status: String): StatusBadge {
+        return when (parseState(status)) {
+            PrState.OPEN -> StatusBadge("开启的", JBColor(Color(0x1E8E3E), Color(0x57D163)))
+            PrState.MERGED -> StatusBadge("已合并", JBColor(Color(0x8E24AA), Color(0xC77DFF)))
+            PrState.CLOSED -> StatusBadge("已关闭", JBColor(Color(0xD93025), Color(0xF47067)))
         }
     }
 

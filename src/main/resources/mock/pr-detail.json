@@ -8,7 +8,7 @@
         "title": "优化登录流程",
         "id": 101,
         "iid": 1,
-        "sourceBranch": "origin/dev",
+        "sourceBranch": "compatibility/2020-2",
         "targetBranch": "origin/master",
         "baseCommitSha": "b177aac50231d4f176b5838cf237d01d650d28c9",
         "headCommitSha": "f8635c2e8d70b3d6244f8c8eb3c95103d1fe8031",

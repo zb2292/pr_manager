@@ -45,7 +45,8 @@ object LineCommentStore {
         parentId: String,
         content: String,
         author: String,
-        rootId: String = parentId
+        rootId: String = parentId,
+        replyFloorNum: Int? = null
     ): LineComment {
         val id = UUID.randomUUID().toString()
         val comment = LineComment(
@@ -58,6 +59,7 @@ object LineCommentStore {
             createdAt = System.currentTimeMillis(),
             parentId = parentId,
             rootId = rootId,
+            replyFloorNum = replyFloorNum,
             resolved = false
         )
         val key = Key(filePath, line, side)

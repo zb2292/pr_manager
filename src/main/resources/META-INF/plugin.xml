@@ -2,7 +2,7 @@
     <id>com.gitee.prviewer</id>
     <name>PR Manager</name>
     <vendor email="mazb.nevo@qq.com" url="https://example.com">PR Viewer Team</vendor>
-    <description> 本地pr插件demo,测试本地对比能力ddddddddddddddddddddd</description>
+    <description> 本地PR插件，对接码云远端，帮助用户在本地idea快速进行Pr查看、文件对比、评论。</description>
     <depends>com.intellij.modules.platform</depends>
     <depends>Git4Idea</depends>
 

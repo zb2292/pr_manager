@@ -25,6 +25,10 @@ import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.SimpleToolWindowPanel
+import com.intellij.openapi.ui.popup.Balloon
+import com.intellij.openapi.ui.popup.JBPopupFactory
+import com.intellij.ui.IconManager
+import com.intellij.ui.awt.RelativePoint
 import com.intellij.ui.JBColor
 import com.intellij.ui.OnePixelSplitter
 import com.intellij.ui.components.JBCheckBox
@@ -36,19 +40,12 @@ import com.intellij.ui.components.JBTextField
 import com.intellij.ui.table.JBTable
 import com.intellij.ui.treeStructure.Tree
 import com.intellij.util.ui.JBUI
+import com.intellij.util.ui.UIUtil
 import git4idea.commands.Git
 import git4idea.commands.GitCommand
 import git4idea.commands.GitLineHandler
 import git4idea.repo.GitRepositoryManager
-import java.awt.BorderLayout
-import java.awt.Color
-import java.awt.Component
-import java.awt.Dimension
-import java.awt.FlowLayout
-import java.awt.Font
-import java.awt.Graphics
-import java.awt.Graphics2D
-import java.awt.RenderingHints
+import java.awt.*
 import java.util.Properties
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
@@ -220,11 +217,48 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private val reviewActionButton = JButton()
     private val detailTabs = JBTabbedPane()
     private val fileChangeTabTitleLabel = JBLabel("文件改动")
-    private val fileChangeTabWarningLabel = JBLabel(CircleWarningIcon()).apply {
+    private val fileChangeWarningButton = JBLabel(IconManager.getInstance().getIcon("/icons/file-change-warning.svg", javaClass)).apply {
         isVisible = false
         toolTipText = null
-        border = JBUI.Borders.emptyLeft(6)
+        isOpaque = false
+        border = JBUI.Borders.empty()
+        val iconSize = icon?.let { Dimension(it.iconWidth, it.iconHeight) }
+        if (iconSize != null) {
+            preferredSize = iconSize
+            minimumSize = iconSize
+            maximumSize = iconSize
+        }
+        addMouseListener(object : MouseAdapter() {
+            override fun mouseClicked(e: MouseEvent) {
+                if (SwingUtilities.isLeftMouseButton(e)) {
+                    toggleFileChangeWarningBalloon()
+                }
+            }
+        })
     }
+    private val commitWarningLabel = JBLabel(IconManager.getInstance().getIcon("/icons/file-change-warning.svg", javaClass)).apply {
+        isVisible = false
+        toolTipText = null
+        isOpaque = false
+        border = JBUI.Borders.empty()
+        val iconSize = icon?.let { Dimension(it.iconWidth, it.iconHeight) }
+        if (iconSize != null) {
+            preferredSize = iconSize
+            minimumSize = iconSize
+            maximumSize = iconSize
+        }
+        addMouseListener(object : MouseAdapter() {
+            override fun mouseClicked(e: MouseEvent) {
+                if (SwingUtilities.isLeftMouseButton(e)) {
+                    toggleCommitWarningBalloon()
+                }
+            }
+        })
+    }
+    private var fileChangeWarningText: String? = null
+    private var commitWarningText: String? = null
+    private var commitWarningBalloon: Balloon? = null
+    private var fileChangeWarningBalloon: Balloon? = null
 
     private val overviewDesc = JBTextArea()
     private val keyReviewersField = JBTextField()
@@ -671,8 +705,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         changeTree.addTreeSelectionListener {
             val node = changeTree.lastSelectedPathComponent as? DefaultMutableTreeNode ?: return@addTreeSelectionListener
             val selected = node.userObject as? ChangeItem ?: return@addTreeSelectionListener
-            val detail = currentDetail ?: return@addTreeSelectionListener
-            openDiff(selected, detail.sourceBranch, detail.targetBranch)
+            currentDetail ?: return@addTreeSelectionListener
+            openDiff(selected)
         }
         changeTree.addMouseListener(object : MouseAdapter() {
             override fun mousePressed(e: MouseEvent) {
@@ -705,11 +739,16 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         commitTable.rowHeight = JBUI.scale(26)
         commitTable.setShowGrid(false)
         commitTable.tableHeader.reorderingAllowed = false
+        commitTable.setRowSelectionAllowed(false)
+        commitTable.setColumnSelectionAllowed(false)
+        commitTable.selectionModel.setSelectionInterval(-1, -1)
+        commitTable.columnModel.selectionModel.setSelectionInterval(-1, -1)
         if (commitTable.columnModel.columnCount > 3) {
             commitTable.columnModel.getColumn(0).preferredWidth = JBUI.scale(60)
             commitTable.columnModel.getColumn(1).preferredWidth = JBUI.scale(60)
             commitTable.columnModel.getColumn(2).preferredWidth = JBUI.scale(360)
             commitTable.columnModel.getColumn(3).preferredWidth = JBUI.scale(90)
+            commitTable.columnModel.getColumn(1).cellRenderer = CommitHashCellRenderer()
         }
 
         commitTable.addMouseMotionListener(object : MouseMotionAdapter() {
@@ -717,8 +756,11 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 val row = commitTable.rowAtPoint(e.point)
                 val col = commitTable.columnAtPoint(e.point)
                 if (row >= 0 && col == 1) {
-                    val fullHash = commitTableModel.getFullHashAt(row)
-                    commitTable.toolTipText = fullHash.ifBlank { null }
+                    commitTable.toolTipText = if (commitTableModel.isMissingAt(row)) {
+                        "当前分支不包含此记录"
+                    } else {
+                        commitTableModel.getFullHashAt(row).ifBlank { null }
+                    }
                 } else {
                     commitTable.toolTipText = null
                 }
@@ -742,8 +784,6 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 val row = commitTable.rowAtPoint(e.point)
                 val col = commitTable.columnAtPoint(e.point)
                 if (row < 0 || col != 1) return
-                commitTable.setRowSelectionInterval(row, row)
-                commitTable.setColumnSelectionInterval(col, col)
                 val fullHash = commitTableModel.getFullHashAt(row)
                 if (fullHash.isBlank()) return
                 val menu = javax.swing.JPopupMenu()
@@ -785,8 +825,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private fun setupDetailTabsHeader() {
         detailTabs.setTabComponentAt(0, createDetailTabHeader("概览", null))
-        detailTabs.setTabComponentAt(1, createDetailTabHeader("文件改动", fileChangeTabWarningLabel))
-        detailTabs.setTabComponentAt(2, createDetailTabHeader("提交记录", null))
+        detailTabs.setTabComponentAt(1, createDetailTabHeader("文件改动", fileChangeWarningButton))
+        detailTabs.setTabComponentAt(2, createDetailTabHeader("提交记录", commitWarningLabel))
     }
 
     private fun createDetailTabHeader(title: String, tail: JComponent?): JComponent {
@@ -799,9 +839,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
         return JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
             isOpaque = false
-            border = JBUI.Borders.empty(0, JBUI.scale(10), 0, JBUI.scale(10))
+            border = JBUI.Borders.empty(0, JBUI.scale(12), 0, JBUI.scale(12))
             add(if (title == "文件改动") fileChangeTabTitleLabel else titleLabel)
             if (tail != null) {
+                add(Box.createHorizontalStrut(JBUI.scale(6)))
                 add(tail)
             }
         }
@@ -826,6 +867,26 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             .removePrefix("origin/")
     }
 
+    private fun resolveRefHash(repo: git4idea.repo.GitRepository, ref: String): String? {
+        val handler = GitLineHandler(project, repo.root, GitCommand.REV_PARSE)
+        handler.addParameters("--verify", ref)
+        val result = Git.getInstance().runCommand(handler)
+        if (!result.success()) return null
+        return result.output.firstOrNull()?.trim().takeUnless { it.isNullOrBlank() }
+    }
+
+    private fun fetchRemoteBranches() {
+        val repo = GitRepositoryManager.getInstance(project).repositories.firstOrNull() ?: return
+        val remote = repo.remotes.firstOrNull() ?: return
+        val handler = GitLineHandler(project, repo.root, GitCommand.FETCH)
+        handler.addParameters(remote.name)
+        val result = Git.getInstance().runCommand(handler)
+        if (!result.success()) {
+            val error = result.errorOutput.joinToString("\n").ifBlank { "unknown" }
+            PrManagerFileLogger.warn("Git fetch failed: remote=${remote.name} error=$error")
+        }
+    }
+
     private fun updateFileChangeBranchWarning(sourceBranch: String) {
         val srBranch = normalizeLocalBranchName(sourceBranch)
         if (srBranch.isBlank()) {
@@ -841,32 +902,144 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     return@executeOnPooledThread
                 }
 
-                val handler = GitLineHandler(project, repo.root, GitCommand.DIFF)
-                val remoteBranch = ensureOriginBranch(srBranch)
-                handler.addParameters("--name-only", srBranch, remoteBranch)
-                val result = Git.getInstance().runCommand(handler)
-                val hasDiff = result.success() && result.output.any { it.isNotBlank() }
-                val tip = if (hasDiff) {
-                    "本地源分支$srBranch 与远端源分支 $remoteBranch 存在差异，为防止对比文件差异，请拉取后再进行查看"
+                val currentBranch = repo.currentBranch?.name.orEmpty()
+                val isSourceBranch = currentBranch == srBranch
+
+                val hasWarning = !isSourceBranch
+                val tip = if (hasWarning) {
+                    buildFileChangeWarningText(isSourceBranch)
                 } else {
                     null
                 }
-                updateFileChangeWarning(hasDiff, tip)
+                updateFileChangeWarning(hasWarning, tip)
             } catch (e: Exception) {
-                PrManagerFileLogger.error("Check local/remote source branch diff failed: sourceBranch=$sourceBranch", e)
+                PrManagerFileLogger.error("Check source branch failed: sourceBranch=$sourceBranch", e)
                 updateFileChangeWarning(false, null)
             }
         }
     }
 
+    private fun buildFileChangeWarningText(isSourceBranch: Boolean): String {
+        val warningColor = JBColor(Color(0xD93025), Color(0xF47067))
+        val noText = "<span style='color:${toHex(warningColor)};'>否</span>"
+        val sourceText = if (isSourceBranch) "是" else noText
+        return "<html>检查点：<br>" +
+                "- 当前分支是否为源分支：$sourceText （影响：不是源分支，文件对比中上下文关联可能不准确）" +
+                "</html>"
+    }
+
     private fun updateFileChangeWarning(visible: Boolean, tooltip: String?) {
         SwingUtilities.invokeLater {
-            fileChangeTabWarningLabel.isVisible = visible
-            fileChangeTabWarningLabel.toolTipText = tooltip
-            fileChangeTabTitleLabel.toolTipText = tooltip
+            fileChangeWarningText = tooltip
+            fileChangeWarningButton.isVisible = visible
+            fileChangeWarningButton.toolTipText = null
+            fileChangeTabTitleLabel.toolTipText = null
+            if (!visible) {
+                hideFileChangeWarningBalloon()
+            }
             detailTabs.revalidate()
             detailTabs.repaint()
         }
+    }
+
+    private fun updateCommitWarning(visible: Boolean) {
+        SwingUtilities.invokeLater {
+            commitWarningText = if (visible) {
+                "当前分支缺少如下提交记录，可能会影响文件对比中的上下文查看的准确性"
+            } else {
+                null
+            }
+            commitWarningLabel.isVisible = visible
+            commitWarningLabel.toolTipText = null
+            if (!visible) {
+                hideCommitWarningBalloon()
+            }
+            detailTabs.revalidate()
+            detailTabs.repaint()
+        }
+    }
+
+    private fun toggleCommitWarningBalloon() {
+        if (commitWarningBalloon != null) {
+            hideCommitWarningBalloon()
+            return
+        }
+        showCommitWarningBalloon()
+    }
+
+    private fun showCommitWarningBalloon() {
+        val text = commitWarningText?.takeIf { it.isNotBlank() } ?: return
+        commitWarningBalloon?.hide()
+        val fgColor = UIUtil.getToolTipForeground()
+        val bgColor = UIUtil.getToolTipBackground()
+        val styledText = wrapHtmlWithColor(text, fgColor)
+        val balloon = JBPopupFactory.getInstance()
+            .createHtmlTextBalloonBuilder(
+                styledText,
+                null,
+                bgColor,
+                UIUtil.getBoundsColor(),
+                null
+            )
+            .setHideOnClickOutside(true)
+            .setHideOnKeyOutside(true)
+            .setAnimationCycle(80)
+            .createBalloon()
+        commitWarningBalloon = balloon
+        balloon.show(RelativePoint.getSouthOf(commitWarningLabel), Balloon.Position.below)
+    }
+
+    private fun hideCommitWarningBalloon() {
+        commitWarningBalloon?.hide()
+        commitWarningBalloon = null
+    }
+
+    private fun toggleFileChangeWarningBalloon() {
+        if (fileChangeWarningBalloon != null) {
+            hideFileChangeWarningBalloon()
+            return
+        }
+        showFileChangeWarningBalloon()
+    }
+
+    private fun showFileChangeWarningBalloon() {
+        val text = fileChangeWarningText?.takeIf { it.isNotBlank() } ?: return
+        fileChangeWarningBalloon?.hide()
+        val fgColor = UIUtil.getToolTipForeground()
+        val bgColor = UIUtil.getToolTipBackground()
+        val styledText = wrapHtmlWithColor(text, fgColor)
+        val balloon = JBPopupFactory.getInstance()
+            .createHtmlTextBalloonBuilder(
+                styledText,
+                null,
+                bgColor,
+                UIUtil.getBoundsColor(),
+                null
+            )
+            .setHideOnClickOutside(true)
+            .setHideOnKeyOutside(true)
+            .setAnimationCycle(80)
+            .createBalloon()
+        fileChangeWarningBalloon = balloon
+        balloon.show(RelativePoint.getSouthOf(fileChangeWarningButton), Balloon.Position.below)
+    }
+
+    private fun hideFileChangeWarningBalloon() {
+        fileChangeWarningBalloon?.hide()
+        fileChangeWarningBalloon = null
+    }
+
+    private fun wrapHtmlWithColor(html: String, color: Color): String {
+        val body = if (html.startsWith("<html>") && html.endsWith("</html>")) {
+            html.removePrefix("<html>").removeSuffix("</html>")
+        } else {
+            html
+        }
+        return "<html><div style='color:${toHex(color)};'>$body</div></html>"
+    }
+
+    private fun toHex(color: Color): String {
+        return "#%02x%02x%02x".format(color.red, color.green, color.blue)
     }
 
     private fun bindActions() {
@@ -1206,6 +1379,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private fun renderEmptyDetail() {
         currentDetail = null
         updateFileChangeWarning(false, null)
+        updateCommitWarning(false)
         (detailCard.layout as java.awt.CardLayout).show(detailCard, "empty")
 
         detailHeaderTitle.text = "未选择 PR"
@@ -1262,9 +1436,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     renderDetail(detail)
                 }
                 PrManagerFileLogger.info("PR detail loaded: prId=$prId iid=${detail.iid}, srBranch=${detail.sourceBranch}, trBranch=${detail.targetBranch}")
+                fetchRemoteBranches()
                 updateFileChangeBranchWarning(detail.sourceBranch)
                 loadNotes(detail)
-                loadFileChanges(detail.sourceBranch, detail.targetBranch)
+                loadFileChanges(detail)
                 loadCommitRecords(detail)
             } catch (e: Exception) {
                 PrManagerFileLogger.error("Load PR detail error: prId=$prId", e)
@@ -1406,13 +1581,15 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
     }
 
-    private fun loadFileChanges(source: String, target: String) {
+    private fun loadFileChanges(detail: PrDetail) {
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
-                val remoteSource = ensureOriginBranch(target = source)
-                val remoteTarget = ensureOriginBranch(target = target)
-                PrManagerFileLogger.info("Start loading file changes: target=$target->$remoteTarget source=$source->$remoteSource")
-                val result = branchService.compare(remoteTarget, remoteSource)
+                val baseRef = detail.baseCommitSha.trim().takeIf { it.isNotBlank() }
+                    ?: ensureOriginBranch(target = detail.targetBranch)
+                val headRef = detail.headCommitSha.trim().takeIf { it.isNotBlank() }
+                    ?: ensureOriginBranch(target = detail.sourceBranch)
+                PrManagerFileLogger.info("Start loading file changes: base=$baseRef head=$headRef")
+                val result = branchService.compare(baseRef, headRef)
                 SwingUtilities.invokeLater {
                     if (result.error != null) {
                         PrManagerFileLogger.warn("Load file changes failed: ${result.error}")
@@ -1425,7 +1602,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 }
                 PrManagerFileLogger.info("File changes loaded: count=${result.changes.size}")
             } catch (e: Exception) {
-                PrManagerFileLogger.error("Load file changes error: target=$target source=$source", e)
+                PrManagerFileLogger.error("Load file changes error: prId=${detail.id}", e)
             }
         }
     }
@@ -1568,15 +1745,18 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
     }
 
-    private fun openDiff(change: ChangeItem, source: String, target: String) {
-        val remoteSource = ensureOriginBranch(target = source)
-        val remoteTarget = ensureOriginBranch(target = target)
-        PrManagerFileLogger.info("Open diff: file=${change.filePath} target=$target->$remoteTarget source=$source->$remoteSource")
+    private fun openDiff(change: ChangeItem) {
+        val detail = currentDetail ?: return
+        val baseRef = detail.baseCommitSha.trim().takeIf { it.isNotBlank() }
+            ?: ensureOriginBranch(target = detail.targetBranch)
+        val headRef = detail.headCommitSha.trim().takeIf { it.isNotBlank() }
+            ?: ensureOriginBranch(target = detail.sourceBranch)
+        PrManagerFileLogger.info("Open diff: file=${change.filePath} base=$baseRef head=$headRef")
 
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
-                val sourceContent = branchService.loadFileContent(remoteSource, change.filePath)
-                val targetContent = branchService.loadFileContent(remoteTarget, change.filePath)
+                val sourceContent = branchService.loadFileContent(headRef, change.filePath)
+                val targetContent = branchService.loadFileContent(baseRef, change.filePath)
                 if (sourceContent == null && targetContent == null) {
                     updateStatus("无法加载文件内容")
                     PrManagerFileLogger.warn("Open diff failed, content empty: file=${change.filePath}")
@@ -1591,11 +1771,11 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                         val left = contentFactory.create(project, targetContent ?: "", fileType)
                         val right = contentFactory.create(project, sourceContent ?: "", fileType)
                         val request = SimpleDiffRequest(
-                            "${change.filePath} ($remoteTarget..$remoteSource)",
+                            "${change.filePath} ($baseRef..$headRef)",
                             left,
                             right,
-                            remoteTarget,
-                            remoteSource
+                            baseRef,
+                            headRef
                         )
                         commentManager.updateIssueLines(change.filePath, issueLineSetByFile(change.filePath))
                         commentManager.updateIssueDetails(change.filePath, issueItemsByFile(change.filePath))
@@ -1621,35 +1801,68 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 val repo = GitRepositoryManager.getInstance(project).repositories.firstOrNull()
                 if (repo == null) {
                     PrManagerFileLogger.warn("Load commit records fallback: repository not found")
-                    SwingUtilities.invokeLater { commitTableModel.setRows(fallbackCommits) }
+                    SwingUtilities.invokeLater {
+                        commitTableModel.setRows(fallbackCommits)
+                        updateCommitWarning(false)
+                    }
                     return@executeOnPooledThread
                 }
 
-                val sourceRef = toRemoteBranchRef(repo, detail.sourceBranch)
-                val targetRef = toRemoteBranchRef(repo, detail.targetBranch)
-                if (sourceRef.isBlank() || targetRef.isBlank()) {
-                    PrManagerFileLogger.warn("Load commit records fallback: invalid refs sourceRef=$sourceRef targetRef=$targetRef")
-                    SwingUtilities.invokeLater { commitTableModel.setRows(fallbackCommits) }
-                    return@executeOnPooledThread
-                }
-
-                val mergeBase = resolveMergeBase(repo, targetRef, sourceRef)
-                val range = if (!mergeBase.isNullOrBlank()) {
-                    "$mergeBase..$sourceRef"
+                val baseCommit = detail.baseCommitSha.trim()
+                val headCommit = detail.headCommitSha.trim()
+                val range = if (baseCommit.isNotBlank() && headCommit.isNotBlank()) {
+                    val mergeBase = resolveMergeBase(repo, baseCommit, headCommit)
+                    if (!mergeBase.isNullOrBlank()) "$mergeBase..$headCommit" else "$baseCommit..$headCommit"
                 } else {
-                    "$targetRef..$sourceRef"
+                    val sourceRef = toRemoteBranchRef(repo, detail.sourceBranch)
+                    val targetRef = toRemoteBranchRef(repo, detail.targetBranch)
+                    if (sourceRef.isBlank() || targetRef.isBlank()) {
+                        PrManagerFileLogger.warn("Load commit records fallback: invalid refs sourceRef=$sourceRef targetRef=$targetRef")
+                        SwingUtilities.invokeLater {
+                            commitTableModel.setRows(fallbackCommits)
+                            updateCommitWarning(false)
+                        }
+                        return@executeOnPooledThread
+                    }
+                    val mergeBase = resolveMergeBase(repo, targetRef, sourceRef)
+                    if (!mergeBase.isNullOrBlank()) "$mergeBase..$sourceRef" else "$targetRef..$sourceRef"
                 }
 
                 var commits = loadCommitsByRange(repo, range)
-
                 if (commits.isEmpty()) commits = fallbackCommits
-                PrManagerFileLogger.info("Commit records loaded: prId=${detail.id} count=${commits.size}")
-                SwingUtilities.invokeLater { commitTableModel.setRows(commits) }
+                val missingHashes = if (commits.isEmpty()) emptySet() else findMissingCommitsInCurrentBranch(repo, commits)
+                PrManagerFileLogger.info("Commit records loaded: prId=${detail.id} count=${commits.size} missing=${missingHashes.size}")
+                SwingUtilities.invokeLater {
+                    commitTableModel.setRows(commits, missingHashes)
+                    updateCommitWarning(missingHashes.isNotEmpty())
+                }
             } catch (e: Exception) {
                 PrManagerFileLogger.error("Load commit records error: prId=${detail.id}", e)
-                SwingUtilities.invokeLater { commitTableModel.setRows(detail.commits.sortedByDescending { it.time }) }
+                SwingUtilities.invokeLater {
+                    commitTableModel.setRows(detail.commits.sortedByDescending { it.time })
+                    updateCommitWarning(false)
+                }
             }
         }
+    }
+
+    private fun findMissingCommitsInCurrentBranch(
+        repo: git4idea.repo.GitRepository,
+        commits: List<CommitItem>
+    ): Set<String> {
+        if (commits.isEmpty()) return emptySet()
+        val missing = mutableSetOf<String>()
+        commits.forEach { commit ->
+            val hash = commit.hash.trim()
+            if (hash.isBlank()) return@forEach
+            val handler = GitLineHandler(project, repo.root, GitCommand.MERGE_BASE)
+            handler.addParameters("--is-ancestor", hash, "HEAD")
+            val result = Git.getInstance().runCommand(handler)
+            if (!result.success()) {
+                missing.add(hash)
+            }
+        }
+        return missing
     }
 
     private fun toRemoteBranchRef(repo: git4idea.repo.GitRepository, branch: String): String {
@@ -2121,6 +2334,33 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
     }
 
+    private inner class CommitHashCellRenderer : TableCellRenderer {
+        private val label = JBLabel()
+
+        override fun getTableCellRendererComponent(
+            table: javax.swing.JTable,
+            value: Any?,
+            isSelected: Boolean,
+            hasFocus: Boolean,
+            row: Int,
+            column: Int
+        ): Component {
+            val text = value?.toString().orEmpty()
+            label.text = text
+            label.font = table.font
+            label.isOpaque = true
+            label.background = if (isSelected) table.selectionBackground else table.background
+
+            val isMissing = commitTableModel.isMissingAt(row)
+            label.foreground = if (isSelected) {
+                table.selectionForeground
+            } else {
+                if (isMissing) JBColor(Color(0xD93025), Color(0xF47067)) else table.foreground
+            }
+            return label
+        }
+    }
+
     private fun changeTypeIcon(changeType: String) = when {
         changeType.startsWith("A") -> AllIcons.General.Add
         changeType.startsWith("D") -> AllIcons.General.Remove
@@ -2183,22 +2423,30 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private class CircleWarningIcon : Icon {
-        private val size = JBUI.scale(12)
+        private val size = JBUI.scale(14)
 
         override fun paintIcon(c: Component?, g: Graphics, x: Int, y: Int) {
             val g2 = g.create() as Graphics2D
             try {
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-                g2.color = Color(0xF29900)
+                g2.color = JBColor(Color(0xF59E0B), Color(0xF6A623))
                 g2.fillOval(x, y, size, size)
+
+                g2.color = JBColor(Color(0xD97706), Color(0xE08E2E))
+                g2.stroke = BasicStroke(JBUI.scale(1f))
+                g2.drawOval(x, y, size, size)
+
                 g2.color = Color.WHITE
-                val font = g2.font.deriveFont(Font.BOLD, (size * 0.85f).coerceAtLeast(9f))
-                g2.font = font
-                val fm = g2.fontMetrics
-                val text = "!"
-                val tx = x + (size - fm.stringWidth(text)) / 2
-                val ty = y + (size + fm.ascent - fm.descent) / 2 - 1
-                g2.drawString(text, tx, ty)
+                val barWidth = (size * 0.22f).coerceAtLeast(2f)
+                val barHeight = (size * 0.48f).coerceAtLeast(5f)
+                val barX = x + (size - barWidth) / 2f
+                val barY = y + size * 0.22f
+                g2.fillRoundRect(barX.toInt(), barY.toInt(), barWidth.toInt(), barHeight.toInt(), JBUI.scale(2), JBUI.scale(2))
+
+                val dotSize = (size * 0.16f).coerceAtLeast(2f)
+                val dotX = x + (size - dotSize) / 2f
+                val dotY = y + size * 0.74f
+                g2.fillOval(dotX.toInt(), dotY.toInt(), dotSize.toInt(), dotSize.toInt())
             } finally {
                 g2.dispose()
             }
@@ -2351,13 +2599,20 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private class CommitTableModel : AbstractTableModel() {
         private val columns = arrayOf("提交人", "提交编号", "提交信息", "提交日期")
         private var rows: List<CommitItem> = emptyList()
+        private var missingHashes: Set<String> = emptySet()
 
-        fun setRows(items: List<CommitItem>) {
+        fun setRows(items: List<CommitItem>, missingHashes: Set<String> = emptySet()) {
             rows = items
+            this.missingHashes = missingHashes
             fireTableDataChanged()
         }
 
         fun getFullHashAt(row: Int): String = rows.getOrNull(row)?.hash.orEmpty()
+
+        fun isMissingAt(row: Int): Boolean {
+            val hash = rows.getOrNull(row)?.hash.orEmpty()
+            return hash.isNotBlank() && missingHashes.contains(hash)
+        }
 
         override fun getRowCount(): Int = rows.size
 

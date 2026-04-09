@@ -10,8 +10,8 @@
         "iid": 1,
         "sourceBranch": "compatibility/2020-2",
         "targetBranch": "origin/master",
-        "baseCommitSha": "b177aac50231d4f176b5838cf237d01d650d28c9",
-        "headCommitSha": "f8635c2e8d70b3d6244f8c8eb3c95103d1fe8031",
+        "baseCommitSha": "4649c1e49849d5f14d05b9966a51d0a6151ee550",
+        "headCommitSha": "b7369e88f9debec457082f6c3bd80c241442a969",
         "userName": "alice",
         "state": "opened",
         "createdAt": "2026-02-12 10:00:00"

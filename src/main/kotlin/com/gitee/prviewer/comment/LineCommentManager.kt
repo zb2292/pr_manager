@@ -421,6 +421,7 @@ class LineCommentManager(private val project: Project) {
         val borderColor = UIUtil.getSeparatorColor()
         val contentMaxWidth = JBUI.scale(520)
         val leftInset = JBUI.scale(4)
+//        val alignedRowWidth = contentMaxWidth - JBUI.scale(12) + avatarSlotWidth
         val actionTopGap = JBUI.scale(6)
         val unitGap = JBUI.scale(2)
         val textPrimary = UIUtil.getLabelForeground()
@@ -433,6 +434,11 @@ class LineCommentManager(private val project: Project) {
         val container = JPanel(BorderLayout())
         container.border = JBUI.Borders.empty(10)
         container.background = bgBase
+
+        val baseCharWidth = container.getFontMetrics(container.font).charWidth('a')
+        val avatarSlotWidth = baseCharWidth * 5
+        val avatarSizePx = (baseCharWidth * 3).coerceAtLeast(JBUI.scale(12))
+        val alignedRowWidth = contentMaxWidth - JBUI.scale(12) + avatarSlotWidth
 
         val headerInput = EditorTextField()
         headerInput.setOneLineMode(true)
@@ -568,16 +574,13 @@ class LineCommentManager(private val project: Project) {
             left.layout = BoxLayout(left, BoxLayout.X_AXIS)
             left.isOpaque = false
 
-            val charWidth = left.getFontMetrics(left.font).charWidth('中')
-            val slotWidth = charWidth * 3
-            val avatarSize = (charWidth * 1.6).toInt().coerceAtLeast(JBUI.scale(12))
-            val avatarIcon = UserAvatarIcon(author, avatarColor(author), avatarSize)
+            val avatarIcon = UserAvatarIcon(author, avatarColor(author), avatarSizePx)
             val avatarLabel = JBLabel(avatarIcon)
             val avatarSlot = JPanel(BorderLayout()).apply {
                 isOpaque = false
-                preferredSize = Dimension(slotWidth, avatarSize)
-                minimumSize = Dimension(slotWidth, avatarSize)
-                maximumSize = Dimension(slotWidth, avatarSize)
+                preferredSize = Dimension(avatarSlotWidth, avatarSizePx)
+                minimumSize = Dimension(avatarSlotWidth, avatarSizePx)
+                maximumSize = Dimension(avatarSlotWidth, avatarSizePx)
                 add(avatarLabel, BorderLayout.CENTER)
             }
             left.add(avatarSlot)
@@ -894,21 +897,16 @@ class LineCommentManager(private val project: Project) {
         fun buildActionRow(onReply: () -> Unit, onResolve: (() -> Unit)? = null): JComponent {
             val row = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
             row.isOpaque = false
-            val indent = row.getFontMetrics(row.font).charWidth('中') * 2
-            row.border = JBUI.Borders.emptyLeft(indent)
-            val charWidth = row.getFontMetrics(row.font).charWidth('0')
+            row.border = JBUI.Borders.emptyLeft((avatarSlotWidth - JBUI.scale(4)).coerceAtLeast(0))
+            val charWidth = row.getFontMetrics(row.font).charWidth('a')
             val replyLink = buildActionLinkLabel("回复") { onReply() }
-            val replyHeight = replyLink.preferredSize.height
-            val replyWidth = charWidth * 4
-            val replySize = Dimension(replyWidth, replyHeight)
-            replyLink.preferredSize = replySize
-            replyLink.minimumSize = replySize
-            replyLink.maximumSize = replySize
+            replyLink.border = JBUI.Borders.emptyBottom(JBUI.scale(2))
             row.add(replyLink)
 
             if (onResolve != null) {
                 row.add(Box.createHorizontalStrut(charWidth * 2))
                 val resolveLink = buildActionLinkLabel("问题已解决") { onResolve() }
+                resolveLink.border = JBUI.Borders.emptyBottom(JBUI.scale(2))
                 row.add(resolveLink)
             }
             return row
@@ -935,7 +933,7 @@ class LineCommentManager(private val project: Project) {
             val contentRow = JPanel(BorderLayout())
             contentRow.isOpaque = false
 
-            val replyIndent = contentRow.getFontMetrics(contentRow.font).charWidth('中') * 3
+            val replyIndent = avatarSlotWidth
             contentRow.border = JBUI.Borders.emptyLeft(replyIndent)
             contentRow.add(buildContentRow(reply.content), BorderLayout.CENTER)
             replyCard.add(contentRow)
@@ -948,6 +946,7 @@ class LineCommentManager(private val project: Project) {
             val actionsHeight = actions.preferredSize.height
             actions.maximumSize = Dimension(contentMaxWidth, actionsHeight)
             actions.preferredSize = Dimension(contentMaxWidth, actionsHeight)
+
             replyCard.add(actions)
 
             if (replyComposerOpenById.contains(reply.id)) {
@@ -976,7 +975,7 @@ class LineCommentManager(private val project: Project) {
                     bottomPadding = JBUI.scale(3),
                     lineSpacing = 0.1f
                 )
-                val replyIndent = replyComposer.getFontMetrics(replyComposer.font).charWidth('中') * 3
+                val replyIndent = avatarSlotWidth
                 replyComposer.border = JBUI.Borders.empty(4, replyIndent, 0, 0)
                 replyCard.add(replyComposer)
             }
@@ -1048,7 +1047,7 @@ class LineCommentManager(private val project: Project) {
 
             val contentRow = JPanel(BorderLayout())
             contentRow.isOpaque = false
-            val rootIndent = contentRow.getFontMetrics(contentRow.font).charWidth('中') * 3
+            val rootIndent = avatarSlotWidth
             contentRow.border = JBUI.Borders.empty(0, rootIndent, rowGap, 0)
             contentRow.add(buildContentRow(root.content), BorderLayout.CENTER)
             wrapper.add(contentRow)
@@ -1067,8 +1066,9 @@ class LineCommentManager(private val project: Project) {
                 }
             })
             val actionsHeight = actions.preferredSize.height
-            actions.maximumSize = Dimension(contentMaxWidth, actionsHeight)
-            actions.preferredSize = Dimension(contentMaxWidth, actionsHeight)
+            actions.maximumSize = Dimension(alignedRowWidth, actionsHeight)
+            actions.preferredSize = Dimension(alignedRowWidth, actionsHeight)
+
             wrapper.add(actions)
 
             if (replyComposerOpenById.contains(root.id)) {
@@ -1097,7 +1097,7 @@ class LineCommentManager(private val project: Project) {
                     bottomPadding = JBUI.scale(3),
                     lineSpacing = 0.1f
                 )
-                val replyIndent = replyComposer.getFontMetrics(replyComposer.font).charWidth('中') * 3
+                val replyIndent = avatarSlotWidth
                 replyComposer.border = JBUI.Borders.empty(4, replyIndent, 0, 0)
                 wrapper.add(replyComposer)
             }

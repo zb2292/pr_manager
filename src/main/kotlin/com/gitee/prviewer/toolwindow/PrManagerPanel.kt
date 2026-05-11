@@ -298,6 +298,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private var aiReviewBadgeState: AiReviewBadgeState = AiReviewBadgeState.NO_DATA
     private var aiIssueCountByFileMap: Map<String, Pair<Int, Int>> = emptyMap()
     private var currentDiffFilePath: String? = null
+    private val mockAiIssueStatusOverrides = mutableMapOf<Long, Int>()
 
     init {
         applyGlobalFontSettings()
@@ -1465,6 +1466,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         currentAiOverview = null
         aiIssueCountByFileMap = emptyMap()
         currentDiffFilePath = null
+        mockAiIssueStatusOverrides.clear()
         updateAiReviewBadge(AiReviewBadgeState.NO_DATA)
         commentManager.updateAiIssues("", emptyList())
         updateFileChangeWarning(false, null)
@@ -1504,6 +1506,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         currentAiOverview = null
         aiIssueCountByFileMap = emptyMap()
         currentDiffFilePath = null
+        mockAiIssueStatusOverrides.clear()
         updateAiReviewBadge(AiReviewBadgeState.NO_DATA)
         reviewActionButton.isVisible = false
         PrManagerFileLogger.info("Start loading PR detail: prId=$prId")
@@ -2543,7 +2546,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             AiReviewIssue(
                 id = id,
                 filePath = item.readText("filePath"),
-                issueStatus = item.get("issueStatus")?.asInt() ?: 0,
+                issueStatus = mockAiIssueStatusOverrides[id] ?: (item.get("issueStatus")?.asInt() ?: 0),
                 issueSeverity = item.get("issueSeverity")?.asInt() ?: 0,
                 issueDescription = item.readText("issueDescription"),
                 issueFixSuggestion = item.readText("issueFixSuggestion"),
@@ -2560,6 +2563,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             var handled = true
             try {
                 if (mockEnabled) {
+                    mockAiIssueStatusOverrides[issueId] = issueStatus
                     updateStatus("Mock模式：仅刷新AI评审数据")
                 } else {
                     val currentUser = System.getenv(pluginAuthorUsernameEnv).orEmpty().trim()

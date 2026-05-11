@@ -13,7 +13,9 @@ class PrApiService(
     private val replyUrl: String,
     private val resolveUrl: String,
     private val reviewUrl: String,
-    private val mergeUrl: String
+    private val mergeUrl: String,
+    private val aiReviewDetailUrl: String,
+    private val aiHandleIssueUrl: String
 ) {
     fun fetchPrList(requestBody: String): HttpResponse<String> {
         return executeApi("fetchPrList", listUrl, requestBody)
@@ -90,6 +92,28 @@ class PrApiService(
             "iid" to iid
         )
         return executeApi("fetchNoteList", noteListUrl, objectMapper.writeValueAsString(payload))
+    }
+
+    fun fetchAiReviewOverview(prId: Long): HttpResponse<String> {
+        val payload = mapOf("prId" to prId)
+        return executeApi("fetchAiReviewOverview", aiReviewDetailUrl, objectMapper.writeValueAsString(payload))
+    }
+
+    fun fetchAiReviewDetail(prId: Long, filePath: String): HttpResponse<String> {
+        val payload = mapOf(
+            "prId" to prId,
+            "filePath" to filePath
+        )
+        return executeApi("fetchAiReviewDetail", aiReviewDetailUrl, objectMapper.writeValueAsString(payload))
+    }
+
+    fun handleAiReviewIssue(issueId: Long, issueStatus: Int, issueHandleEmpOa: String): HttpResponse<String> {
+        val payload = mapOf(
+            "issueId" to issueId,
+            "issueStatus" to issueStatus,
+            "issueHandleEmpOa" to issueHandleEmpOa
+        )
+        return executeApi("handleAiReviewIssue", aiHandleIssueUrl, objectMapper.writeValueAsString(payload))
     }
 
     private fun executeApi(apiName: String, url: String, requestBody: String): HttpResponse<String> {

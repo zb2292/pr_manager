@@ -70,6 +70,8 @@ class LineCommentManager(private val project: Project) {
     private val remoteIssueLinesByFile = mutableMapOf<String, Set<Int>>()
     private val remoteIssuesByFileLine = mutableMapOf<String, Map<Int, IssueItem>>()
     private val remoteIssueCommentKeys = mutableSetOf<String>()
+    private val aiIssuesByFileLine = mutableMapOf<String, Map<Int, AiIssue>>()
+    private val aiFocusHighlighterByEditor = WeakHashMap<Editor, RangeHighlighter?>()
 
     init {
         LineCommentStore.addListener { refreshAllEditors() }
@@ -82,9 +84,14 @@ class LineCommentManager(private val project: Project) {
     }
 
     private var remoteHandler: CommentRemoteHandler? = null
+    private var aiIssueHandler: ((issueId: Long, issueStatus: Int, onDone: (Boolean) -> Unit) -> Unit)? = null
 
     fun setRemoteHandler(handler: CommentRemoteHandler?) {
         remoteHandler = handler
+    }
+
+    fun setAiIssueHandler(handler: ((issueId: Long, issueStatus: Int, onDone: (Boolean) -> Unit) -> Unit)?) {
+        aiIssueHandler = handler
     }
 
     private val editors = mutableSetOf<EditorContext>()
@@ -125,6 +132,23 @@ class LineCommentManager(private val project: Project) {
         remoteIssuesByFileLine[normalized] = lineMap
     }
 
+    fun updateAiIssues(filePath: String, issues: List<AiIssue>) {
+        val normalized = normalizeFilePath(filePath)
+        if (normalized.isBlank() || issues.isEmpty()) {
+            aiIssuesByFileLine.remove(normalized)
+            refreshAllEditors()
+            return
+        }
+        val lineMap = issues
+            .mapNotNull { issue ->
+                val line = issue.issueCodeLine
+                if (line <= 0) null else (line - 1) to issue
+            }
+            .toMap()
+        aiIssuesByFileLine[normalized] = lineMap
+        refreshAllEditors()
+    }
+
     private fun normalizeFilePath(path: String): String {
         return path.trim().replace('\\', '/').removePrefix("./")
     }
@@ -145,12 +169,15 @@ class LineCommentManager(private val project: Project) {
         val lineMap = mutableMapOf<Int, RangeHighlighter>()
         val newHighlighters = mutableListOf<RangeHighlighter>()
         val lineCount = editor.document.lineCount
-        val remoteIssueLines = remoteIssueLinesByFile[normalizeFilePath(context.filePath)].orEmpty()
+        val normalizedPath = normalizeFilePath(context.filePath)
+        val remoteIssueLines = remoteIssueLinesByFile[normalizedPath].orEmpty()
+        val aiIssueLines = aiIssuesByFileLine[normalizedPath].orEmpty()
         for (line in 0 until lineCount) {
             val roots = LineCommentStore.getComments(context.filePath, line, context.side)
                 .filter { it.parentId == null }
             val hasRemoteIssue = remoteIssueLines.contains(line)
-            if (roots.isEmpty() && !hasRemoteIssue) continue
+            val aiIssue = aiIssueLines[line]
+            if (roots.isEmpty() && !hasRemoteIssue && aiIssue == null) continue
 
             val highlighter = editor.markupModel.addLineHighlighter(line, HighlighterLayer.ADDITIONAL_SYNTAX, null)
             if (roots.isNotEmpty()) {
@@ -158,6 +185,8 @@ class LineCommentManager(private val project: Project) {
                 val unresolvedCount = roots.count { !it.resolved }
                 val allResolved = unresolvedCount == 0
                 applyNormalLineRenderers(context, line, highlighter, unresolvedCount, totalCount, allResolved)
+            } else if (context.side == Side.RIGHT && aiIssue != null) {
+                highlighter.gutterIconRenderer = AiIssueGutterRenderer(context, line, aiIssue)
             } else if (context.side == Side.RIGHT) {
                 highlighter.gutterIconRenderer = ExistingIssueGutterRenderer(context, line)
             }
@@ -182,6 +211,11 @@ class LineCommentManager(private val project: Project) {
             val editor = event.editor
             val logical = editor.xyToLogicalPosition(event.mouseEvent.point)
             val line = logical.line
+            val aiIssue = aiIssuesByFileLine[normalizeFilePath(context.filePath)]?.get(line)
+            if (aiIssue != null) {
+                showAiIssuePopup(editor, aiIssue)
+                return
+            }
             showPopup(editor, context.filePath, line, context.side)
         }
     }
@@ -233,10 +267,17 @@ class LineCommentManager(private val project: Project) {
                 val allResolved = totalCount > 0 && unresolvedCount == 0
                 applyNormalLineRenderers(context, line, commentHighlighter, unresolvedCount, totalCount, allResolved)
             } else if (context.side == Side.RIGHT) {
-                val hasRemoteIssue = remoteIssueLinesByFile[normalizeFilePath(context.filePath)]?.contains(line) == true
-                if (hasRemoteIssue) {
-                    commentHighlighter.gutterIconRenderer = ExistingIssueGutterRenderer(context, line)
+                val normalized = normalizeFilePath(context.filePath)
+                val aiIssue = aiIssuesByFileLine[normalized]?.get(line)
+                if (aiIssue != null) {
+                    commentHighlighter.gutterIconRenderer = AiIssueGutterRenderer(context, line, aiIssue)
                     commentHighlighter.lineMarkerRenderer = null
+                } else {
+                    val hasRemoteIssue = remoteIssueLinesByFile[normalized]?.contains(line) == true
+                    if (hasRemoteIssue) {
+                        commentHighlighter.gutterIconRenderer = ExistingIssueGutterRenderer(context, line)
+                        commentHighlighter.lineMarkerRenderer = null
+                    }
                 }
             }
             return
@@ -286,6 +327,40 @@ class LineCommentManager(private val project: Project) {
         val icon = AllIcons.General.Balloon
         highlighter.gutterIconRenderer = LineCommentGutterRenderer(context, line, icon, unresolvedCount, totalCount, allResolved)
         highlighter.lineMarkerRenderer = CommentCountLineMarkerRenderer(icon, unresolvedCount, totalCount, allResolved)
+    }
+
+    private inner class AiIssueGutterRenderer(
+        private val context: EditorContext,
+        private val line: Int,
+        private val issue: AiIssue
+    ) : GutterIconRenderer() {
+        override fun getIcon(): Icon = AiIssueIcon(issue.issueStatus == 0)
+
+        override fun getTooltipText(): String = "AI评审问题"
+
+        override fun getClickAction() = object : com.intellij.openapi.actionSystem.AnAction() {
+            override fun actionPerformed(e: AnActionEvent) {
+                val editor = CommonDataKeys.EDITOR.getData(e.dataContext) ?: return
+                showAiIssuePopup(editor, issue)
+            }
+        }
+
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is AiIssueGutterRenderer) return false
+            return context.filePath == other.context.filePath &&
+                context.side == other.context.side &&
+                line == other.line &&
+                issue.id == other.issue.id
+        }
+
+        override fun hashCode(): Int {
+            var result = context.filePath.hashCode()
+            result = 31 * result + context.side.hashCode()
+            result = 31 * result + line
+            result = 31 * result + issue.id.hashCode()
+            return result
+        }
     }
 
     private inner class ExistingIssueGutterRenderer(
@@ -406,6 +481,150 @@ class LineCommentManager(private val project: Project) {
             g.color = if (allResolved) JBColor(Color(0x1E8E3E), Color(0x57D163)) else JBColor(Color(0xD93025), Color(0xF47067))
             g.drawString("$unresolvedCount/$totalCount", x, y)
         }
+    }
+
+    private class AiIssueIcon(private val unresolved: Boolean) : Icon {
+        private val size = JBUI.scale(14)
+
+        override fun paintIcon(c: Component?, g: Graphics, x: Int, y: Int) {
+            val g2 = g.create() as Graphics2D
+            try {
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                val bg = if (unresolved) JBColor(Color(0xD93025), Color(0xF47067)) else JBColor(Color(0x1E8E3E), Color(0x57D163))
+                g2.color = bg
+                g2.fillOval(x, y, size, size)
+                g2.color = bg.darker()
+                g2.drawOval(x, y, size, size)
+
+                g2.color = Color.WHITE
+                val text = "AI"
+                g2.font = g2.font.deriveFont(Font.BOLD, JBUI.scale(8f))
+                val fm = g2.fontMetrics
+                val tx = x + (size - fm.stringWidth(text)) / 2
+                val ty = y + (size + fm.ascent - fm.descent) / 2
+                g2.drawString(text, tx, ty)
+            } finally {
+                g2.dispose()
+            }
+        }
+
+        override fun getIconWidth(): Int = size
+
+        override fun getIconHeight(): Int = size
+    }
+
+    private fun showAiIssuePopup(editor: Editor, issue: AiIssue) {
+        highlightAiIssueRange(editor, issue)
+        val panel = JPanel()
+        panel.layout = BoxLayout(panel, BoxLayout.Y_AXIS)
+        panel.border = JBUI.Borders.empty(10)
+
+        fun addTitleValue(title: String, value: String) {
+            val row = JPanel(BorderLayout())
+            row.isOpaque = false
+            val titleLabel = JBLabel("$title：")
+            titleLabel.font = titleLabel.font.deriveFont(Font.BOLD)
+            row.add(titleLabel, BorderLayout.NORTH)
+            val area = JBTextArea(value.ifBlank { "-" })
+            area.isEditable = false
+            area.lineWrap = true
+            area.wrapStyleWord = true
+            area.isOpaque = false
+            row.add(area, BorderLayout.CENTER)
+            panel.add(row)
+            panel.add(Box.createVerticalStrut(JBUI.scale(6)))
+        }
+
+        fun addCodeBlock(title: String, code: String) {
+            val row = JPanel(BorderLayout())
+            row.isOpaque = false
+            val titleLabel = JBLabel("$title：")
+            titleLabel.font = titleLabel.font.deriveFont(Font.BOLD)
+            row.add(titleLabel, BorderLayout.NORTH)
+
+            val codeArea = JBTextArea(code.ifBlank { "-" })
+            codeArea.isEditable = false
+            codeArea.lineWrap = false
+            codeArea.wrapStyleWord = false
+            codeArea.font = Font(Font.MONOSPACED, Font.PLAIN, codeArea.font.size)
+            codeArea.background = JBColor(Color(0xF6F8FA), Color(0x2B2D30))
+            codeArea.border = JBUI.Borders.empty(8)
+
+            val codeScroll = JBScrollPane(codeArea).apply {
+                border = JBUI.Borders.customLine(JBColor(Color(0xD0D7DE), Color(0x4B5563)))
+                preferredSize = Dimension(JBUI.scale(520), JBUI.scale(120))
+                horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED
+                verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED
+            }
+
+            row.add(codeScroll, BorderLayout.CENTER)
+            panel.add(row)
+            panel.add(Box.createVerticalStrut(JBUI.scale(6)))
+        }
+
+        fun statusText(status: Int): String = when (status) {
+            0 -> "未解决"
+            1 -> "已采纳"
+            2 -> "误报"
+            3 -> "已忽略"
+            else -> "未知（$status）"
+        }
+
+        addTitleValue("问题描述", issue.issueDescription)
+        addTitleValue("修复建议", issue.issueFixSuggestion)
+        val level = if (issue.issueSeverity == 1) "错误级" else "警告级"
+        addTitleValue("问题级别", level)
+        addTitleValue("状态", statusText(issue.issueStatus))
+        addCodeBlock("建议修复代码", issue.issueFixCode)
+
+        val actionPanel = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0))
+        actionPanel.isOpaque = false
+
+        val popup = JBPopupFactory.getInstance()
+            .createComponentPopupBuilder(panel, null)
+            .setTitle("AI智能评审问题")
+            .setResizable(true)
+            .setMovable(true)
+            .setRequestFocus(true)
+            .createPopup()
+
+        if (issue.issueStatus == 0) {
+            fun addHandleButton(text: String, status: Int) {
+                val btn = JButton(text)
+                btn.addActionListener {
+                    aiIssueHandler?.invoke(issue.id, status) { _ -> }
+                }
+                actionPanel.add(btn)
+            }
+            addHandleButton("采纳", 1)
+            addHandleButton("误报", 2)
+            addHandleButton("忽略", 3)
+            panel.add(actionPanel)
+        }
+
+        popup.showInBestPositionFor(editor)
+    }
+
+    private fun highlightAiIssueRange(editor: Editor, issue: AiIssue) {
+        aiFocusHighlighterByEditor.remove(editor)?.let { editor.markupModel.removeHighlighter(it) }
+        val startLine = (issue.issueCodeSnippetStartLine - 1).coerceAtLeast(0)
+        val endLine = (issue.issueCodeSnippetEndLine - 1).coerceAtLeast(startLine)
+        if (startLine >= editor.document.lineCount) return
+        val boundedEnd = endLine.coerceAtMost(editor.document.lineCount - 1)
+        val startOffset = editor.document.getLineStartOffset(startLine)
+        val endOffset = editor.document.getLineEndOffset(boundedEnd)
+        val attrs = editor.colorsScheme.defaultBackground.let {
+            val bg = JBColor(Color(0xFFE8E8), Color(0x5A2A2A))
+            com.intellij.openapi.editor.markup.TextAttributes(null, bg, null, null, Font.PLAIN)
+        }
+        val highlighter = editor.markupModel.addRangeHighlighter(
+            startOffset,
+            endOffset,
+            HighlighterLayer.SELECTION - 1,
+            attrs,
+            com.intellij.openapi.editor.markup.HighlighterTargetArea.EXACT_RANGE
+        )
+        aiFocusHighlighterByEditor[editor] = highlighter
     }
 
     private fun showPopup(editor: Editor, filePath: String, line: Int, side: Side, openComposerOnly: Boolean = false) {
@@ -1324,6 +1543,18 @@ class LineCommentManager(private val project: Project) {
         popup.showInBestPositionFor(editor)
         SwingUtilities.invokeLater { headerInput.requestFocusInWindow() }
     }
+
+    data class AiIssue(
+        val id: Long,
+        val issueStatus: Int,
+        val issueSeverity: Int,
+        val issueDescription: String,
+        val issueFixSuggestion: String,
+        val issueFixCode: String,
+        val issueCodeLine: Int,
+        val issueCodeSnippetStartLine: Int,
+        val issueCodeSnippetEndLine: Int
+    )
 
     private data class EditorContext(val editor: Editor, val filePath: String, val side: Side)
 }

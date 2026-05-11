@@ -21,7 +21,7 @@
             "note": "用户名校验缺少空值判断",
             "root_id": 1146,
             "root_node": true,
-            "resolved_enabled": true,
+            "resolved_enabled": false,
             "floor_num": 1,
             "reply_floor_num": 0,
             "children": [

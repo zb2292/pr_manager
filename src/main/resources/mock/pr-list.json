@@ -19,7 +19,7 @@
           "updated_at": "2022-09-21T18:03:40Z",
           "id": 16565,
           "uuid": "15245",
-          "username": "junit-test-user3",
+          "username": "zhangbo1",
           "name": "单元测试1",
           "email": "junit3@escmbc.com.cn",
           "avatar_url": "/api/facade/rest/v1/companies/osc/users/logo/avatar/user/15245",
@@ -70,7 +70,7 @@
         { "username": "alice" }
       ],
       "general_reviewers": [
-        { "username": "bob" },
+        { "username": "zhangbo1" },
         { "username": "carol" }
       ],
       "primary_reviewer_num": 1,

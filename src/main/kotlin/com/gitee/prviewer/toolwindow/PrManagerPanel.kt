@@ -145,6 +145,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private val resolveUrl = buildUrl(config.getProperty("prviewer.api.resolve.path", "/pset/api/gitee/resoveNote"))
     private val reviewUrl = buildUrl(config.getProperty("prviewer.api.review.path", "/api/pr/review"))
     private val mergeUrl = buildUrl(config.getProperty("prviewer.api.merge.path", "/api/pr/merge"))
+    private val aiReviewDetailUrl = buildUrl(config.getProperty("prviewer.api.aiReviewDetail.path", "/pset/api/gitee/aiReviewDetailData"))
+    private val aiHandleIssueUrl = buildUrl(config.getProperty("prviewer.api.aiHandleIssue.path", "/pset/api/gitee/handleAiReviewIssue"))
 
     private val apiService = PrApiService(
         httpClient = httpClient,
@@ -156,7 +158,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         replyUrl = replyUrl,
         resolveUrl = resolveUrl,
         reviewUrl = reviewUrl,
-        mergeUrl = mergeUrl
+        mergeUrl = mergeUrl,
+        aiReviewDetailUrl = aiReviewDetailUrl,
+        aiHandleIssueUrl = aiHandleIssueUrl
     )
 
     private val branchService = BranchCompareService(project)
@@ -214,6 +218,21 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private val detailStatus: StatusBadgeLabel = StatusBadgeLabel()
     private val detailMeta = JBLabel("-")
     private val issueCountLabel = JBLabel("未解决问题: 0/0")
+    private val aiReviewBadgeLabel = JBLabel().apply {
+        isOpaque = false
+        icon = AiBadgeIcon(AiReviewBadgeState.NO_DATA.color)
+        toolTipText = "当前无AI评审结果"
+        cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+        border = JBUI.Borders.emptyLeft(8)
+        addMouseListener(object : MouseAdapter() {
+            override fun mouseClicked(e: MouseEvent) {
+                if (!SwingUtilities.isLeftMouseButton(e)) return
+                val state = aiReviewBadgeState
+                if (state == AiReviewBadgeState.NO_DATA) return
+                showAiOverviewPopup()
+            }
+        })
+    }
     private val reviewActionButton = JButton()
     private val detailTabs = JBTabbedPane()
     private val fileChangeTabTitleLabel = JBLabel("文件改动")
@@ -275,6 +294,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private val commitTable = JBTable(commitTableModel)
 
     private var currentDetail: PrDetail? = null
+    private var currentAiOverview: AiReviewOverview? = null
+    private var aiReviewBadgeState: AiReviewBadgeState = AiReviewBadgeState.NO_DATA
+    private var aiIssueCountByFileMap: Map<String, Pair<Int, Int>> = emptyMap()
+    private var currentDiffFilePath: String? = null
 
     init {
         applyGlobalFontSettings()
@@ -570,6 +593,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         leftMeta.add(detailMeta)
         issueCountLabel.border = JBUI.Borders.emptyLeft(20)
         leftMeta.add(issueCountLabel)
+        leftMeta.add(aiReviewBadgeLabel)
         metaRow.add(leftMeta, BorderLayout.WEST)
 
         val rightMeta = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(6), 0))
@@ -708,7 +732,67 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             currentDetail ?: return@addTreeSelectionListener
             openDiff(selected)
         }
+        changeTree.addMouseMotionListener(object : MouseMotionAdapter() {
+            override fun mouseMoved(e: MouseEvent) {
+                val row = changeTree.getRowForLocation(e.x, e.y)
+                if (row < 0) {
+                    changeTree.toolTipText = null
+                    return
+                }
+                val path = changeTree.getPathForRow(row)
+                val node = path?.lastPathComponent as? DefaultMutableTreeNode
+                val change = node?.userObject as? ChangeItem
+                if (change == null) {
+                    changeTree.toolTipText = null
+                    return
+                }
+
+                val rowBounds = changeTree.getRowBounds(row)
+                if (rowBounds == null) {
+                    changeTree.toolTipText = null
+                    return
+                }
+
+                val typeLabel = changeTypeFullText(change.changeType)
+                val renameHint = if (typeLabel.startsWith("RENAMED") && !change.fromFilePath.isNullOrBlank()) {
+                    " from ${change.fromFilePath}"
+                } else {
+                    ""
+                }
+                val baseText = "${change.filePath.substringAfterLast('/')} ($typeLabel$renameHint)"
+                val font = changeTree.font.deriveFont(Font.PLAIN, globalUiFontSize)
+                val badgeFont = Font(Font.MONOSPACED, Font.PLAIN, font.size)
+                val fm = changeTree.getFontMetrics(font)
+                val badgeFm = changeTree.getFontMetrics(badgeFont)
+                val iconWidth = changeTypeIcon(change.changeType).iconWidth
+                val iconTextGap = JBUI.scale(4)
+                val badgeGap = JBUI.scale(12)
+                val aiGap = JBUI.scale(8)
+                val mainWidth = iconWidth + iconTextGap + fm.stringWidth(baseText)
+                val issueSlotWidth = badgeFm.stringWidth("00/00")
+
+                val issueStartX = rowBounds.x + mainWidth + badgeGap
+                val issueEndX = issueStartX + issueSlotWidth
+
+                val issueText = issueCountByFile(change.filePath)?.let { "${it.first}/${it.second}" } ?: "0/0"
+                val aiBadge = aiIssueCountByFile(change.filePath)
+                val hasAiIssue = aiBadge.first > 0 || aiBadge.second > 0
+                val aiText = if (hasAiIssue) "${aiBadge.first}/${aiBadge.second}" else "无"
+                val aiStartX = issueEndX + aiGap
+                val aiEndX = aiStartX + badgeFm.stringWidth(aiText)
+
+                changeTree.toolTipText = when {
+                    e.x in issueStartX until issueEndX -> "评审问题（未解决/总数）：$issueText"
+                    hasAiIssue && e.x in aiStartX until aiEndX -> "AI评审 错误问题/警告问题：$aiText"
+                    else -> null
+                }
+            }
+        })
         changeTree.addMouseListener(object : MouseAdapter() {
+            override fun mouseExited(e: MouseEvent) {
+                changeTree.toolTipText = null
+            }
+
             override fun mousePressed(e: MouseEvent) {
                 showChangeTreePopup(e)
             }
@@ -1378,6 +1462,11 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private fun renderEmptyDetail() {
         currentDetail = null
+        currentAiOverview = null
+        aiIssueCountByFileMap = emptyMap()
+        currentDiffFilePath = null
+        updateAiReviewBadge(AiReviewBadgeState.NO_DATA)
+        commentManager.updateAiIssues("", emptyList())
         updateFileChangeWarning(false, null)
         updateCommitWarning(false)
         (detailCard.layout as java.awt.CardLayout).show(detailCard, "empty")
@@ -1412,6 +1501,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         detailStatus.setBadge("", JBColor.GRAY)
         detailMeta.text = ""
         issueCountLabel.text = "未解决问题: 0/0"
+        currentAiOverview = null
+        aiIssueCountByFileMap = emptyMap()
+        currentDiffFilePath = null
+        updateAiReviewBadge(AiReviewBadgeState.NO_DATA)
         reviewActionButton.isVisible = false
         PrManagerFileLogger.info("Start loading PR detail: prId=$prId")
 
@@ -1436,9 +1529,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     renderDetail(detail)
                 }
                 PrManagerFileLogger.info("PR detail loaded: prId=$prId iid=${detail.iid}, srBranch=${detail.sourceBranch}, trBranch=${detail.targetBranch}")
+                loadNotes(detail)
+                loadAiReviewOverview(detail)
                 fetchRemoteBranches()
                 updateFileChangeBranchWarning(detail.sourceBranch)
-                loadNotes(detail)
                 loadFileChanges(detail)
                 loadCommitRecords(detail)
             } catch (e: Exception) {
@@ -1467,7 +1561,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         reviewersField.toolTipText = detail.overview.reviewers.joinToString(",")
         reviewerHint.text = "至少需要 ${detail.overview.needReviewers} 名普通评审成员评审通过后可合并"
 
-        setupReviewAction(detail)
+//        setupReviewAction(detail)
     }
 
     private fun setupReviewAction(detail: PrDetail) {
@@ -1577,6 +1671,181 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 }
             } catch (e: Exception) {
                 PrManagerFileLogger.error("Load notes error: prId=${detail.id} iid=${detail.iid}", e)
+            }
+        }
+    }
+
+    private fun loadAiReviewOverview(detail: PrDetail) {
+        ApplicationManager.getApplication().executeOnPooledThread {
+            try {
+                val overview = if (mockEnabled) {
+                    val mockJson = readMockJson("ai-review-overview.json")
+                    if (mockJson.isNullOrBlank()) null else parseAiReviewOverview(mockJson)
+                } else {
+                    val response = apiService.fetchAiReviewOverview(detail.id)
+                    if (response.statusCode() !in 200..299) {
+                        PrManagerFileLogger.warn("Load AI overview failed: prId=${detail.id} status=${response.statusCode()}")
+                        null
+                    } else {
+                        parseAiReviewOverview(response.body())
+                    }
+                }
+                SwingUtilities.invokeLater {
+                    currentAiOverview = overview
+                    aiIssueCountByFileMap = overview?.takeIf { it.validFlag }?.let { flattenAiTreeIssueCount(it.fileTreeNodes) }.orEmpty()
+                    val state = when {
+                        overview == null -> AiReviewBadgeState.NO_DATA
+                        !overview.validFlag -> AiReviewBadgeState.STALE
+                        overview.unhandledCount == 0 -> AiReviewBadgeState.PASS
+                        else -> AiReviewBadgeState.FAIL
+                    }
+                    updateAiReviewBadge(state)
+                    changeTree.repaint()
+                }
+            } catch (e: Exception) {
+                PrManagerFileLogger.error("Load AI overview error: prId=${detail.id}", e)
+                SwingUtilities.invokeLater {
+                    currentAiOverview = null
+                    aiIssueCountByFileMap = emptyMap()
+                    updateAiReviewBadge(AiReviewBadgeState.NO_DATA)
+                    changeTree.repaint()
+                }
+            }
+        }
+    }
+
+    private fun updateAiReviewBadge(state: AiReviewBadgeState) {
+        aiReviewBadgeState = state
+        aiReviewBadgeLabel.icon = AiBadgeIcon(state.color)
+        aiReviewBadgeLabel.toolTipText = if (state == AiReviewBadgeState.NO_DATA) "当前无AI评审结果" else "查看AI评审总览"
+        aiReviewBadgeLabel.repaint()
+    }
+
+    private fun showAiOverviewPopup() {
+        val overview = currentAiOverview ?: return
+        val panel = JPanel()
+        panel.layout = BoxLayout(panel, BoxLayout.Y_AXIS)
+        panel.border = JBUI.Borders.empty(10)
+        val tableOuterInset = JBUI.scale(0)
+        val contentLeftInset = tableOuterInset
+
+        val title = JBLabel("智能代码评审-总览")
+        title.font = title.font.deriveFont(Font.BOLD, globalUiFontSize + 1f)
+        title.border = JBUI.Borders.emptyLeft(contentLeftInset)
+        panel.add(title)
+
+        if (aiReviewBadgeState == AiReviewBadgeState.STALE) {
+            panel.add(Box.createVerticalStrut(8))
+            val warn = JBLabel("PR涉及分支有代码变动，当前智能代码评审数据已过期，请重新触发")
+            warn.foreground = JBColor(Color(0xD93025), Color(0xF47067))
+            panel.add(warn)
+        }
+
+        panel.add(Box.createVerticalStrut(10))
+        val rows = listOf(
+            arrayOf("错误问题数", overview.errorCount.toString()),
+            arrayOf("警告问题数", overview.warnCount.toString()),
+            arrayOf("待处理问题数", overview.unhandledCount.toString()),
+            arrayOf("采纳问题数", overview.adoptedCount.toString()),
+            arrayOf("忽略问题数", overview.ignoredCount.toString()),
+            arrayOf("误报问题数", overview.misreportedCount.toString())
+        )
+        val table = JBTable(object : AbstractTableModel() {
+            override fun getRowCount(): Int = rows.size
+            override fun getColumnCount(): Int = 2
+            override fun getColumnName(column: Int): String = if (column == 0) "  问题类型" else "  问题个数"
+            override fun getValueAt(rowIndex: Int, columnIndex: Int): Any = rows[rowIndex][columnIndex]
+            override fun isCellEditable(rowIndex: Int, columnIndex: Int): Boolean = false
+        })
+        table.rowHeight = JBUI.scale(24)
+        table.setShowGrid(true)
+        table.fillsViewportHeight = true
+        if (table.columnModel.columnCount > 1) {
+            val halfWidth = JBUI.scale(48)
+            table.columnModel.getColumn(0).preferredWidth = halfWidth
+            table.columnModel.getColumn(1).preferredWidth = halfWidth
+        }
+        val leftHeaderRenderer = (table.tableHeader.defaultRenderer as? javax.swing.table.DefaultTableCellRenderer)
+            ?: javax.swing.table.DefaultTableCellRenderer()
+        leftHeaderRenderer.horizontalAlignment = SwingConstants.LEFT
+        table.tableHeader.defaultRenderer = leftHeaderRenderer
+        val highlightedDividerRenderer = object : javax.swing.table.DefaultTableCellRenderer() {
+            override fun getTableCellRendererComponent(
+                table: javax.swing.JTable,
+                value: Any?,
+                isSelected: Boolean,
+                hasFocus: Boolean,
+                row: Int,
+                column: Int
+            ): Component {
+                val component = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column)
+                horizontalAlignment = SwingConstants.LEFT
+                val padding = JBUI.Borders.empty(0, JBUI.scale(8), 0, JBUI.scale(8))
+                border = if (row == 1) {
+                    javax.swing.BorderFactory.createCompoundBorder(
+                        javax.swing.BorderFactory.createMatteBorder(
+                            0,
+                            0,
+                            JBUI.scale(2),
+                            0,
+                            JBColor(Color(0x8A8A8A), Color(0x6B7280))
+                        ),
+                        padding
+                    )
+                } else {
+                    padding
+                }
+                return component
+            }
+        }
+        table.setDefaultRenderer(Any::class.java, highlightedDividerRenderer)
+        val tableScrollPane = JBScrollPane(table).apply {
+            border = JBUI.Borders.empty(0)
+            preferredSize = Dimension(JBUI.scale(150), JBUI.scale(170))
+        }
+
+        val tableContainer = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            border = JBUI.Borders.empty(0, 6, 0, 6)
+            add(tableScrollPane, BorderLayout.CENTER)
+        }
+        panel.add(tableContainer)
+
+        panel.add(Box.createVerticalStrut(6))
+        val relation = JBLabel("关系：错误问题数 + 警告问题数 = 待处理问题数 + 采纳问题数 + 忽略问题数 + 误报问题数")
+        relation.foreground = UIUtil.getInactiveTextColor()
+        relation.border = JBUI.Borders.emptyLeft(contentLeftInset)
+        panel.add(relation)
+
+        panel.add(Box.createVerticalStrut(6))
+        val pass = overview.unhandledCount == 0
+        val result = JBLabel("评审结果：${if (pass) "通过" else "不通过"}")
+        result.foreground = if (pass) JBColor(Color(0x1E8E3E), Color(0x57D163)) else JBColor(Color(0xD93025), Color(0xF47067))
+        result.border = JBUI.Borders.emptyLeft(contentLeftInset)
+        panel.add(result)
+
+        JBPopupFactory.getInstance()
+            .createComponentPopupBuilder(panel, null)
+            .setTitle("AI评审结果")
+            .setResizable(true)
+            .setMovable(true)
+            .setRequestFocus(true)
+            .createPopup()
+            .show(RelativePoint.getSouthOf(aiReviewBadgeLabel))
+    }
+
+    private fun loadAiReviewFileIssues(detail: PrDetail, filePath: String): List<AiReviewIssue> {
+        if (!currentAiOverview?.validFlag.orFalse()) return emptyList()
+        return if (mockEnabled) {
+            val mockJson = readMockJson("ai-review-detail.json")
+            if (mockJson.isNullOrBlank()) emptyList() else parseAiReviewDetail(mockJson)
+        } else {
+            val response = apiService.fetchAiReviewDetail(detail.id, filePath)
+            if (response.statusCode() !in 200..299) {
+                PrManagerFileLogger.warn("Load AI file detail failed: prId=${detail.id} filePath=$filePath status=${response.statusCode()}")
+                emptyList()
+            } else {
+                parseAiReviewDetail(response.body())
             }
         }
     }
@@ -1710,6 +1979,15 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         return unresolved to fileIssues.size
     }
 
+    private fun aiIssueCountByFile(filePath: String): Pair<Int, Int> {
+        if (!currentAiOverview?.validFlag.orFalse()) return 0 to 0
+        val normalized = normalizeFilePath(filePath)
+        return aiIssueCountByFileMap.entries.firstOrNull { (path, _) ->
+            val mapped = normalizeFilePath(path)
+            mapped == normalized || mapped.endsWith(normalized) || normalized.endsWith(mapped)
+        }?.value ?: (0 to 0)
+    }
+
     private fun issueLineSetByFile(filePath: String): Set<Int> {
         return issueItemsByFile(filePath)
             .mapNotNull { issue ->
@@ -1763,6 +2041,14 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     return@executeOnPooledThread
                 }
 
+                val aiIssues = runCatching {
+                    currentDiffFilePath = change.filePath
+                    loadAiReviewFileIssues(detail, change.filePath)
+                }.getOrElse {
+                    PrManagerFileLogger.error("Load AI issues failed before diff: file=${change.filePath}", it)
+                    emptyList()
+                }
+
                 SwingUtilities.invokeLater {
                     try {
                         if (project.isDisposed) return@invokeLater
@@ -1779,6 +2065,22 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                         )
                         commentManager.updateIssueLines(change.filePath, issueLineSetByFile(change.filePath))
                         commentManager.updateIssueDetails(change.filePath, issueItemsByFile(change.filePath))
+                        commentManager.updateAiIssues(change.filePath, aiIssues.map { issue ->
+                            LineCommentManager.AiIssue(
+                                id = issue.id,
+                                issueStatus = issue.issueStatus,
+                                issueSeverity = issue.issueSeverity,
+                                issueDescription = issue.issueDescription,
+                                issueFixSuggestion = issue.issueFixSuggestion,
+                                issueFixCode = issue.issueFixCode,
+                                issueCodeLine = issue.issueCodeLine,
+                                issueCodeSnippetStartLine = issue.issueCodeSnippetStartLine,
+                                issueCodeSnippetEndLine = issue.issueCodeSnippetEndLine
+                            )
+                        })
+                        commentManager.setAiIssueHandler { issueId, status, onDone ->
+                            handleAiIssue(detail, change.filePath, issueId, status, onDone)
+                        }
                         diffBinder.bindNextDiff(change.filePath)
                         DiffManager.getInstance().showDiff(project, request)
                     } catch (e: Exception) {
@@ -2176,6 +2478,149 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         return runCatching { java.time.Instant.parse(value).toEpochMilli() }.getOrElse { System.currentTimeMillis() }
     }
 
+    private fun parseAiReviewOverview(body: String): AiReviewOverview? {
+        val root = objectMapper.readTree(body)
+        val result = root.get("result") ?: root
+        if (result.isMissingNode || result.isNull) return null
+        if (result.isArray) return null
+        val prId = result.get("prId")?.asLong() ?: return null
+        val validFlag = result.get("validFlag")?.asBoolean() == true
+        val fileTree = result.get("fileTreeNode")
+        return AiReviewOverview(
+            prId = prId,
+            validFlag = validFlag,
+            errorCount = result.get("aiCodeReviewIssueErrorCount")?.asInt() ?: 0,
+            warnCount = result.get("aiCodeReviewIssueWarnCount")?.asInt() ?: 0,
+            unhandledCount = result.get("aiCodeReviewIssueUnhandledCount")?.asInt() ?: 0,
+            adoptedCount = result.get("aiCodeReviewIssueAdoptedCount")?.asInt() ?: 0,
+            ignoredCount = result.get("aiCodeReviewIssueIgnoredCount")?.asInt() ?: 0,
+            misreportedCount = result.get("aiCodeReviewIssueMisreportedCount")?.asInt() ?: 0,
+            fileTreeNodes = parseAiTreeNodes(fileTree)
+        )
+    }
+
+    private fun parseAiTreeNodes(node: JsonNode?): List<AiTreeNode> {
+        if (node == null || !node.isArray) return emptyList()
+        return node.mapNotNull { item ->
+            val nodeName = item.readText("nodeName")
+            if (nodeName.isBlank()) return@mapNotNull null
+            AiTreeNode(
+                nodeName = nodeName,
+                issueErrorCount = item.get("issueErrorCount")?.asInt() ?: 0,
+                issueWarnCount = item.get("issueWarnCount")?.asInt() ?: 0,
+                type = item.readText("type"),
+                children = parseAiTreeNodes(item.get("children"))
+            )
+        }
+    }
+
+    private fun flattenAiTreeIssueCount(nodes: List<AiTreeNode>): Map<String, Pair<Int, Int>> {
+        val result = mutableMapOf<String, Pair<Int, Int>>()
+        fun walk(node: AiTreeNode, parentPath: String) {
+            val fullPath = listOf(parentPath, node.nodeName)
+                .filter { it.isNotBlank() }
+                .joinToString("/")
+                .replace("//", "/")
+                .trim('/')
+            val isFolder = node.type.equals("FOLDER", true) || node.type.equals("FOLDERS", true)
+            if (!isFolder) {
+                result[fullPath] = node.issueErrorCount to node.issueWarnCount
+            }
+            node.children.forEach { walk(it, fullPath) }
+        }
+        nodes.forEach { walk(it, "") }
+        return result
+    }
+
+    private fun parseAiReviewDetail(body: String): List<AiReviewIssue> {
+        val root = objectMapper.readTree(body)
+        val result = root.get("result") ?: root
+        if (result == null || !result.isArray) return emptyList()
+        return result.mapNotNull { item ->
+            val id = item.get("id")?.asLong() ?: return@mapNotNull null
+            val issueLine = item.get("issueCodeLine")?.asInt() ?: 0
+            if (issueLine <= 0) return@mapNotNull null
+            AiReviewIssue(
+                id = id,
+                filePath = item.readText("filePath"),
+                issueStatus = item.get("issueStatus")?.asInt() ?: 0,
+                issueSeverity = item.get("issueSeverity")?.asInt() ?: 0,
+                issueDescription = item.readText("issueDescription"),
+                issueFixSuggestion = item.readText("issueFixSuggestion"),
+                issueFixCode = item.readText("issueFixCode"),
+                issueCodeLine = issueLine,
+                issueCodeSnippetStartLine = item.get("issueCodeSnippetStartLine")?.asInt() ?: issueLine,
+                issueCodeSnippetEndLine = item.get("issueCodeSnippetEndLine")?.asInt() ?: issueLine
+            )
+        }
+    }
+
+    private fun handleAiIssue(detail: PrDetail, filePath: String, issueId: Long, issueStatus: Int, onDone: (Boolean) -> Unit) {
+        ApplicationManager.getApplication().executeOnPooledThread {
+            var handled = true
+            try {
+                if (mockEnabled) {
+                    updateStatus("Mock模式：仅刷新AI评审数据")
+                } else {
+                    val currentUser = System.getenv(pluginAuthorUsernameEnv).orEmpty().trim()
+                    if (currentUser.isBlank()) {
+                        handled = false
+                        updateStatus("处理失败: 未获取到当前用户")
+                    } else {
+                        val response = apiService.handleAiReviewIssue(issueId, issueStatus, currentUser)
+                        if (response.statusCode() !in 200..299) {
+                            handled = false
+                            updateStatus("处理失败: ${response.statusCode()}")
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                handled = false
+                PrManagerFileLogger.error("Handle AI issue failed: issueId=$issueId status=$issueStatus", e)
+                updateStatus("处理失败: ${e.message ?: "未知错误"}")
+            }
+
+            loadAiReviewOverview(detail)
+
+            val refreshed = try {
+                if (mockEnabled) {
+                    val mockJson = readMockJson("ai-review-detail.json")
+                    if (mockJson.isNullOrBlank()) emptyList() else parseAiReviewDetail(mockJson)
+                } else {
+                    val detailResponse = apiService.fetchAiReviewDetail(detail.id, filePath)
+                    if (detailResponse.statusCode() !in 200..299) {
+                        PrManagerFileLogger.warn("Refresh AI file detail failed: prId=${detail.id} filePath=$filePath status=${detailResponse.statusCode()}")
+                        emptyList()
+                    } else {
+                        parseAiReviewDetail(detailResponse.body())
+                    }
+                }
+            } catch (e: Exception) {
+                PrManagerFileLogger.error("Refresh AI file detail error: prId=${detail.id} filePath=$filePath", e)
+                emptyList()
+            }
+
+            SwingUtilities.invokeLater {
+                commentManager.updateAiIssues(filePath, refreshed.map { issue ->
+                    LineCommentManager.AiIssue(
+                        id = issue.id,
+                        issueStatus = issue.issueStatus,
+                        issueSeverity = issue.issueSeverity,
+                        issueDescription = issue.issueDescription,
+                        issueFixSuggestion = issue.issueFixSuggestion,
+                        issueFixCode = issue.issueFixCode,
+                        issueCodeLine = issue.issueCodeLine,
+                        issueCodeSnippetStartLine = issue.issueCodeSnippetStartLine,
+                        issueCodeSnippetEndLine = issue.issueCodeSnippetEndLine
+                    )
+                })
+                onDone(handled)
+            }
+        }
+    }
+
+    private fun Boolean?.orFalse(): Boolean = this == true
+
     private fun statusColor(status: String): JBColor {
         return when (status.trim().lowercase()) {
             "open" -> JBColor(Color(0x1A73E8), Color(0x6EA8FF))
@@ -2263,13 +2708,17 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             isOpaque = true
         }
         private val mainLabel = javax.swing.JLabel()
-        private val unresolvedLabel = javax.swing.JLabel()
-        private val totalLabel = javax.swing.JLabel()
+        private val issueLabel = javax.swing.JLabel()
+        private val aiLabel = javax.swing.JLabel()
+        private val badgeGap = Box.createHorizontalStrut(JBUI.scale(12))
+        private val aiGap = Box.createHorizontalStrut(JBUI.scale(8))
 
         init {
             rowPanel.add(mainLabel)
-            rowPanel.add(unresolvedLabel)
-            rowPanel.add(totalLabel)
+            rowPanel.add(badgeGap)
+            rowPanel.add(issueLabel)
+            rowPanel.add(aiGap)
+            rowPanel.add(aiLabel)
         }
 
         override fun getTreeCellRendererComponent(
@@ -2298,38 +2747,42 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             val renameHint = if (typeLabel.startsWith("RENAMED") && !fromPath.isNullOrBlank()) " from $fromPath" else ""
             val baseText = "$fileName ($typeLabel$renameHint)"
             val issueBadge = issueCountByFile(userObject.filePath)
+            val aiBadge = aiIssueCountByFile(userObject.filePath)
+            val hasAiIssue = aiBadge.first > 0 || aiBadge.second > 0
 
             val font = fallbackRenderer.font.deriveFont(Font.PLAIN, globalUiFontSize)
+            val badgeFont = Font(Font.MONOSPACED, Font.PLAIN, font.size)
             mainLabel.font = font
-            unresolvedLabel.font = font
-            totalLabel.font = font
+            issueLabel.font = badgeFont
+            aiLabel.font = badgeFont
+            val issueSlotWidth = issueLabel.getFontMetrics(badgeFont).stringWidth("00/00")
+            val issueSlotHeight = issueLabel.getFontMetrics(badgeFont).height
+            val issueSlotSize = Dimension(issueSlotWidth, issueSlotHeight)
+            issueLabel.minimumSize = issueSlotSize
+            issueLabel.preferredSize = issueSlotSize
+            issueLabel.maximumSize = issueSlotSize
+            issueLabel.horizontalAlignment = SwingConstants.LEFT
             mainLabel.icon = changeTypeIcon(userObject.changeType)
             mainLabel.verticalAlignment = SwingConstants.CENTER
-            unresolvedLabel.verticalAlignment = SwingConstants.CENTER
-            totalLabel.verticalAlignment = SwingConstants.CENTER
+            issueLabel.verticalAlignment = SwingConstants.CENTER
+            aiLabel.verticalAlignment = SwingConstants.CENTER
 
             if (sel) {
                 rowPanel.background = fallbackRenderer.backgroundSelectionColor
                 mainLabel.foreground = fallbackRenderer.textSelectionColor
-                unresolvedLabel.foreground = fallbackRenderer.textSelectionColor
-                totalLabel.foreground = fallbackRenderer.textSelectionColor
+                issueLabel.foreground = fallbackRenderer.textSelectionColor
+                aiLabel.foreground = fallbackRenderer.textSelectionColor
             } else {
                 rowPanel.background = fallbackRenderer.backgroundNonSelectionColor
                 mainLabel.foreground = changeTypeColor(userObject.changeType)
-                unresolvedLabel.foreground = JBColor(Color(0xD93025), Color(0xF47067))
-                totalLabel.foreground = JBColor(Color(0x5F6368), Color(0x9AA0A6))
+                issueLabel.foreground = JBColor(Color(0x5F6368), Color(0x9AA0A6))
+                aiLabel.foreground = JBColor(Color(0x000000), Color(0x000000))
             }
 
-            if (issueBadge == null) {
-                mainLabel.text = baseText
-                unresolvedLabel.text = ""
-                totalLabel.text = ""
-            } else {
-                val (unresolved, total) = issueBadge
-                mainLabel.text = "$baseText  "
-                unresolvedLabel.text = unresolved.toString()
-                totalLabel.text = "/$total"
-            }
+            mainLabel.text = baseText
+            val issueText = issueBadge?.let { "${it.first}/${it.second}" }.orEmpty()
+            issueLabel.text = issueText.padEnd(5, ' ')
+            aiLabel.text = if (hasAiIssue) "${aiBadge.first}/${aiBadge.second}" else ""
             return rowPanel
         }
     }
@@ -2457,6 +2910,37 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         override fun getIconHeight(): Int = size
     }
 
+    private class AiBadgeIcon(private val color: Color) : Icon {
+        private val size = JBUI.scale(16)
+
+        override fun paintIcon(c: Component?, g: Graphics, x: Int, y: Int) {
+            val g2 = g.create() as Graphics2D
+            try {
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                g2.color = color
+                g2.fillOval(x, y, size, size)
+                g2.color = color.darker()
+                g2.stroke = BasicStroke(JBUI.scale(1f))
+                g2.drawOval(x, y, size, size)
+
+                val text = "AI"
+                val font = g2.font.deriveFont(Font.BOLD, JBUI.scale(8f))
+                g2.font = font
+                val fm = g2.fontMetrics
+                val tx = x + (size - fm.stringWidth(text)) / 2
+                val ty = y + (size + fm.ascent - fm.descent) / 2
+                g2.color = Color.WHITE
+                g2.drawString(text, tx, ty)
+            } finally {
+                g2.dispose()
+            }
+        }
+
+        override fun getIconWidth(): Int = size
+
+        override fun getIconHeight(): Int = size
+    }
+
     private class ReviewerAvatarIcon(
         private val username: String,
         private val color: Color
@@ -2484,6 +2968,46 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
         override fun getIconHeight(): Int = size
     }
+
+    private enum class AiReviewBadgeState(val color: Color) {
+        NO_DATA(JBColor(Color(0x9AA0A6), Color(0x6B7280))),
+        STALE(JBColor(Color(0xF29900), Color(0xF6C26B))),
+        PASS(JBColor(Color(0x1E8E3E), Color(0x57D163))),
+        FAIL(JBColor(Color(0xD93025), Color(0xF47067)))
+    }
+
+    private data class AiReviewOverview(
+        val prId: Long,
+        val validFlag: Boolean,
+        val errorCount: Int,
+        val warnCount: Int,
+        val unhandledCount: Int,
+        val adoptedCount: Int,
+        val ignoredCount: Int,
+        val misreportedCount: Int,
+        val fileTreeNodes: List<AiTreeNode>
+    )
+
+    private data class AiTreeNode(
+        val nodeName: String,
+        val issueErrorCount: Int,
+        val issueWarnCount: Int,
+        val type: String,
+        val children: List<AiTreeNode>
+    )
+
+    private data class AiReviewIssue(
+        val id: Long,
+        val filePath: String,
+        val issueStatus: Int,
+        val issueSeverity: Int,
+        val issueDescription: String,
+        val issueFixSuggestion: String,
+        val issueFixCode: String,
+        val issueCodeLine: Int,
+        val issueCodeSnippetStartLine: Int,
+        val issueCodeSnippetEndLine: Int
+    )
 
     private data class PrListResult(
         val total: Int,

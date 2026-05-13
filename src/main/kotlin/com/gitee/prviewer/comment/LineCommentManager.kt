@@ -517,7 +517,17 @@ class LineCommentManager(private val project: Project) {
         highlightAiIssueRange(editor, issue)
         val panel = JPanel()
         panel.layout = BoxLayout(panel, BoxLayout.Y_AXIS)
-        panel.border = JBUI.Borders.empty(10)
+        panel.border = JBUI.Borders.empty(12)
+        panel.isOpaque = true
+        panel.background = JBColor(Color(0xFCFDFE), Color(0x34383D))
+
+        val popupTitle = JBLabel("AI智能评审问题", SwingConstants.CENTER)
+        popupTitle.font = popupTitle.font.deriveFont(Font.BOLD, popupTitle.font.size2D + 1f)
+        val titleRow = JPanel(BorderLayout())
+        titleRow.isOpaque = false
+        titleRow.add(popupTitle, BorderLayout.CENTER)
+        panel.add(titleRow)
+        panel.add(Box.createVerticalStrut(JBUI.scale(8)))
 
         fun addTitleValue(title: String, value: String) {
             val row = JPanel(BorderLayout())
@@ -557,7 +567,12 @@ class LineCommentManager(private val project: Project) {
                 verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED
             }
 
-            row.add(codeScroll, BorderLayout.CENTER)
+            val codeWrapper = JPanel(BorderLayout())
+            codeWrapper.isOpaque = false
+            codeWrapper.border = JBUI.Borders.emptyTop(12)
+            codeWrapper.add(codeScroll, BorderLayout.CENTER)
+
+            row.add(codeWrapper, BorderLayout.CENTER)
             panel.add(row)
             panel.add(Box.createVerticalStrut(JBUI.scale(6)))
         }
@@ -582,7 +597,8 @@ class LineCommentManager(private val project: Project) {
 
         val popup = JBPopupFactory.getInstance()
             .createComponentPopupBuilder(panel, null)
-            .setTitle("AI智能评审问题")
+            .setShowBorder(false)
+            .setShowShadow(false)
             .setResizable(true)
             .setMovable(true)
             .setRequestFocus(true)
@@ -603,6 +619,19 @@ class LineCommentManager(private val project: Project) {
         }
 
         popup.showInBestPositionFor(editor)
+        SwingUtilities.invokeLater {
+            val window = SwingUtilities.getWindowAncestor(panel) ?: return@invokeLater
+            window.background = Color(0, 0, 0, 0)
+            val arc = JBUI.scale(24).toDouble()
+            window.shape = java.awt.geom.RoundRectangle2D.Double(
+                0.0,
+                0.0,
+                window.width.toDouble(),
+                window.height.toDouble(),
+                arc,
+                arc
+            )
+        }
     }
 
     private fun highlightAiIssueRange(editor: Editor, issue: AiIssue) {

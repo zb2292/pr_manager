@@ -1890,6 +1890,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
 
         sortTree(changeTreeRoot)
+        compactDirectoryTree(changeTreeRoot)
         changeTreeModel.reload()
         expandAllFromRoot()
         SwingUtilities.invokeLater { expandAllFromRoot() }
@@ -1943,6 +1944,23 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         sorted.forEach {
             node.add(it)
             sortTree(it)
+        }
+    }
+
+    private fun compactDirectoryTree(node: DefaultMutableTreeNode) {
+        val children = node.children().toList().filterIsInstance<DefaultMutableTreeNode>()
+        children.forEach { compactDirectoryTree(it) }
+
+        if (node.userObject !is String) return
+
+        while (node.childCount == 1) {
+            val onlyChild = node.getChildAt(0) as? DefaultMutableTreeNode ?: break
+            val childName = onlyChild.userObject as? String ?: break
+            node.userObject = "${node.userObject as String}/$childName"
+            node.removeAllChildren()
+            onlyChild.children().toList().filterIsInstance<DefaultMutableTreeNode>().forEach { grandChild ->
+                node.add(grandChild)
+            }
         }
     }
 
@@ -2689,10 +2707,6 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             when {
                 loading -> {
                     loadMoreLabel.text = "加载中..."
-                    loadMoreLabel.isVisible = true
-                }
-                hasMore -> {
-                    loadMoreLabel.text = "加载更多"
                     loadMoreLabel.isVisible = true
                 }
                 else -> {

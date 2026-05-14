@@ -18,7 +18,10 @@ object LineCommentStore {
     }
 
     fun addComment(filePath: String, line: Int, side: Side, content: String, author: String): LineComment {
+        val key = Key(filePath, line, side)
+        val list = comments.getOrPut(key) { mutableListOf() }
         val id = UUID.randomUUID().toString()
+        val nextFloorNum = (list.maxOfOrNull { it.floorNum ?: 0 } ?: 0) + 1
         val comment = LineComment(
             id = id,
             filePath = filePath,
@@ -29,10 +32,9 @@ object LineCommentStore {
             createdAt = System.currentTimeMillis(),
             parentId = null,
             rootId = id,
+            floorNum = nextFloorNum,
             resolved = false
         )
-        val key = Key(filePath, line, side)
-        val list = comments.getOrPut(key) { mutableListOf() }
         list.add(comment)
         notifyChanged()
         return comment
@@ -48,7 +50,10 @@ object LineCommentStore {
         rootId: String = parentId,
         replyFloorNum: Int? = null
     ): LineComment {
+        val key = Key(filePath, line, side)
+        val list = comments.getOrPut(key) { mutableListOf() }
         val id = UUID.randomUUID().toString()
+        val nextFloorNum = (list.maxOfOrNull { it.floorNum ?: 0 } ?: 0) + 1
         val comment = LineComment(
             id = id,
             filePath = filePath,
@@ -59,11 +64,10 @@ object LineCommentStore {
             createdAt = System.currentTimeMillis(),
             parentId = parentId,
             rootId = rootId,
+            floorNum = nextFloorNum,
             replyFloorNum = replyFloorNum,
             resolved = false
         )
-        val key = Key(filePath, line, side)
-        val list = comments.getOrPut(key) { mutableListOf() }
         list.add(comment)
         notifyChanged()
         return comment

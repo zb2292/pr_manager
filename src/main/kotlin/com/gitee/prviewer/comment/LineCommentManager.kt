@@ -631,6 +631,26 @@ class LineCommentManager(private val project: Project) {
                 arc,
                 arc
             )
+
+            var lastScreenPoint: Point? = null
+            val dragHandler = object : MouseAdapter() {
+                override fun mousePressed(e: MouseEvent) {
+                    lastScreenPoint = e.locationOnScreen
+                }
+
+                override fun mouseDragged(e: MouseEvent) {
+                    val prev = lastScreenPoint ?: return
+                    val current = e.locationOnScreen
+                    window.setLocation(window.x + (current.x - prev.x), window.y + (current.y - prev.y))
+                    lastScreenPoint = current
+                }
+            }
+            titleRow.cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
+            popupTitle.cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
+            titleRow.addMouseListener(dragHandler)
+            titleRow.addMouseMotionListener(dragHandler)
+            popupTitle.addMouseListener(dragHandler)
+            popupTitle.addMouseMotionListener(dragHandler)
         }
     }
 
@@ -658,80 +678,277 @@ class LineCommentManager(private val project: Project) {
 
     private fun showPopup(editor: Editor, filePath: String, line: Int, side: Side, openComposerOnly: Boolean = false) {
         val currentUserName = System.getenv("USERID").orEmpty().ifBlank { "本地用户" }
-        val currentUserIcon = AllIcons.General.User
-        val timeFormatter = SimpleDateFormat("yyyy.MM.dd HH:mm:ss", Locale.getDefault())
+        val isMac = System.getProperty("os.name").contains("mac", ignoreCase = true)
+        val submitShortcutText = if (isMac) "⌘Enter" else "Ctrl+Enter"
 
-        val bgBase = UIUtil.getPanelBackground()
-        val sectionBg = UIUtil.getPanelBackground()
-        val commentUnitBg = UIUtil.getListBackground()
-        val replyUnitBg = UIUtil.getTextFieldBackground()
-        val commentUnitHoverBg = UIUtil.getDecoratedRowColor()
-        val borderColor = UIUtil.getSeparatorColor()
-        val contentMaxWidth = JBUI.scale(520)
-        val leftInset = JBUI.scale(4)
-//        val alignedRowWidth = contentMaxWidth - JBUI.scale(12) + avatarSlotWidth
-        val actionTopGap = JBUI.scale(6)
-        val unitGap = JBUI.scale(2)
-        val textPrimary = UIUtil.getLabelForeground()
-        val textSecondary = UIUtil.getInactiveTextColor()
-        val textHint = UIUtil.getContextHelpForeground()
-        val textLink = JBUI.CurrentTheme.Link.Foreground.ENABLED
-        val successColor = JBColor(Color(0x1E8E3E), Color(0x57D163))
-        val dangerColor = JBColor(Color(0xD93025), Color(0xF47067))
+        val bgMain = JBColor(Color(0x2B2B2B), Color(0xF2F2F2))
+        val bgHeader = JBColor(Color(0x3C3F41), Color(0xE8E8E8))
+        val bgCard = JBColor(Color(0x323232), Color(0xFFFFFF))
+        val bgReply = JBColor(Color(0x393939), Color(0xF7F7F7))
+        val bgComposer = JBColor(Color(0x252525), Color(0xFFFFFF))
+        val textMain = JBColor(Color(0xBBBBBB), Color(0x2F2F2F))
+        val textContent = JBColor(Color(0xD1D1D1), Color(0x202124))
+        val textDim = JBColor(Color(0x888888), Color(0x7A7A7A))
+        val accentBlue = JBColor(Color(0x1A73E8), Color(0x1A73E8))
+        val accentGreen = JBColor(Color(0x57D163), Color(0x1E8E3E))
+        val accentOrange = JBColor(Color(0xF29900), Color(0xF29900))
+        val borderColor = JBColor(Color(0x515151), Color(0xD0D0D0))
 
-        val container = JPanel(BorderLayout())
-        container.border = JBUI.Borders.empty(10)
-        container.background = bgBase
+        fun alpha(color: Color, alpha: Int): Color = Color(color.red, color.green, color.blue, alpha.coerceIn(0, 255))
 
-        val baseCharWidth = container.getFontMetrics(container.font).charWidth('a')
-        val avatarSlotWidth = baseCharWidth * 5
-        val avatarSizePx = (baseCharWidth * 3).coerceAtLeast(JBUI.scale(12))
-        val alignedRowWidth = contentMaxWidth - JBUI.scale(12) + avatarSlotWidth
+        fun formatRootTime(timestamp: Long): String {
+            val calendar = java.util.Calendar.getInstance()
+            val target = java.util.Calendar.getInstance().apply { timeInMillis = timestamp }
+            val isSameDay = calendar.get(java.util.Calendar.YEAR) == target.get(java.util.Calendar.YEAR) &&
+                calendar.get(java.util.Calendar.DAY_OF_YEAR) == target.get(java.util.Calendar.DAY_OF_YEAR)
+            if (isSameDay) {
+                return SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(timestamp))
+            }
+            calendar.add(java.util.Calendar.DAY_OF_YEAR, -1)
+            val isYesterday = calendar.get(java.util.Calendar.YEAR) == target.get(java.util.Calendar.YEAR) &&
+                calendar.get(java.util.Calendar.DAY_OF_YEAR) == target.get(java.util.Calendar.DAY_OF_YEAR)
+            return if (isYesterday) {
+                "昨天 ${SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(timestamp))}"
+            } else {
+                SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(timestamp))
+            }
+        }
 
-        val headerInput = EditorTextField()
-        headerInput.setOneLineMode(true)
-        headerInput.isFocusable = true
-        headerInput.enableInputMethods(true)
-        headerInput.isVisible = false
-        headerInput.preferredSize = Dimension(0, 0)
+        fun formatReplyTime(timestamp: Long): String {
+            val calendar = java.util.Calendar.getInstance()
+            val target = java.util.Calendar.getInstance().apply { timeInMillis = timestamp }
+            val isSameDay = calendar.get(java.util.Calendar.YEAR) == target.get(java.util.Calendar.YEAR) &&
+                calendar.get(java.util.Calendar.DAY_OF_YEAR) == target.get(java.util.Calendar.DAY_OF_YEAR)
+            if (isSameDay) {
+                return SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(timestamp))
+            }
+            calendar.add(java.util.Calendar.DAY_OF_YEAR, -1)
+            val isYesterday = calendar.get(java.util.Calendar.YEAR) == target.get(java.util.Calendar.YEAR) &&
+                calendar.get(java.util.Calendar.DAY_OF_YEAR) == target.get(java.util.Calendar.DAY_OF_YEAR)
+            return if (isYesterday) {
+                "昨天 ${SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(timestamp))}"
+            } else {
+                SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(timestamp))
+            }
+        }
 
-        val middlePanel = JPanel()
-        middlePanel.layout = BoxLayout(middlePanel, BoxLayout.Y_AXIS)
-        middlePanel.isOpaque = true
-        middlePanel.background = bgBase
+        fun displayFloorNum(comment: LineComment, floorMap: Map<String, Int>): Int {
+            return floorMap[comment.id] ?: comment.floorNum ?: 0
+        }
 
-        val footerPanel = JPanel(BorderLayout())
-        footerPanel.isOpaque = true
-        footerPanel.background = bgBase
-        footerPanel.border = JBUI.Borders.empty()
+        open class RoundedBlockPanel(
+            private val fill: Color,
+            private val arc: Int,
+            private val leftStripe: Color? = null,
+            private val leftStripeWidth: Int = JBUI.scale(4),
+            private val drawShadow: Boolean = false
+        ) : JPanel() {
+            init {
+                isOpaque = false
+            }
 
-        container.add(headerInput, BorderLayout.NORTH)
+            override fun paintComponent(g: Graphics) {
+                val g2 = g.create() as Graphics2D
+                try {
+                    g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                    if (drawShadow) {
+                        g2.color = alpha(Color.BLACK, 26)
+                        g2.fillRoundRect(JBUI.scale(1), JBUI.scale(2), width - JBUI.scale(2), height - JBUI.scale(3), arc, arc)
+                    }
+                    val clip = g2.clip
+                    g2.color = fill
+                    g2.fillRoundRect(0, 0, width - 1, height - 1, arc, arc)
+                    if (leftStripe != null) {
+                        g2.clipRect(0, 0, leftStripeWidth, height)
+                        g2.color = leftStripe
+                        g2.fillRoundRect(0, 0, width - 1, height - 1, arc, arc)
+                        g2.clip = clip
+                    }
+                } finally {
+                    g2.dispose()
+                }
+                super.paintComponent(g)
+            }
+        }
 
-        val scrollPane = JBScrollPane(middlePanel)
+        class PlaceholderTextArea(private val placeholder: String) : JBTextArea() {
+            override fun paintComponent(g: Graphics) {
+                super.paintComponent(g)
+                if (text.isNotEmpty()) return
+                val g2 = g.create() as Graphics2D
+                try {
+                    g2.color = textDim
+                    g2.font = font
+                    val x = insets.left + JBUI.scale(2)
+                    val y = insets.top + g2.fontMetrics.ascent
+                    g2.drawString(placeholder, x, y)
+                } finally {
+                    g2.dispose()
+                }
+            }
+        }
 
-        scrollPane.preferredSize = Dimension(JBUI.scale(560), JBUI.scale(150))
-        scrollPane.border = JBUI.Borders.empty()
-        scrollPane.viewport.isOpaque = true
-        scrollPane.viewport.background = bgBase
-        scrollPane.isOpaque = false
+        fun avatarColor(name: String): Color {
+            val palette = listOf(
+                Color(0xE57373),
+                Color(0x64B5F6),
+                Color(0x81C784),
+                Color(0xBA68C8),
+                Color(0xF29900),
+                Color(0x1A73E8)
+            )
+            return palette[name.trim().lowercase().hashCode().absoluteValue % palette.size]
+        }
 
+        fun createAvatar(name: String, size: Int = 24, text: String? = null, color: Color = avatarColor(name)): JComponent {
+            val avatar = object : JPanel() {
+                override fun paintComponent(g: Graphics) {
+                    val g2 = g.create() as Graphics2D
+                    try {
+                        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                        g2.color = color
+                        g2.fillOval(0, 0, width, height)
+                        g2.color = Color.WHITE
+                        val label = text ?: name.take(1).uppercase().ifBlank { "?" }
+                        val fontSize = if (label.length > 1) 10f else 12f
+                        g2.font = font.deriveFont(Font.BOLD, JBUI.scale(fontSize))
+                        val fm = g2.fontMetrics
+                        val x = (width - fm.stringWidth(label)) / 2
+                        val y = (height - fm.height) / 2 + fm.ascent
+                        g2.drawString(label, x, y)
+                    } finally {
+                        g2.dispose()
+                    }
+                }
+            }
+            avatar.isOpaque = false
+            val scaled = JBUI.scale(size)
+            val dimension = Dimension(scaled, scaled)
+            avatar.preferredSize = dimension
+            avatar.minimumSize = dimension
+            avatar.maximumSize = dimension
+            return avatar
+        }
 
+        fun createTextArea(text: String, background: Color, foreground: Color): JComponent {
+            val area = JBTextArea(text)
+            area.isEditable = false
+            area.lineWrap = true
+            area.wrapStyleWord = true
+            area.font = area.font.deriveFont(13f)
+            area.background = background
+            area.foreground = foreground
+            area.border = JBUI.Borders.empty()
+            area.isOpaque = false
+            area.isFocusable = false
+            area.alignmentX = Component.LEFT_ALIGNMENT
+            area.maximumSize = Dimension(Int.MAX_VALUE, area.preferredSize.height)
+            return area
+        }
 
-        var popup: com.intellij.openapi.ui.popup.JBPopup? = null
-        var collapseAll = false
-        var showComposerOnly = openComposerOnly
-        var autoOpenComposer = openComposerOnly
-        var pendingScrollToLatest = false
-        var lastCommentCount = 0
-        lateinit var rebuild: () -> Unit
+        fun createRoundedButton(
+            text: String,
+            fillColor: Color,
+            hoverFillColor: Color,
+            foregroundColor: Color,
+            outlineColor: Color? = null,
+            fontSize: Float,
+            bold: Boolean = false,
+            padding: Insets,
+            arc: Int = JBUI.scale(8)
+        ): JButton {
+            val button = object : JButton(text) {
+                var hovered = false
 
-        val collapsedById = mutableMapOf<String, Boolean>()
-        val replyComposerOpenById = mutableSetOf<String>()
-        val editComposerOpenById = mutableSetOf<String>()
+                override fun paintComponent(g: Graphics) {
+                    val g2 = g.create() as Graphics2D
+                    try {
+                        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                        g2.color = if (hovered) hoverFillColor else fillColor
+                        g2.fillRoundRect(0, 0, width, height, arc, arc)
+                        if (outlineColor != null) {
+                            g2.color = if (hovered) hoverFillColor.darker() else outlineColor
+                            g2.drawRoundRect(0, 0, width - 1, height - 1, arc, arc)
+                        }
+                    } finally {
+                        g2.dispose()
+                    }
+                    super.paintComponent(g)
+                }
+            }
+            button.font = button.font.deriveFont(if (bold) Font.BOLD else Font.PLAIN, fontSize)
+            button.foreground = foregroundColor
+            button.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            button.isFocusPainted = false
+            button.isOpaque = false
+            button.isContentAreaFilled = false
+            button.isBorderPainted = false
+            button.margin = JBUI.emptyInsets()
+            button.border = JBUI.Borders.empty(padding.top, padding.left, padding.bottom, padding.right)
+            button.addMouseListener(object : MouseAdapter() {
+                override fun mouseEntered(e: MouseEvent) {
+                    button.hovered = true
+                    button.repaint()
+                }
 
-        fun summarize(text: String, maxLen: Int = 20): String {
-            val trimmed = text.trim()
-            return if (trimmed.length <= maxLen) trimmed else trimmed.take(maxLen) + "..."
+                override fun mouseExited(e: MouseEvent) {
+                    button.hovered = false
+                    button.repaint()
+                }
+            })
+            return button
+        }
+
+        fun createActionButton(text: String, foreground: Color = textMain, border: Color = borderColor): JButton {
+            return createRoundedButton(
+                text = text,
+                fillColor = alpha(Color.WHITE, 13),
+                hoverFillColor = alpha(Color.WHITE, 26),
+                foregroundColor = foreground,
+                outlineColor = border,
+                fontSize = 11f,
+                padding = JBUI.insets(2, 1),
+                arc = JBUI.scale(8)
+            )
+        }
+
+        fun createPrimaryButton(text: String, compact: Boolean = false): JButton {
+            return createRoundedButton(
+                text = text,
+                fillColor = accentBlue,
+                hoverFillColor = accentBlue.brighter(),
+                foregroundColor = Color.WHITE,
+                fontSize = if (compact) 11f else 13f,
+                bold = true,
+                padding = if (compact) JBUI.insets(3, 8) else JBUI.insets(4, 4),
+                arc = JBUI.scale(8)
+            )
+        }
+
+        fun createToggleButton(text: String, onClick: () -> Unit): JButton {
+            return JButton(text).apply {
+                font = font.deriveFont(11f)
+                foreground = accentBlue
+                isOpaque = false
+                isContentAreaFilled = false
+                isBorderPainted = false
+                isFocusPainted = false
+                margin = JBUI.emptyInsets()
+                cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                addActionListener { onClick() }
+            }
+        }
+
+        fun createStatusPill(text: String, textColor: Color): JComponent {
+            val label = JBLabel(text)
+            label.foreground = textColor
+            label.font = label.font.deriveFont(11f)
+            return RoundedBlockPanel(alpha(textColor, 51), JBUI.scale(20)).apply {
+                layout = BorderLayout()
+                border = JBUI.Borders.empty(2, 8)
+                add(label, BorderLayout.CENTER)
+                preferredSize = Dimension(preferredSize.width, JBUI.scale(20))
+            }
         }
 
         fun ensureRemoteIssueRoot() {
@@ -751,813 +968,570 @@ class LineCommentManager(private val project: Project) {
             }
         }
 
-        fun createUserBadge(name: String, icon: Icon = currentUserIcon): JComponent {
-            val panel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
-            panel.isOpaque = false
-            val label = JBLabel(name, icon, SwingConstants.LEFT)
-            label.foreground = textSecondary
-            panel.add(label)
-            return panel
-        }
-
-        fun buildActionLinkLabel(text: String, onClick: () -> Unit): JBLabel {
-            val label = JBLabel(text)
-            label.isOpaque = false
-            label.foreground = textLink
-            label.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-            label.addMouseListener(object : MouseAdapter() {
-                override fun mouseClicked(e: MouseEvent) {
-                    onClick()
-                }
-            })
-            return label
-        }
-
-        fun avatarColor(name: String): JBColor {
-            val palette = listOf(
-                JBColor(Color(0x1A73E8), Color(0x6EA8FF)),
-                JBColor(Color(0x1E8E3E), Color(0x57D163)),
-                JBColor(Color(0x8E24AA), Color(0xC77DFF)),
-                JBColor(Color(0xF29900), Color(0xF6C26B)),
-                JBColor(Color(0xD93025), Color(0xF47067))
-            )
-            val idx = (name.trim().lowercase().hashCode().absoluteValue) % palette.size
-            return palette[idx]
-        }
-
-        class UserAvatarIcon(
-            private val username: String,
-            private val color: Color,
-            private val size: Int
-        ) : Icon {
-            override fun paintIcon(c: Component?, g: Graphics, x: Int, y: Int) {
-                val g2 = g.create() as Graphics2D
-                try {
-                    g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-                    g2.color = color
-                    g2.fillOval(x, y, size, size)
-                    val initials = username.trim().take(1).ifBlank { "?" }.uppercase()
-                    g2.color = Color.WHITE
-                    val fm = g2.fontMetrics
-                    val tx = x + (size - fm.stringWidth(initials)) / 2
-                    val ty = y + (size + fm.ascent - fm.descent) / 2
-                    g2.drawString(initials, tx, ty)
-                } finally {
-                    g2.dispose()
-                }
-            }
-
-            override fun getIconWidth(): Int = size
-
-            override fun getIconHeight(): Int = size
-        }
-
-        fun buildHeaderLeftPanel(
-            seqText: String,
-            author: String,
-            createdAt: Long,
-            replyFloorText: String?
-        ): JPanel {
-            val left = JPanel()
-            left.layout = BoxLayout(left, BoxLayout.X_AXIS)
-            left.isOpaque = false
-
-            val avatarIcon = UserAvatarIcon(author, avatarColor(author), avatarSizePx)
-            val avatarLabel = JBLabel(avatarIcon)
-            val avatarSlot = JPanel(BorderLayout()).apply {
-                isOpaque = false
-                preferredSize = Dimension(avatarSlotWidth, avatarSizePx)
-                minimumSize = Dimension(avatarSlotWidth, avatarSizePx)
-                maximumSize = Dimension(avatarSlotWidth, avatarSizePx)
-                add(avatarLabel, BorderLayout.CENTER)
-            }
-            left.add(avatarSlot)
-
-            val nameLabel = JBLabel(author)
-            nameLabel.foreground = textSecondary
-            nameLabel.font = nameLabel.font.deriveFont(Font.BOLD)
-            left.add(nameLabel)
-            left.add(JBLabel(" "))
-
-            val timeLabel = JBLabel(timeFormatter.format(Date(createdAt)))
-            timeLabel.foreground = textHint
-            left.add(timeLabel)
-
-            val seqDisplay = if (replyFloorText.isNullOrBlank()) seqText else "$seqText ->$replyFloorText"
-            left.add(Box.createHorizontalStrut(JBUI.scale(4)))
-            val seqLabel = JBLabel(seqDisplay)
-            seqLabel.foreground = textSecondary
-            left.add(seqLabel)
-            return left
-        }
-
         fun addRootComment(text: String) {
             val content = text.trim()
             if (content.isBlank() || content.length > MAX_COMMENT_LENGTH) return
             val handler = remoteHandler
             if (handler != null) {
                 handler.addComment(filePath, line, side, content)
-                return
+            } else {
+                LineCommentStore.addComment(filePath, line, side, content, currentUserName)
             }
-            LineCommentStore.addComment(filePath, line, side, content, currentUserName)
         }
 
-        fun addReply(parent: LineComment, text: String) {
+        fun addReply(target: LineComment, text: String) {
             val content = text.trim()
             if (content.isBlank() || content.length > MAX_COMMENT_LENGTH) return
             val handler = remoteHandler
             if (handler != null) {
-                handler.addReply(filePath, line, side, parent, content)
-                return
+                handler.addReply(filePath, line, side, target, content)
+            } else {
+                LineCommentStore.addReply(
+                    filePath = filePath,
+                    line = line,
+                    side = side,
+                    parentId = target.id,
+                    content = content,
+                    author = currentUserName,
+                    rootId = target.rootId,
+                    replyFloorNum = target.floorNum ?: target.replyFloorNum
+                )
             }
-            LineCommentStore.addReply(
-                filePath = filePath,
-                line = line,
-                side = side,
-                parentId = parent.id,
-                content = content,
-                author = currentUserName,
-                rootId = parent.rootId,
-                replyFloorNum = parent.floorNum
+        }
+
+        fun resolveThread(root: LineComment, onDone: () -> Unit) {
+            val handler = remoteHandler
+            if (handler != null) {
+                handler.resolveThread(filePath, line, side, root)
+            } else {
+                LineCommentStore.getComments(filePath, line, side)
+                    .filter { it.rootId == root.rootId }
+                    .forEach { item -> LineCommentStore.resolveComment(filePath, line, side, item.id) }
+                onDone()
+            }
+        }
+
+        fun findThreadReplies(root: LineComment, all: List<LineComment>): List<LineComment> {
+            return all.filter { it.parentId != null && it.rootId == root.id }
+                .sortedWith(compareBy<LineComment> { it.floorNum ?: Int.MAX_VALUE }.thenBy { it.createdAt })
+        }
+
+        fun buildDisplayFloorMap(roots: List<LineComment>, all: List<LineComment>): Map<String, Int> {
+            val usedFloorNums = all.mapNotNull { it.floorNum }.toMutableSet()
+            val displayMap = linkedMapOf<String, Int>()
+            var nextFloorNum = 1
+
+            fun nextAvailableFloorNum(): Int {
+                while (nextFloorNum in usedFloorNums) {
+                    nextFloorNum++
+                }
+                return nextFloorNum++
+            }
+
+            roots.forEach { root ->
+                displayMap[root.id] = root.floorNum ?: nextAvailableFloorNum()
+                findThreadReplies(root, all).forEach { reply ->
+                    displayMap[reply.id] = reply.floorNum ?: nextAvailableFloorNum()
+                }
+            }
+            return displayMap
+        }
+
+        val popupWidth = JBUI.scale(450)
+        val popupMinHeight = JBUI.scale(80)
+        val popupMaxHeight = JBUI.scale(600)
+
+        val container = JPanel(BorderLayout())
+        container.background = bgMain
+        container.border = JBUI.Borders.customLine(borderColor)
+        container.preferredSize = Dimension(popupWidth, JBUI.scale(300))
+        container.minimumSize = container.preferredSize
+        container.maximumSize = container.preferredSize
+        container.isFocusable = true
+
+        val focusAnchor = EditorTextField().apply {
+            setOneLineMode(true)
+            border = JBUI.Borders.empty()
+            isOpaque = false
+            preferredSize = Dimension(0, 0)
+            minimumSize = Dimension(0, 0)
+            maximumSize = Dimension(0, 0)
+        }
+        container.add(focusAnchor, BorderLayout.WEST)
+
+        val headerPanel = JPanel()
+        headerPanel.layout = BoxLayout(headerPanel, BoxLayout.X_AXIS)
+        headerPanel.background = bgHeader
+        headerPanel.border = javax.swing.BorderFactory.createCompoundBorder(
+            JBUI.Borders.customLine(borderColor, 0, 0, 1, 0),
+            JBUI.Borders.empty(0, 12)
+        )
+        val headerHeight = JBUI.scale(40)
+        val headerSize = Dimension(0, headerHeight)
+        headerPanel.preferredSize = headerSize
+        headerPanel.minimumSize = headerSize
+        headerPanel.maximumSize = Dimension(Int.MAX_VALUE, headerHeight)
+
+        val headerIconLabel = JBLabel("💬")
+        headerIconLabel.font = headerIconLabel.font.deriveFont(16f)
+        headerIconLabel.border = JBUI.Borders.emptyRight(8)
+        val titleLabel = JBLabel("行评论 · L${line + 1}")
+        titleLabel.font = titleLabel.font.deriveFont(Font.BOLD, 13f)
+        titleLabel.foreground = textMain
+        val countLabel = JBLabel("0个评论单元")
+        countLabel.foreground = textDim
+        countLabel.font = countLabel.font.deriveFont(11f)
+
+        headerPanel.add(headerIconLabel)
+        headerPanel.add(titleLabel)
+        headerPanel.add(Box.createHorizontalGlue())
+        headerPanel.add(countLabel)
+
+        val middlePanel = JPanel()
+        middlePanel.layout = BoxLayout(middlePanel, BoxLayout.Y_AXIS)
+        middlePanel.background = bgMain
+        middlePanel.border = JBUI.Borders.empty(12, 12, 0, 12)
+
+        val scrollPane = JBScrollPane(middlePanel)
+        scrollPane.border = JBUI.Borders.empty()
+        scrollPane.viewport.background = bgMain
+        scrollPane.horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+        scrollPane.verticalScrollBar.unitIncrement = JBUI.scale(16)
+
+        val footerPanel = JPanel(BorderLayout())
+        footerPanel.background = bgHeader
+        footerPanel.border = JBUI.Borders.customLine(borderColor, 1, 0, 0, 0)
+
+        container.add(headerPanel, BorderLayout.NORTH)
+        container.add(scrollPane, BorderLayout.CENTER)
+        container.add(footerPanel, BorderLayout.SOUTH)
+
+        var popup: com.intellij.openapi.ui.popup.JBPopup? = null
+        var activeReplyTargetId: String? = null
+        var preCommentVisible = openComposerOnly
+        var pendingScrollToBottom = false
+        val launchedComposerOnly = openComposerOnly
+        val collapsedByRootId = mutableMapOf<String, Boolean>()
+        lateinit var rebuild: () -> Unit
+
+        fun closePopupIfNeeded() {
+            if (launchedComposerOnly && !LineCommentStore.hasComments(filePath, line, side)) {
+                popup?.cancel()
+            }
+        }
+
+        fun updatePopupWindowShape(window: Window) {
+            window.shape = java.awt.geom.RoundRectangle2D.Double(
+                0.0,
+                0.0,
+                window.width.toDouble(),
+                window.height.toDouble(),
+                JBUI.scale(8).toDouble(),
+                JBUI.scale(8).toDouble()
             )
         }
 
-        fun replaceComment(comment: LineComment, text: String) {
-            val content = text.trim()
-            if (content.isBlank() || content.length > MAX_COMMENT_LENGTH) return
-            LineCommentStore.updateComment(filePath, line, side, comment.id, content)
-        }
-
-        fun resolveThreadLocal(rootId: String) {
-            LineCommentStore.getComments(filePath, line, side)
-                .filter { it.rootId == rootId }
-                .forEach { item ->
-                    LineCommentStore.resolveComment(filePath, line, side, item.id)
-                }
-        }
-
-        fun buildActionMenu(comment: LineComment) {
-            val panel = JPanel(GridLayout(2, 1, 0, JBUI.scale(4)))
-            panel.border = JBUI.Borders.empty(6)
-            val edit = JButton("编辑")
-            val delete = JButton("删除")
-            panel.add(edit)
-            panel.add(delete)
-
-            val menu = JBPopupFactory.getInstance()
-                .createComponentPopupBuilder(panel, panel)
-                .setRequestFocus(true)
-                .createPopup()
-
-            edit.addActionListener {
-                editComposerOpenById.add(comment.id)
-                menu.cancel()
-                rebuild()
-            }
-            delete.addActionListener {
-                LineCommentStore.removeComment(filePath, line, side, comment.id)
-                menu.cancel()
-            }
-
-            menu.showInBestPositionFor(editor)
-        }
-
-        fun buildHeaderRow(
-            comment: LineComment,
-            showActions: Boolean,
-            showToggle: Boolean,
-            isCollapsed: Boolean,
-            onToggle: (() -> Unit)?
-        ): JComponent {
-            val row = JPanel(BorderLayout())
-            row.isOpaque = false
-
-            val left = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
-            left.isOpaque = false
-            left.add(createUserBadge(comment.author, AllIcons.General.User))
-            left.add(JBLabel(" "))
-            val timeLabel = JBLabel(timeFormatter.format(Date(comment.createdAt)))
-            timeLabel.foreground = textHint
-            left.add(timeLabel)
-
-            val right = JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0))
-            right.isOpaque = false
-
-            if (showActions) {
-                val more = JButton(AllIcons.Actions.More)
-                more.isOpaque = false
-                more.isContentAreaFilled = false
-                more.isBorderPainted = false
-                more.addActionListener { buildActionMenu(comment) }
-                right.add(more)
-            }
-
-            if (showToggle && onToggle != null) {
-                val toggle = JButton(if (isCollapsed) AllIcons.General.ArrowRight else AllIcons.General.ArrowDown)
-                toggle.isOpaque = false
-                toggle.isContentAreaFilled = false
-                toggle.isBorderPainted = false
-                toggle.addActionListener { onToggle() }
-                right.add(toggle)
-            }
-
-            row.add(left, BorderLayout.WEST)
-            row.add(right, BorderLayout.EAST)
-            return row
-        }
-
-        fun buildComposer(
-            initial: String,
+        fun buildComposerPanel(
             onCancel: () -> Unit,
-            onSubmit: (String) -> Unit,
-            onBuilt: ((JComponent) -> Unit)? = null,
-            rows: Int = 4,
-            topPadding: Int = JBUI.scale(1),
-            bottomPadding: Int = JBUI.scale(3),
-            lineSpacing: Float = 0f
+            onSubmit: (String) -> Unit
         ): JComponent {
-            val wrapper = JPanel(BorderLayout())
-            wrapper.isOpaque = false
+            val panel = RoundedBlockPanel(bgComposer, JBUI.scale(4))
+            panel.layout = BorderLayout(0, JBUI.scale(5))
+            panel.border = javax.swing.BorderFactory.createCompoundBorder(
+                JBUI.Borders.customLine(accentBlue),
+                JBUI.Borders.empty(8)
+            )
+            panel.alignmentX = Component.LEFT_ALIGNMENT
 
-            val input: JTextComponent
-            val inputComponent: JComponent
-            if (lineSpacing > 0f) {
-                val pane = JTextPane()
-                pane.isEditable = true
-                pane.isEnabled = true
-                pane.isFocusable = true
-                pane.enableInputMethods(true)
-                val attrs = SimpleAttributeSet()
-                StyleConstants.setLineSpacing(attrs, lineSpacing)
-                pane.text = initial
-                SwingUtilities.invokeLater {
-                    val doc = pane.styledDocument
-                    doc.setParagraphAttributes(0, doc.length, attrs, false)
+            val area = PlaceholderTextArea("输入回复内容...")
+            area.lineWrap = true
+            area.wrapStyleWord = true
+            area.rows = 3
+            area.background = bgComposer
+            area.foreground = Color.WHITE
+            area.caretColor = Color.WHITE
+            area.font = area.font.deriveFont(13f)
+            area.border = JBUI.Borders.empty()
+            area.margin = JBUI.insets(0)
+
+            val scroll = JBScrollPane(area)
+            scroll.border = JBUI.Borders.empty()
+            scroll.viewport.background = bgComposer
+            scroll.horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+            scroll.preferredSize = Dimension(0, JBUI.scale(60))
+            scroll.minimumSize = Dimension(0, JBUI.scale(60))
+
+            val cancelButton = JButton("取消")
+            cancelButton.font = cancelButton.font.deriveFont(11f)
+            cancelButton.foreground = textMain
+            cancelButton.isOpaque = false
+            cancelButton.isContentAreaFilled = false
+            cancelButton.isBorderPainted = false
+            cancelButton.isFocusPainted = false
+            cancelButton.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            cancelButton.addActionListener { onCancel() }
+
+            val submitButton = createPrimaryButton("发送 $submitShortcutText", compact = true)
+            submitButton.addActionListener { onSubmit(area.text) }
+
+            val modifierMask = if (isMac) java.awt.event.InputEvent.META_DOWN_MASK else java.awt.event.InputEvent.CTRL_DOWN_MASK
+            val keyStroke = javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_ENTER, modifierMask)
+            area.inputMap.put(keyStroke, "submit-comment")
+            area.actionMap.put("submit-comment", object : javax.swing.AbstractAction() {
+                override fun actionPerformed(e: java.awt.event.ActionEvent?) {
+                    onSubmit(area.text)
                 }
-                input = pane
-                inputComponent = pane
-            } else {
-                val area = JBTextArea(initial)
-                area.lineWrap = true
-                area.wrapStyleWord = true
-                area.isEnabled = true
-                area.isFocusable = true
-                area.enableInputMethods(true)
-                area.rows = rows
-                input = area
-                inputComponent = area
-            }
-            val lineHeight = input.getFontMetrics(input.font).height
-            val effectiveLineHeight = if (lineSpacing > 0f) (lineHeight * (1 + lineSpacing)).toInt() else lineHeight
-            input.margin = JBUI.insets(topPadding, 6, bottomPadding, 6)
-            val fixedHeight = effectiveLineHeight * rows + topPadding + bottomPadding
-            val fixedSize = Dimension(JBUI.scale(520), fixedHeight)
-            inputComponent.preferredSize = fixedSize
-            inputComponent.minimumSize = fixedSize
-            inputComponent.maximumSize = fixedSize
-            onBuilt?.invoke(inputComponent)
-            SwingUtilities.invokeLater { input.requestFocusInWindow() }
-
-            val hint = JBLabel(MAX_COMMENT_HINT)
-            hint.foreground = textHint
-            val cancel = com.intellij.ui.components.ActionLink("取消") { onCancel() }
-            cancel.isOpaque = false
-            cancel.border = JBUI.Borders.empty()
-            cancel.foreground = textLink
-            cancel.isFocusable = false
-
-            val submit = com.intellij.ui.components.ActionLink("评论") { onSubmit(input.text) }
-            submit.isOpaque = false
-            submit.border = JBUI.Borders.empty()
-            submit.foreground = textLink
-            submit.isFocusable = false
-
-            val buttons = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(6), 0))
-            buttons.isOpaque = false
-            buttons.border = JBUI.Borders.empty(JBUI.scale(4), 0, JBUI.scale(2), 0)
-            buttons.add(hint)
-            buttons.add(cancel)
-            buttons.add(submit)
-
-            val center = JPanel(BorderLayout())
-            center.isOpaque = false
-            center.add(inputComponent, BorderLayout.CENTER)
-            center.add(buttons, BorderLayout.SOUTH)
-            wrapper.add(center, BorderLayout.CENTER)
-
-            return wrapper
-        }
-
-        fun isDescendant(comment: LineComment, rootId: String, commentById: Map<String, LineComment>): Boolean {
-            var parentId = comment.parentId
-            while (parentId != null) {
-                val parent = commentById[parentId] ?: return false
-                if (parent.id == rootId) return true
-                parentId = parent.parentId
-            }
-            return false
-        }
-
-        fun threadForRoot(root: LineComment, all: List<LineComment>, commentById: Map<String, LineComment>): List<LineComment> {
-            val replies = all.filter { it.parentId != null && isDescendant(it, root.id, commentById) }
-                .sortedWith(compareBy<LineComment> { it.floorNum ?: Int.MAX_VALUE }.thenBy { it.createdAt })
-            return listOf(root) + replies
-        }
-
-        fun buildUnitHeaderRow(
-            comment: LineComment,
-            seq: Int,
-            statusText: String?,
-            statusColor: Color,
-            isCollapsed: Boolean,
-            onToggle: () -> Unit
-        ): JComponent {
-            val row = JPanel(GridBagLayout())
-            row.isOpaque = false
-
-            val left = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
-            left.isOpaque = false
-            left.border = JBUI.Borders.emptyLeft(4)
-            val seqLabel = JBLabel("#$seq")
-            seqLabel.foreground = textSecondary
-            left.add(seqLabel)
-            left.add(JBLabel("  "))
-            val nameLabel = JBLabel(comment.author)
-            nameLabel.foreground = textSecondary
-            nameLabel.font = nameLabel.font.deriveFont(Font.BOLD)
-            left.add(nameLabel)
-            left.add(JBLabel(" "))
-            val timeLabel = JBLabel(timeFormatter.format(Date(comment.createdAt)))
-            timeLabel.foreground = textHint
-            left.add(timeLabel)
-
-            val right = JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0))
-            right.isOpaque = false
-            if (statusText != null) {
-                val statusLabel = JBLabel(statusText)
-                statusLabel.foreground = statusColor
-                statusLabel.border = JBUI.Borders.emptyRight(JBUI.scale(2))
-                right.add(statusLabel)
-            }
-            val toggle = JButton(if (isCollapsed) AllIcons.General.ArrowRight else AllIcons.General.ArrowDown)
-            toggle.isOpaque = false
-            toggle.isContentAreaFilled = false
-            toggle.isBorderPainted = false
-            toggle.margin = JBUI.emptyInsets()
-            toggle.iconTextGap = 0
-            toggle.addActionListener { onToggle() }
-            right.add(toggle)
-
-            val leftConstraints = GridBagConstraints().apply {
-                gridx = 0
-                gridy = 0
-                weightx = 1.0
-                anchor = GridBagConstraints.WEST
-                fill = GridBagConstraints.HORIZONTAL
-            }
-            val rightConstraints = GridBagConstraints().apply {
-                gridx = 1
-                gridy = 0
-                weightx = 0.0
-                anchor = GridBagConstraints.EAST
-                insets = JBUI.emptyInsets()
-            }
-            row.add(left, leftConstraints)
-            row.add(right, rightConstraints)
-            return row
-        }
-
-        fun buildContentRow(text: String): JComponent {
-            val content = JBTextArea(text)
-            content.isEditable = false
-            content.lineWrap = true
-            content.wrapStyleWord = true
-            content.isOpaque = false
-            content.foreground = textPrimary
-            val textWidth = contentMaxWidth - JBUI.scale(12)
-            content.size = Dimension(textWidth, Int.MAX_VALUE)
-            val pref = content.preferredSize
-            content.preferredSize = Dimension(textWidth, pref.height)
-            return content
-        }
-
-        @Suppress("DuplicatedCode")
-        fun buildActionRow(onReply: () -> Unit, onResolve: (() -> Unit)? = null): JComponent {
-            val row = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
-            row.isOpaque = false
-            row.border = JBUI.Borders.emptyLeft((avatarSlotWidth - JBUI.scale(4)).coerceAtLeast(0))
-            val charWidth = row.getFontMetrics(row.font).charWidth('a')
-            val replyLink = buildActionLinkLabel("回复") { onReply() }
-            replyLink.border = JBUI.Borders.emptyBottom(JBUI.scale(2))
-            row.add(replyLink)
-
-            if (onResolve != null) {
-                row.add(Box.createHorizontalStrut(charWidth * 2))
-                val resolveLink = buildActionLinkLabel("问题已解决") { onResolve() }
-                resolveLink.border = JBUI.Borders.emptyBottom(JBUI.scale(2))
-                row.add(resolveLink)
-            }
-            return row
-        }
-
-        @Suppress("DuplicatedCode")
-        fun buildReplyUnit(reply: LineComment, seq: Int, rebuild: () -> Unit): JComponent {
-            val replyCard = JPanel()
-            replyCard.layout = BoxLayout(replyCard, BoxLayout.Y_AXIS)
-            replyCard.isOpaque = false
-            replyCard.border = JBUI.Borders.empty()
-
-            val header = JPanel(BorderLayout())
-            header.isOpaque = false
-            val replyFloorText = reply.replyFloorNum?.takeIf { it > 0 }?.let { "#$it" }
-            val left = buildHeaderLeftPanel("#$seq", reply.author, reply.createdAt, replyFloorText)
-            header.add(left, BorderLayout.WEST)
-            header.maximumSize = Dimension(Int.MAX_VALUE, header.preferredSize.height)
-            val rowGap = JBUI.scale(4)
-            header.border = JBUI.Borders.emptyBottom(rowGap)
-            replyCard.add(header)
-            replyCard.add(Box.createVerticalStrut(rowGap))
-
-            val contentRow = JPanel(BorderLayout())
-            contentRow.isOpaque = false
-
-            val replyIndent = avatarSlotWidth
-            contentRow.border = JBUI.Borders.emptyLeft(replyIndent)
-            contentRow.add(buildContentRow(reply.content), BorderLayout.CENTER)
-            replyCard.add(contentRow)
-            replyCard.add(Box.createVerticalStrut(actionTopGap))
-
-            val actions = buildActionRow(onReply = {
-                replyComposerOpenById.add(reply.id)
-                rebuild()
             })
-            val actionsHeight = actions.preferredSize.height
-            actions.maximumSize = Dimension(contentMaxWidth, actionsHeight)
-            actions.preferredSize = Dimension(contentMaxWidth, actionsHeight)
 
-            replyCard.add(actions)
+            val actionRow = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0))
+            actionRow.isOpaque = false
+            actionRow.alignmentX = Component.LEFT_ALIGNMENT
+            actionRow.add(cancelButton)
+            actionRow.add(submitButton)
 
-            if (replyComposerOpenById.contains(reply.id)) {
-                val replyComposer = buildComposer(
-                    "",
-                    {
-                        replyComposerOpenById.remove(reply.id)
+            panel.add(scroll, BorderLayout.CENTER)
+            panel.add(actionRow, BorderLayout.SOUTH)
+            panel.maximumSize = Dimension(Int.MAX_VALUE, panel.preferredSize.height)
+
+            SwingUtilities.invokeLater { area.requestFocusInWindow() }
+            return panel
+        }
+
+        fun buildReplyCard(reply: LineComment, floorMap: Map<String, Int>): JComponent {
+            val replyCard = RoundedBlockPanel(bgReply, JBUI.scale(4))
+            replyCard.layout = BoxLayout(replyCard, BoxLayout.Y_AXIS)
+            replyCard.border = JBUI.Borders.empty(8)
+            replyCard.alignmentX = Component.LEFT_ALIGNMENT
+
+            val headerRow = JPanel()
+            headerRow.layout = BoxLayout(headerRow, BoxLayout.X_AXIS)
+            headerRow.isOpaque = false
+            headerRow.alignmentX = Component.LEFT_ALIGNMENT
+            headerRow.add(createAvatar(reply.author, size = 24))
+            headerRow.add(Box.createHorizontalStrut(JBUI.scale(8)))
+            headerRow.add(JBLabel(reply.author).apply {
+                font = font.deriveFont(Font.BOLD, 13f)
+                foreground = textContent
+                border = JBUI.Borders.emptyRight(6)
+            })
+            headerRow.add(JBLabel("#${displayFloorNum(reply, floorMap)}").apply {
+                foreground = textDim
+                border = JBUI.Borders.emptyRight(6)
+            })
+            headerRow.add(JBLabel(formatReplyTime(reply.createdAt)).apply {
+                foreground = textDim
+                font = font.deriveFont(11f)
+            })
+            headerRow.add(Box.createHorizontalGlue())
+            replyCard.add(headerRow)
+            replyCard.add(Box.createVerticalStrut(JBUI.scale(8)))
+
+            replyCard.add(createTextArea(reply.content, bgReply, textContent))
+            replyCard.add(Box.createVerticalStrut(JBUI.scale(10)))
+
+            val actionRow = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
+            actionRow.isOpaque = false
+            actionRow.alignmentX = Component.LEFT_ALIGNMENT
+            val replyButton = createActionButton("↩ 回复")
+            replyButton.addActionListener {
+                activeReplyTargetId = reply.id
+                preCommentVisible = false
+                rebuild()
+            }
+            actionRow.add(replyButton)
+            replyCard.add(actionRow)
+
+            if (activeReplyTargetId == reply.id) {
+                replyCard.add(Box.createVerticalStrut(JBUI.scale(8)))
+                replyCard.add(buildComposerPanel(
+                    onCancel = {
+                        activeReplyTargetId = null
                         rebuild()
                     },
                     onSubmit = { text ->
                         addReply(reply, text)
-                        collapsedById[reply.rootId] = false
-                        pendingScrollToLatest = true
-                        replyComposerOpenById.remove(reply.id)
+                        activeReplyTargetId = null
+                        pendingScrollToBottom = true
                         rebuild()
-                    },
-                    onBuilt = { input ->
-                        val charWidth = input.getFontMetrics(input.font).charWidth('中')
-                        val targetWidth = (input.preferredSize.width - charWidth * 4).coerceAtLeast(JBUI.scale(200))
-                        val targetSize = Dimension(targetWidth, input.preferredSize.height)
-                        input.preferredSize = targetSize
-                        input.minimumSize = targetSize
-                        input.maximumSize = targetSize
-                    },
-                    topPadding = JBUI.scale(5),
-                    bottomPadding = JBUI.scale(3),
-                    lineSpacing = 0.1f
-                )
-                val replyIndent = avatarSlotWidth
-                replyComposer.border = JBUI.Borders.empty(4, replyIndent, 0, 0)
-                replyCard.add(replyComposer)
+                    }
+                ))
             }
 
             replyCard.maximumSize = Dimension(Int.MAX_VALUE, replyCard.preferredSize.height)
             return replyCard
         }
 
-        @Suppress("DuplicatedCode")
-        fun buildCommentUnit(root: LineComment, all: List<LineComment>, commentById: Map<String, LineComment>, rebuild: () -> Unit): JComponent {
-            val thread = threadForRoot(root, all, commentById)
-            val seqMap = thread.mapIndexed { index, item -> item.id to (item.floorNum ?: (index + 1)) }.toMap()
-            val replies = thread.drop(1)
-            val unitResolved = root.resolved
-            val isCollapsed = collapsedById.getOrPut(root.id) { true }
-
-            val wrapper = JPanel()
-            wrapper.layout = BoxLayout(wrapper, BoxLayout.Y_AXIS)
-            wrapper.isOpaque = true
-            wrapper.background = commentUnitBg
-            wrapper.border = JBUI.Borders.compound(JBUI.Borders.customLine(borderColor), JBUI.Borders.empty(4))
-
-            wrapper.addMouseListener(object : MouseAdapter() {
-                override fun mouseEntered(e: MouseEvent) {
-                    wrapper.background = commentUnitHoverBg
-                }
-
-                override fun mouseExited(e: MouseEvent) {
-                    wrapper.background = commentUnitBg
-                }
-            })
-
-            val header = JPanel(BorderLayout())
-            header.isOpaque = false
-            val headerLeft = buildHeaderLeftPanel(
-                "#${seqMap[root.id] ?: 1}",
-                root.author,
-                root.createdAt,
-                null
+        fun buildReplySection(root: LineComment, replies: List<LineComment>, floorMap: Map<String, Int>): JComponent {
+            val section = JPanel()
+            section.layout = BoxLayout(section, BoxLayout.Y_AXIS)
+            section.isOpaque = false
+            section.border = javax.swing.BorderFactory.createCompoundBorder(
+                javax.swing.BorderFactory.createCompoundBorder(
+                    JBUI.Borders.emptyTop(10),
+                    JBUI.Borders.customLine(borderColor, 1, 0, 0, 0)
+                ),
+                JBUI.Borders.empty(10, 12, 0, 0)
             )
 
-            val headerRight = JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0))
-            headerRight.isOpaque = false
-            val statusLabel = JBLabel(if (unitResolved) "已解决" else "未解决")
-            statusLabel.foreground = if (unitResolved) successColor else dangerColor
-            headerRight.add(statusLabel)
-            headerRight.add(Box.createHorizontalStrut(JBUI.scale(4)))
-            val toggle = JButton(if (isCollapsed) AllIcons.General.ArrowRight else AllIcons.General.ArrowDown)
-            toggle.isOpaque = false
-            toggle.isContentAreaFilled = false
-            toggle.isBorderPainted = false
-            val toggleCharWidth = headerRight.getFontMetrics(headerRight.font).charWidth('0')
-            val toggleSize = Dimension(toggleCharWidth * 3, toggle.preferredSize.height)
-            toggle.preferredSize = toggleSize
-            toggle.minimumSize = toggleSize
-            toggle.maximumSize = toggleSize
-            toggle.addActionListener {
-                collapsedById[root.id] = !isCollapsed
-                rebuild()
-            }
-            headerRight.add(toggle)
-
-            header.add(headerLeft, BorderLayout.WEST)
-            header.add(headerRight, BorderLayout.EAST)
-            val rowGap = JBUI.scale(4)
-            header.border = JBUI.Borders.emptyBottom(rowGap)
-            header.maximumSize = Dimension(Int.MAX_VALUE, header.preferredSize.height)
-            wrapper.add(header)
-
-            val contentRow = JPanel(BorderLayout())
-            contentRow.isOpaque = false
-            val rootIndent = avatarSlotWidth
-            contentRow.border = JBUI.Borders.empty(0, rootIndent, rowGap, 0)
-            contentRow.add(buildContentRow(root.content), BorderLayout.CENTER)
-            wrapper.add(contentRow)
-            wrapper.add(Box.createVerticalStrut(actionTopGap))
-
-            val actions = buildActionRow(onReply = {
-                replyComposerOpenById.add(root.id)
-                rebuild()
-            }, onResolve = {
-                val handler = remoteHandler
-                if (handler != null) {
-                    handler.resolveThread(filePath, line, side, root)
-                } else {
-                    resolveThreadLocal(root.rootId)
-                    rebuild()
+            replies.forEachIndexed { index, reply ->
+                section.add(buildReplyCard(reply, floorMap))
+                if (index < replies.lastIndex) {
+                    section.add(Box.createVerticalStrut(JBUI.scale(8)))
                 }
-            })
-            val actionsHeight = actions.preferredSize.height
-            actions.maximumSize = Dimension(alignedRowWidth, actionsHeight)
-            actions.preferredSize = Dimension(alignedRowWidth, actionsHeight)
+            }
 
-            wrapper.add(actions)
-
-            if (replyComposerOpenById.contains(root.id)) {
-                val replyComposer = buildComposer(
-                    "",
-                    {
-                        replyComposerOpenById.remove(root.id)
+            if (activeReplyTargetId == root.id) {
+                if (replies.isNotEmpty()) {
+                    section.add(Box.createVerticalStrut(JBUI.scale(8)))
+                }
+                section.add(buildComposerPanel(
+                    onCancel = {
+                        activeReplyTargetId = null
                         rebuild()
                     },
                     onSubmit = { text ->
                         addReply(root, text)
-                        collapsedById[root.id] = false
-                        pendingScrollToLatest = true
-                        replyComposerOpenById.remove(root.id)
+                        activeReplyTargetId = null
+                        pendingScrollToBottom = true
                         rebuild()
-                    },
-                    onBuilt = { input ->
-                        val charWidth = input.getFontMetrics(input.font).charWidth('中')
-                        val targetWidth = (input.preferredSize.width - charWidth * 4).coerceAtLeast(JBUI.scale(200))
-                        val targetSize = Dimension(targetWidth, input.preferredSize.height)
-                        input.preferredSize = targetSize
-                        input.minimumSize = targetSize
-                        input.maximumSize = targetSize
-                    },
-                    topPadding = JBUI.scale(5),
-                    bottomPadding = JBUI.scale(3),
-                    lineSpacing = 0.1f
-                )
-                val replyIndent = avatarSlotWidth
-                replyComposer.border = JBUI.Borders.empty(4, replyIndent, 0, 0)
-                wrapper.add(replyComposer)
-            }
-
-            if (!isCollapsed) {
-                val repliesPanel = JPanel()
-                repliesPanel.layout = BoxLayout(repliesPanel, BoxLayout.Y_AXIS)
-                repliesPanel.isOpaque = false
-                repliesPanel.border = JBUI.Borders.emptyTop(4)
-
-                if (replies.isEmpty()) {
-                    val empty = JBLabel(emptyReplyText)
-                    empty.foreground = textHint
-                    repliesPanel.add(empty)
-                } else {
-                    replies.forEachIndexed { index, reply ->
-                        repliesPanel.add(buildReplyUnit(reply, seqMap[reply.id] ?: (index + 2), rebuild))
-                        if (index < replies.lastIndex) {
-                            repliesPanel.add(Box.createVerticalStrut(unitGap))
-                        }
                     }
-                }
-
-                repliesPanel.maximumSize = Dimension(Int.MAX_VALUE, repliesPanel.preferredSize.height)
-                wrapper.add(repliesPanel)
+                ))
             }
 
-            return wrapper
+            section.maximumSize = Dimension(Int.MAX_VALUE, section.preferredSize.height)
+            return section
         }
 
-        fun buildPartCPreComment(rebuild: () -> Unit): JComponent {
-            val wrapper = JPanel(BorderLayout())
-            wrapper.isOpaque = true
-            wrapper.background = sectionBg
-            wrapper.border = JBUI.Borders.empty(2, 0, 0, 0)
+        fun buildCommentUnit(root: LineComment, all: List<LineComment>, floorMap: Map<String, Int>): JComponent {
+            val replies = findThreadReplies(root, all)
+            val resolved = root.resolved
+            val statusColor = if (resolved) accentGreen else accentOrange
+            val statusText = if (resolved) "已解决" else "待解决"
+            val isCollapsed = collapsedByRootId.getOrPut(root.id) { resolved }
+            val fillColor = if (resolved) alpha(bgCard, 220) else bgCard
 
-            val topRow = JPanel(BorderLayout())
-            topRow.isOpaque = false
-            topRow.border = JBUI.Borders.emptyBottom(6)
+            val card = RoundedBlockPanel(fillColor, JBUI.scale(6), statusColor, drawShadow = true)
+            card.layout = BoxLayout(card, BoxLayout.Y_AXIS)
+            card.border = JBUI.Borders.empty(10, 6, 10, 10)
+            card.alignmentX = Component.LEFT_ALIGNMENT
 
-            val left = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
-            left.isOpaque = false
-            val replyButton = JButton("评论")
-            replyButton.isOpaque = false
-            replyButton.isContentAreaFilled = false
-            replyButton.isBorderPainted = false
-            replyButton.border = JBUI.Borders.empty()
-            replyButton.foreground = textLink
-            replyButton.margin = JBUI.emptyInsets()
-            replyButton.horizontalAlignment = SwingConstants.LEFT
-            left.add(replyButton)
-            topRow.add(left, BorderLayout.WEST)
-
-            fun setEditingState(isEditing: Boolean) {
-                replyButton.isVisible = !isEditing
+            val headerRow = JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.X_AXIS)
+                isOpaque = false
+                alignmentX = Component.LEFT_ALIGNMENT
+                border = JBUI.Borders.emptyLeft(4)
             }
 
-            val card = CardLayout()
-            val composer = JPanel(card)
-            composer.isOpaque = true
-            composer.background = replyUnitBg
-            composer.border = JBUI.Borders.emptyTop(12)
-            composer.isVisible = false
-
-            val collapsed = JPanel(BorderLayout())
-            collapsed.isOpaque = true
-            collapsed.background = replyUnitBg
-            val oneLine = JBTextField()
-            oneLine.emptyText.text = "新增评论..."
-            collapsed.add(oneLine, BorderLayout.CENTER)
-
-            val expanded = JPanel(BorderLayout())
-            expanded.isOpaque = true
-            expanded.background = replyUnitBg
-            expanded.border = JBUI.Borders.empty(0, JBUI.scale(6), 0, JBUI.scale(6))
-            var composerInput: JComponent? = null
-            val composerBody = buildComposer("", {
-                if (showComposerOnly) {
-                    val hasComments = LineCommentStore.hasComments(filePath, line, side)
-                    if (!hasComments) {
-                        popup?.cancel()
-                        return@buildComposer
-                    }
-                    showComposerOnly = false
-                }
-                composer.isVisible = false
-                card.show(composer, "collapsed")
-                setEditingState(false)
-                autoOpenComposer = false
-                rebuild()
-            }, onSubmit = { text ->
-                addRootComment(text)
-                composer.isVisible = false
-                card.show(composer, "collapsed")
-                setEditingState(false)
-                showComposerOnly = false
-                autoOpenComposer = false
-                rebuild()
-            }, onBuilt = { input ->
-                composerInput = input
-            }, lineSpacing = 0.1f)
-            expanded.add(composerBody, BorderLayout.CENTER)
-
-            composer.add(collapsed, "collapsed")
-            composer.add(expanded, "expanded")
-            card.show(composer, "collapsed")
-
-            replyButton.addActionListener {
-                autoOpenComposer = true
-                rebuild()
+            val leftMeta = JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.X_AXIS)
+                isOpaque = false
+                add(createAvatar(root.author, size = 24))
+                add(Box.createHorizontalStrut(JBUI.scale(8)))
+                add(JBLabel(root.author).apply {
+                    font = font.deriveFont(Font.BOLD, 13f)
+                    foreground = if (resolved) textMain else textContent
+                    border = JBUI.Borders.emptyRight(6)
+                })
+                add(JBLabel("#${displayFloorNum(root, floorMap)}").apply {
+                    foreground = textDim
+                    border = JBUI.Borders.emptyRight(6)
+                })
+                add(JBLabel(formatRootTime(root.createdAt)).apply {
+                    foreground = textDim
+                    font = font.deriveFont(11f)
+                })
             }
 
-            oneLine.addFocusListener(object : FocusAdapter() {
-                override fun focusGained(e: FocusEvent) {
-                    autoOpenComposer = true
-                    rebuild()
+            val rightMeta = JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.X_AXIS)
+                isOpaque = false
+                add(JBLabel(statusText).apply {
+                    foreground = statusColor
+                    font = font.deriveFont(11f)
+                    border = JBUI.Borders.emptyRight(8)
+                })
+                if (replies.isNotEmpty()) {
+                    add(createToggleButton(
+                        if (isCollapsed) "🔽 展开 ${replies.size} 条回复" else "🔼 收起回复"
+                    ) {
+                        collapsedByRootId[root.id] = !isCollapsed
+                        rebuild()
+                    })
                 }
+            }
+
+            headerRow.add(leftMeta)
+            headerRow.add(Box.createHorizontalGlue())
+            headerRow.add(rightMeta)
+            headerRow.maximumSize = Dimension(Int.MAX_VALUE, headerRow.preferredSize.height)
+            card.add(headerRow)
+            card.add(Box.createVerticalStrut(JBUI.scale(8)))
+
+            card.add(createTextArea(root.content, fillColor, if (resolved) textMain else textContent).apply {
+                border = JBUI.Borders.emptyLeft(4)
             })
+            card.add(Box.createVerticalStrut(JBUI.scale(10)))
 
-            if (autoOpenComposer) {
-                composer.isVisible = true
-                card.show(composer, "expanded")
-                setEditingState(true)
-                composerInput?.requestFocusInWindow()
+            val actionRow = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(10), 0))
+            actionRow.isOpaque = false
+            actionRow.alignmentX = Component.LEFT_ALIGNMENT
+            val replyButton = createActionButton("↩ 回复")
+            replyButton.addActionListener {
+                activeReplyTargetId = root.id
+                preCommentVisible = false
+                collapsedByRootId[root.id] = false
+                rebuild()
+            }
+            actionRow.add(replyButton)
+            if (!resolved) {
+                val resolveButton = createActionButton("✓ 标记已解决", foreground = accentGreen, border = alpha(accentGreen, 77))
+                resolveButton.addActionListener {
+                    resolveThread(root) { rebuild() }
+                }
+                actionRow.add(resolveButton)
+            }
+            card.add(actionRow)
+
+            if (!isCollapsed || activeReplyTargetId == root.id) {
+                if (replies.isNotEmpty() || activeReplyTargetId == root.id) {
+                    card.add(buildReplySection(root, replies, floorMap))
+                }
             }
 
-            wrapper.add(topRow, BorderLayout.NORTH)
-            wrapper.add(composer, BorderLayout.CENTER)
-            return wrapper
+            card.maximumSize = Dimension(Int.MAX_VALUE, card.preferredSize.height)
+            return card
         }
 
         ensureRemoteIssueRoot()
 
         rebuild = {
-            middlePanel.removeAll()
-            footerPanel.removeAll()
-
             val all = LineCommentStore.getComments(filePath, line, side)
             val roots = all.filter { it.parentId == null }.sortedBy { it.createdAt }
-            val commentById = all.associateBy { it.id }
+            val displayFloorMap = buildDisplayFloorMap(roots, all)
+            countLabel.text = "${roots.size}个评论单元"
 
-            if (!showComposerOnly) {
-                val unitsWrapper = JPanel()
-                unitsWrapper.layout = BoxLayout(unitsWrapper, BoxLayout.Y_AXIS)
-                unitsWrapper.isOpaque = false
-                unitsWrapper.border = JBUI.Borders.empty(6, 0, 6, 0)
-
-                if (roots.isEmpty()) {
-                    val empty = JBLabel(emptyCommentText)
-                    empty.foreground = textHint
-                    unitsWrapper.add(empty)
-                } else {
-                    roots.forEachIndexed { index, root ->
-                        unitsWrapper.add(buildCommentUnit(root, all, commentById) { rebuild() })
-                        if (index < roots.lastIndex) {
-                            unitsWrapper.add(Box.createVerticalStrut(unitGap))
-                        }
+            middlePanel.removeAll()
+            if (roots.isEmpty()) {
+                val empty = JBLabel(emptyCommentText, SwingConstants.CENTER)
+                empty.foreground = textDim
+                empty.border = JBUI.Borders.empty(12)
+                empty.alignmentX = Component.CENTER_ALIGNMENT
+                middlePanel.add(empty)
+            } else {
+                roots.forEachIndexed { index, root ->
+                    middlePanel.add(buildCommentUnit(root, all, displayFloorMap))
+                    if (index < roots.lastIndex) {
+                        middlePanel.add(Box.createVerticalStrut(JBUI.scale(12)))
                     }
                 }
-
-                middlePanel.add(unitsWrapper)
             }
 
-            footerPanel.add(buildPartCPreComment { rebuild() }, BorderLayout.CENTER)
+            footerPanel.removeAll()
+            val footerBar = JPanel(BorderLayout())
+            footerBar.background = bgHeader
+            val footerBarHeight = JBUI.scale(48)
+            footerBar.preferredSize = Dimension(0, footerBarHeight)
+            footerBar.minimumSize = Dimension(0, footerBarHeight)
+            footerBar.maximumSize = Dimension(Int.MAX_VALUE, footerBarHeight)
+            footerBar.border = JBUI.Borders.empty(0, 12)
 
-            val baseWidth = JBUI.scale(560)
+            val footerLeft = JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.X_AXIS)
+                isOpaque = false
+                add(createAvatar(currentUserName, size = 24, text = "ME", color = Color(0x1A73E8)))
+                add(Box.createHorizontalStrut(JBUI.scale(8)))
+                add(JBLabel("$currentUserName (当前用户)").apply {
+                    foreground = textContent
+                    font = font.deriveFont(Font.PLAIN, 13f)
+                })
+            }
+
+            val footerRight = JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.X_AXIS)
+                isOpaque = false
+            }
+            if (!preCommentVisible) {
+                val newCommentButton = createPrimaryButton("➕ 新建评论")
+                newCommentButton.addActionListener {
+                    preCommentVisible = true
+                    activeReplyTargetId = null
+                    rebuild()
+                }
+                footerRight.add(newCommentButton)
+            }
+
+            footerBar.add(footerLeft, BorderLayout.WEST)
+            if (footerRight.componentCount > 0) {
+                footerBar.add(footerRight, BorderLayout.EAST)
+            }
+            footerPanel.add(footerBar, BorderLayout.NORTH)
+
+            if (preCommentVisible) {
+                val composerHost = JPanel(BorderLayout())
+                composerHost.isOpaque = true
+                composerHost.background = bgHeader
+                composerHost.border = javax.swing.BorderFactory.createCompoundBorder(
+                    JBUI.Borders.customLine(borderColor, 1, 0, 0, 0),
+                    JBUI.Borders.empty(12)
+                )
+                composerHost.add(buildComposerPanel(
+                    onCancel = {
+                        preCommentVisible = false
+                        rebuild()
+                        closePopupIfNeeded()
+                    },
+                    onSubmit = { text ->
+                        addRootComment(text)
+                        preCommentVisible = false
+                        pendingScrollToBottom = true
+                        rebuild()
+                    }
+                ), BorderLayout.CENTER)
+                footerPanel.add(composerHost, BorderLayout.SOUTH)
+            }
+
             middlePanel.revalidate()
-            middlePanel.setSize(baseWidth, Int.MAX_VALUE)
-            middlePanel.doLayout()
-            footerPanel.revalidate()
-            footerPanel.setSize(baseWidth, Int.MAX_VALUE)
-            footerPanel.doLayout()
-
-            val firstAreaContentHeight = middlePanel.preferredSize.height
-            val screenHeight = Toolkit.getDefaultToolkit().screenSize.height
-            val firstAreaMaxHeight = (screenHeight * 0.6).toInt()
-            val firstAreaHeight = if (firstAreaContentHeight > firstAreaMaxHeight) firstAreaMaxHeight else firstAreaContentHeight
-            scrollPane.preferredSize = Dimension(baseWidth, firstAreaHeight)
-            scrollPane.verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED
-
             middlePanel.repaint()
+            headerPanel.revalidate()
+            headerPanel.repaint()
+            footerPanel.revalidate()
             footerPanel.repaint()
+            container.revalidate()
+            container.repaint()
 
-            if (pendingScrollToLatest && all.size > lastCommentCount) {
+            SwingUtilities.invokeLater {
+                val targetHeight = (headerPanel.preferredSize.height + footerPanel.preferredSize.height + middlePanel.preferredSize.height)
+                    .coerceIn(popupMinHeight, popupMaxHeight)
+                val targetSize = Dimension(popupWidth, targetHeight)
+                val window = SwingUtilities.getWindowAncestor(container)
+                if (container.preferredSize != targetSize) {
+                    container.preferredSize = targetSize
+                    container.minimumSize = targetSize
+                    container.maximumSize = targetSize
+                    if (window != null) {
+                        window.size = targetSize
+                        window.validate()
+                    }
+                }
+                if (window != null) {
+                    updatePopupWindowShape(window)
+                }
+            }
+
+            if (pendingScrollToBottom) {
                 SwingUtilities.invokeLater {
                     val bar = scrollPane.verticalScrollBar
                     bar.value = bar.maximum
                 }
-                pendingScrollToLatest = false
-            }
-            lastCommentCount = all.size
-
-            SwingUtilities.invokeLater {
-                val popupSize = popup?.size
-                val preferred = container.preferredSize
-                if (popupSize != null) {
-                    val width = max(popupSize.width, preferred.width)
-                    val height = preferred.height
-                    if (width != popupSize.width || height != popupSize.height) {
-                        popup?.size = Dimension(width, height)
-                    }
-                }
+                pendingScrollToBottom = false
             }
         }
 
-        container.add(scrollPane, BorderLayout.CENTER)
-        container.add(footerPanel, BorderLayout.SOUTH)
-
         popup = JBPopupFactory.getInstance()
-            .createComponentPopupBuilder(container, headerInput)
+            .createComponentPopupBuilder(container, focusAnchor)
             .setRequestFocus(true)
-            .setResizable(true)
+            .setShowBorder(false)
+            .setResizable(false)
             .createPopup()
 
         val storeListener: () -> Unit = { rebuild() }
@@ -1570,7 +1544,11 @@ class LineCommentManager(private val project: Project) {
 
         rebuild()
         popup.showInBestPositionFor(editor)
-        SwingUtilities.invokeLater { headerInput.requestFocusInWindow() }
+        SwingUtilities.invokeLater {
+            focusAnchor.requestFocusInWindow()
+            val window = SwingUtilities.getWindowAncestor(container) ?: return@invokeLater
+            updatePopupWindowShape(window)
+        }
     }
 
     data class AiIssue(

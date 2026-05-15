@@ -324,7 +324,7 @@ class LineCommentManager(private val project: Project) {
         totalCount: Int,
         allResolved: Boolean
     ) {
-        val icon = AllIcons.General.Balloon
+        val icon = CommentBubbleIcon()
         highlighter.gutterIconRenderer = LineCommentGutterRenderer(context, line, icon, unresolvedCount, totalCount, allResolved)
         highlighter.lineMarkerRenderer = CommentCountLineMarkerRenderer(icon, unresolvedCount, totalCount, allResolved)
     }
@@ -367,7 +367,7 @@ class LineCommentManager(private val project: Project) {
         private val context: EditorContext,
         private val line: Int
     ) : GutterIconRenderer() {
-        override fun getIcon(): Icon = AllIcons.General.Balloon
+        override fun getIcon(): Icon = CommentBubbleIcon()
 
         override fun getTooltipText(): String = "该行有评论"
 
@@ -483,6 +483,49 @@ class LineCommentManager(private val project: Project) {
         }
     }
 
+    private class CommentBubbleIcon : Icon {
+        private val width = JBUI.scale(14)
+        private val height = JBUI.scale(14)
+        private val fill = JBColor(Color.WHITE, Color.WHITE)
+        private val outline = JBColor(Color(0xB8C1CC), Color(0x7F8790))
+
+        override fun paintIcon(c: Component?, g: Graphics, x: Int, y: Int) {
+            val g2 = g.create() as Graphics2D
+            try {
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                g2.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE)
+
+                val bodyX = x + JBUI.scale(1f)
+                val bodyY = y + JBUI.scale(1f)
+                val bodyWidth = width - JBUI.scale(3f)
+                val bodyHeight = height - JBUI.scale(5f)
+                val arc = JBUI.scale(5f)
+                val body = java.awt.geom.RoundRectangle2D.Float(bodyX, bodyY, bodyWidth, bodyHeight, arc, arc)
+                val tail = java.awt.geom.Path2D.Float().apply {
+                    moveTo(bodyX + bodyWidth * 0.32f, bodyY + bodyHeight)
+                    lineTo(bodyX + bodyWidth * 0.48f, bodyY + bodyHeight)
+                    lineTo(bodyX + bodyWidth * 0.24f, y + height - JBUI.scale(1f))
+                    closePath()
+                }
+
+                g2.color = fill
+                g2.fill(body)
+                g2.fill(tail)
+
+                g2.color = outline
+                g2.stroke = BasicStroke(JBUI.scale(1f), BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+                g2.draw(body)
+                g2.draw(tail)
+            } finally {
+                g2.dispose()
+            }
+        }
+
+        override fun getIconWidth(): Int = width
+
+        override fun getIconHeight(): Int = height
+    }
+
     private class AiIssueIcon(private val unresolved: Boolean) : Icon {
         private val size = JBUI.scale(14)
 
@@ -515,66 +558,53 @@ class LineCommentManager(private val project: Project) {
 
     private fun showAiIssuePopup(editor: Editor, issue: AiIssue) {
         highlightAiIssueRange(editor, issue)
-        val panel = JPanel()
-        panel.layout = BoxLayout(panel, BoxLayout.Y_AXIS)
-        panel.border = JBUI.Borders.empty(12)
-        panel.isOpaque = true
-        panel.background = JBColor(Color(0xFCFDFE), Color(0x34383D))
 
-        val popupTitle = JBLabel("AI智能评审问题", SwingConstants.CENTER)
-        popupTitle.font = popupTitle.font.deriveFont(Font.BOLD, popupTitle.font.size2D + 1f)
-        val titleRow = JPanel(BorderLayout())
-        titleRow.isOpaque = false
-        titleRow.add(popupTitle, BorderLayout.CENTER)
-        panel.add(titleRow)
-        panel.add(Box.createVerticalStrut(JBUI.scale(8)))
+        val bgMain = JBColor(Color(0xF7F8FA), Color(0x2B2D30))
+        val bgHeader = JBColor(Color(0xF3F4F6), Color(0x313438))
+        val bgCard = JBColor(Color(0xFFFFFF), Color(0x3C3F41))
+        val bgCode = JBColor(Color(0xF7F8FA), Color(0x35383C))
+        val textMain = JBColor(Color(0x5F6368), Color(0x9AA0A6))
+        val textContent = JBColor(Color(0x202124), Color(0xDFE1E5))
+        val textDim = JBColor(Color(0x80868B), Color(0x7F8790))
+        val accentBlue = JBColor(Color(0x1A73E8), Color(0x6EA8FF))
+        val accentGreen = JBColor(Color(0x1E8E3E), Color(0x57D163))
+        val accentOrange = JBColor(Color(0xF29900), Color(0xF6C26B))
+        val accentRed = JBColor(Color(0xD93025), Color(0xF47067))
+        val borderColor = JBColor(Color(0xD0D7DE), Color(0x4B5563))
+        val popupWidth = JBUI.scale(520)
+        val popupMinHeight = JBUI.scale(240)
+        val popupMaxHeight = JBUI.scale(640)
 
-        fun addTitleValue(title: String, value: String) {
-            val row = JPanel(BorderLayout())
-            row.isOpaque = false
-            val titleLabel = JBLabel("$title：")
-            titleLabel.font = titleLabel.font.deriveFont(Font.BOLD)
-            row.add(titleLabel, BorderLayout.NORTH)
-            val area = JBTextArea(value.ifBlank { "-" })
-            area.isEditable = false
-            area.lineWrap = true
-            area.wrapStyleWord = true
-            area.isOpaque = false
-            row.add(area, BorderLayout.CENTER)
-            panel.add(row)
-            panel.add(Box.createVerticalStrut(JBUI.scale(6)))
-        }
+        fun alpha(color: Color, alpha: Int): Color = Color(color.red, color.green, color.blue, alpha.coerceIn(0, 255))
 
-        fun addCodeBlock(title: String, code: String) {
-            val row = JPanel(BorderLayout())
-            row.isOpaque = false
-            val titleLabel = JBLabel("$title：")
-            titleLabel.font = titleLabel.font.deriveFont(Font.BOLD)
-            row.add(titleLabel, BorderLayout.NORTH)
-
-            val codeArea = JBTextArea(code.ifBlank { "-" })
-            codeArea.isEditable = false
-            codeArea.lineWrap = false
-            codeArea.wrapStyleWord = false
-            codeArea.font = Font(Font.MONOSPACED, Font.PLAIN, codeArea.font.size)
-            codeArea.background = JBColor(Color(0xF6F8FA), Color(0x2B2D30))
-            codeArea.border = JBUI.Borders.empty(8)
-
-            val codeScroll = JBScrollPane(codeArea).apply {
-                border = JBUI.Borders.customLine(JBColor(Color(0xD0D7DE), Color(0x4B5563)))
-                preferredSize = Dimension(JBUI.scale(520), JBUI.scale(120))
-                horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED
-                verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED
+        open class RoundedBlockPanel(
+            private val fill: Color,
+            private val arc: Int,
+            private val leftStripe: Color? = null,
+            private val leftStripeWidth: Int = JBUI.scale(4)
+        ) : JPanel() {
+            init {
+                isOpaque = false
             }
 
-            val codeWrapper = JPanel(BorderLayout())
-            codeWrapper.isOpaque = false
-            codeWrapper.border = JBUI.Borders.emptyTop(12)
-            codeWrapper.add(codeScroll, BorderLayout.CENTER)
-
-            row.add(codeWrapper, BorderLayout.CENTER)
-            panel.add(row)
-            panel.add(Box.createVerticalStrut(JBUI.scale(6)))
+            override fun paintComponent(g: Graphics) {
+                val g2 = g.create() as Graphics2D
+                try {
+                    g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                    val clip = g2.clip
+                    g2.color = fill
+                    g2.fillRoundRect(0, 0, width - 1, height - 1, arc, arc)
+                    if (leftStripe != null) {
+                        g2.clipRect(0, 0, leftStripeWidth, height)
+                        g2.color = leftStripe
+                        g2.fillRoundRect(0, 0, width - 1, height - 1, arc, arc)
+                        g2.clip = clip
+                    }
+                } finally {
+                    g2.dispose()
+                }
+                super.paintComponent(g)
+            }
         }
 
         fun statusText(status: Int): String = when (status) {
@@ -585,52 +615,400 @@ class LineCommentManager(private val project: Project) {
             else -> "未知（$status）"
         }
 
-        addTitleValue("问题描述", issue.issueDescription)
-        addTitleValue("修复建议", issue.issueFixSuggestion)
-        val level = if (issue.issueSeverity == 1) "错误级" else "警告级"
-        addTitleValue("问题级别", level)
-        addTitleValue("状态", statusText(issue.issueStatus))
-        addCodeBlock("建议修复代码", issue.issueFixCode)
+        fun statusColor(status: Int): Color = when (status) {
+            0 -> accentOrange
+            1 -> accentGreen
+            2 -> accentBlue
+            3 -> textMain
+            else -> textDim
+        }
 
-        val actionPanel = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0))
-        actionPanel.isOpaque = false
+        fun severityText(severity: Int): String = if (severity == 1) "错误级" else "警告级"
 
-        val popup = JBPopupFactory.getInstance()
-            .createComponentPopupBuilder(panel, null)
+        fun severityColor(severity: Int): Color = if (severity == 1) accentRed else accentOrange
+
+        fun createRoundedButton(
+            text: String,
+            fillColor: Color,
+            hoverFillColor: Color,
+            foregroundColor: Color,
+            outlineColor: Color? = null,
+            padding: Insets,
+            bold: Boolean = false,
+            fontSize: Float = 12f
+        ): JButton {
+            val button = object : JButton(text) {
+                var hovered = false
+
+                override fun paintComponent(g: Graphics) {
+                    val g2 = g.create() as Graphics2D
+                    try {
+                        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                        g2.color = if (hovered) hoverFillColor else fillColor
+                        g2.fillRoundRect(0, 0, width, height, JBUI.scale(8), JBUI.scale(8))
+                        if (outlineColor != null) {
+                            g2.color = if (hovered) hoverFillColor.darker() else outlineColor
+                            g2.drawRoundRect(0, 0, width - 1, height - 1, JBUI.scale(8), JBUI.scale(8))
+                        }
+                    } finally {
+                        g2.dispose()
+                    }
+                    super.paintComponent(g)
+                }
+            }
+            button.font = button.font.deriveFont(if (bold) Font.BOLD else Font.PLAIN, fontSize)
+            button.foreground = foregroundColor
+            button.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            button.isFocusPainted = false
+            button.isOpaque = false
+            button.isContentAreaFilled = false
+            button.isBorderPainted = false
+            button.margin = JBUI.emptyInsets()
+            button.border = JBUI.Borders.empty(padding.top, padding.left, padding.bottom, padding.right)
+            button.addMouseListener(object : MouseAdapter() {
+                override fun mouseEntered(e: MouseEvent) {
+                    button.hovered = true
+                    button.repaint()
+                }
+
+                override fun mouseExited(e: MouseEvent) {
+                    button.hovered = false
+                    button.repaint()
+                }
+            })
+            return button
+        }
+
+        fun createActionButton(
+            text: String,
+            foreground: Color = textMain,
+            border: Color = borderColor,
+            fill: Color = alpha(borderColor, 18),
+            hoverFill: Color = alpha(borderColor, 30)
+        ): JButton {
+            return createRoundedButton(
+                text = text,
+                fillColor = fill,
+                hoverFillColor = hoverFill,
+                foregroundColor = foreground,
+                outlineColor = border,
+                padding = JBUI.insets(3, 10),
+                fontSize = 11f
+            )
+        }
+
+        fun createPrimaryButton(text: String, fill: Color): JButton {
+            return createRoundedButton(
+                text = text,
+                fillColor = fill,
+                hoverFillColor = fill.brighter(),
+                foregroundColor = Color.WHITE,
+                padding = JBUI.insets(3, 10),
+                bold = true,
+                fontSize = 11f
+            )
+        }
+
+        fun createStatusPill(text: String, textColor: Color): JComponent {
+            val horizontalPadding = JBUI.scale(8)
+            val verticalPadding = JBUI.scale(2)
+            val label = JBLabel(text, SwingConstants.CENTER).apply {
+                foreground = textColor
+                font = font.deriveFont(11f)
+                horizontalAlignment = SwingConstants.CENTER
+                verticalAlignment = SwingConstants.CENTER
+            }
+            val labelSize = label.preferredSize
+            val size = Dimension(
+                labelSize.width + horizontalPadding * 2,
+                max(labelSize.height + verticalPadding * 2, JBUI.scale(20))
+            )
+            return object : JPanel(BorderLayout()) {
+                override fun paintComponent(g: Graphics) {
+                    val g2 = g.create() as Graphics2D
+                    try {
+                        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                        val arc = JBUI.scale(16)
+                        g2.color = alpha(textColor, 38)
+                        g2.fillRoundRect(0, 0, width - 1, height - 1, arc, arc)
+                        g2.color = alpha(textColor, 90)
+                        g2.drawRoundRect(0, 0, width - 1, height - 1, arc, arc)
+                    } finally {
+                        g2.dispose()
+                    }
+                    super.paintComponent(g)
+                }
+            }.apply {
+                isOpaque = false
+                border = JBUI.Borders.empty(verticalPadding, horizontalPadding)
+                add(label, BorderLayout.CENTER)
+                preferredSize = size
+                minimumSize = size
+                maximumSize = size
+            }
+        }
+
+        fun createReadOnlyArea(text: String, wrapWidth: Int): JBTextArea {
+            return JBTextArea(text.ifBlank { "-" }).apply {
+                isEditable = false
+                lineWrap = true
+                wrapStyleWord = true
+                isOpaque = false
+                foreground = textContent
+                font = font.deriveFont(13f)
+                border = JBUI.Borders.empty()
+                isFocusable = false
+                alignmentX = Component.LEFT_ALIGNMENT
+                val measuredWidth = wrapWidth.coerceAtLeast(JBUI.scale(180))
+                setSize(Dimension(measuredWidth, Int.MAX_VALUE))
+                val measured = preferredSize
+                preferredSize = Dimension(measuredWidth, measured.height)
+                minimumSize = preferredSize
+                maximumSize = Dimension(Int.MAX_VALUE, measured.height)
+            }
+        }
+
+        fun createInfoCard(title: String, value: String, stripeColor: Color, codeBlock: Boolean = false): JComponent {
+            val card = RoundedBlockPanel(bgCard, JBUI.scale(8), stripeColor)
+            card.layout = BoxLayout(card, BoxLayout.Y_AXIS)
+            card.border = javax.swing.BorderFactory.createCompoundBorder(
+                JBUI.Borders.customLine(alpha(borderColor, 140)),
+                JBUI.Borders.empty(10, 10, 10, 12)
+            )
+            card.alignmentX = Component.LEFT_ALIGNMENT
+            val contentWrapWidth = popupWidth - JBUI.scale(76)
+
+            card.add(JBLabel(title).apply {
+                foreground = textMain
+                font = font.deriveFont(Font.BOLD, 12f)
+                alignmentX = Component.LEFT_ALIGNMENT
+                border = JBUI.Borders.emptyBottom(8)
+            })
+
+            if (codeBlock) {
+                val codeArea = JBTextArea(value.ifBlank { "-" }).apply {
+                    isEditable = false
+                    lineWrap = false
+                    wrapStyleWord = false
+                    font = Font(Font.MONOSPACED, Font.PLAIN, font.size)
+                    background = bgCode
+                    foreground = textContent
+                    caretColor = textContent
+                    border = JBUI.Borders.empty(8)
+                }
+                val codeScroll = JBScrollPane(codeArea).apply {
+                    border = JBUI.Borders.customLine(alpha(borderColor, 140))
+                    viewport.background = bgCode
+                    background = bgCode
+                    preferredSize = Dimension(0, JBUI.scale(140))
+                    minimumSize = Dimension(0, JBUI.scale(120))
+                    horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED
+                    verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED
+                }
+                card.add(codeScroll)
+            } else {
+                card.add(createReadOnlyArea(value, contentWrapWidth))
+            }
+
+            card.maximumSize = Dimension(Int.MAX_VALUE, card.preferredSize.height)
+            return card
+        }
+
+        var currentIssue = issue
+        val severityTextValue = severityText(issue.issueSeverity)
+        val severityColorValue = severityColor(issue.issueSeverity)
+
+        val container = JPanel(BorderLayout())
+        container.background = bgMain
+        container.border = JBUI.Borders.customLine(borderColor)
+        container.preferredSize = Dimension(popupWidth, JBUI.scale(420))
+        container.minimumSize = container.preferredSize
+        container.maximumSize = container.preferredSize
+
+        val headerPanel = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.X_AXIS)
+            background = bgHeader
+            border = javax.swing.BorderFactory.createCompoundBorder(
+                JBUI.Borders.customLine(borderColor, 0, 0, 1, 0),
+                JBUI.Borders.empty(0, 12)
+            )
+            val headerHeight = JBUI.scale(40)
+            preferredSize = Dimension(0, headerHeight)
+            minimumSize = Dimension(0, headerHeight)
+            maximumSize = Dimension(Int.MAX_VALUE, headerHeight)
+        }
+        val headerIcon = JBLabel(AiIssueIcon(issue.issueStatus == 0)).apply {
+            border = JBUI.Borders.emptyRight(8)
+        }
+        val titleLabel = JBLabel("AI评审问题 · L${issue.issueCodeLine}").apply {
+            font = font.deriveFont(Font.BOLD, 13f)
+            foreground = textContent
+        }
+        val headerMetaPanel = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.X_AXIS)
+            isOpaque = false
+        }
+        headerPanel.add(headerIcon)
+        headerPanel.add(titleLabel)
+        headerPanel.add(Box.createHorizontalGlue())
+        headerPanel.add(headerMetaPanel)
+
+        val middlePanel = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            background = bgMain
+            border = JBUI.Borders.empty(12)
+        }
+        middlePanel.add(createInfoCard("问题描述", issue.issueDescription, severityColorValue))
+        middlePanel.add(Box.createVerticalStrut(JBUI.scale(10)))
+        middlePanel.add(createInfoCard("修复建议", issue.issueFixSuggestion, accentBlue))
+        middlePanel.add(Box.createVerticalStrut(JBUI.scale(10)))
+        middlePanel.add(createInfoCard("建议修复代码", issue.issueFixCode, accentBlue, codeBlock = true))
+
+        val scrollPane = JBScrollPane(middlePanel).apply {
+            border = JBUI.Borders.empty()
+            viewport.background = bgMain
+            horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+            verticalScrollBar.unitIncrement = JBUI.scale(16)
+        }
+
+        val footerPanel = JPanel(BorderLayout()).apply {
+            background = bgHeader
+            border = JBUI.Borders.customLine(borderColor, 1, 0, 0, 0)
+        }
+        val footerBar = JPanel(BorderLayout()).apply {
+            background = bgHeader
+            border = JBUI.Borders.empty(0, 12)
+            val footerHeight = JBUI.scale(48)
+            preferredSize = Dimension(0, footerHeight)
+            minimumSize = Dimension(0, footerHeight)
+            maximumSize = Dimension(Int.MAX_VALUE, footerHeight)
+        }
+        val footerHintLabel = JBLabel().apply {
+            foreground = textDim
+            font = font.deriveFont(12f)
+        }
+        footerBar.add(footerHintLabel, BorderLayout.WEST)
+
+        val footerActions = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.X_AXIS)
+            isOpaque = false
+        }
+        footerBar.add(footerActions, BorderLayout.EAST)
+
+        var popup: com.intellij.openapi.ui.popup.JBPopup? = null
+
+        fun refreshPopupSize() {
+            SwingUtilities.invokeLater {
+                middlePanel.revalidate()
+                middlePanel.repaint()
+                val targetHeight = (headerPanel.preferredSize.height + footerPanel.preferredSize.height + middlePanel.preferredSize.height)
+                    .coerceIn(popupMinHeight, popupMaxHeight)
+                val targetSize = Dimension(popupWidth, targetHeight)
+                val window = SwingUtilities.getWindowAncestor(container) ?: return@invokeLater
+                if (container.preferredSize != targetSize) {
+                    container.preferredSize = targetSize
+                    container.minimumSize = targetSize
+                    container.maximumSize = targetSize
+                    window.size = targetSize
+                    window.validate()
+                }
+                window.background = Color(0, 0, 0, 0)
+                window.shape = java.awt.geom.RoundRectangle2D.Double(
+                    0.0,
+                    0.0,
+                    window.width.toDouble(),
+                    window.height.toDouble(),
+                    JBUI.scale(8).toDouble(),
+                    JBUI.scale(8).toDouble()
+                )
+            }
+        }
+
+        fun renderIssueState() {
+            val statusTextValue = statusText(currentIssue.issueStatus)
+            val statusColorValue = statusColor(currentIssue.issueStatus)
+            headerIcon.icon = AiIssueIcon(currentIssue.issueStatus == 0)
+
+            headerMetaPanel.removeAll()
+            headerMetaPanel.add(createStatusPill(severityTextValue, severityColorValue))
+            headerMetaPanel.add(Box.createHorizontalStrut(JBUI.scale(8)))
+            headerMetaPanel.add(createStatusPill(statusTextValue, statusColorValue))
+
+            footerHintLabel.text = if (currentIssue.issueStatus == 0) {
+                ""
+            } else {
+                "当前状态：$statusTextValue"
+            }
+
+            footerActions.removeAll()
+            if (currentIssue.issueStatus == 0) {
+                val actionButtons = mutableListOf<JButton>()
+                fun bindHandle(button: JButton, status: Int) {
+                    actionButtons += button
+                    button.addActionListener {
+                        val handler = aiIssueHandler ?: return@addActionListener
+                        actionButtons.forEach { it.isEnabled = false }
+                        handler.invoke(currentIssue.id, status) { success ->
+                            SwingUtilities.invokeLater {
+                                actionButtons.forEach { it.isEnabled = true }
+                                if (success) {
+                                    currentIssue = currentIssue.copy(issueStatus = status)
+                                    renderIssueState()
+                                }
+                            }
+                        }
+                    }
+                }
+
+                val falsePositiveButton = createActionButton(
+                    "误报",
+                    foreground = accentBlue,
+                    border = alpha(accentBlue, 90),
+                    fill = alpha(accentBlue, 18),
+                    hoverFill = alpha(accentBlue, 30)
+                )
+                val ignoreButton = createActionButton("忽略")
+                val acceptButton = createPrimaryButton("采纳", accentGreen)
+                bindHandle(falsePositiveButton, 2)
+                bindHandle(ignoreButton, 3)
+                bindHandle(acceptButton, 1)
+                footerActions.add(falsePositiveButton)
+                footerActions.add(Box.createHorizontalStrut(JBUI.scale(8)))
+                footerActions.add(ignoreButton)
+                footerActions.add(Box.createHorizontalStrut(JBUI.scale(8)))
+                footerActions.add(acceptButton)
+            }
+
+            headerMetaPanel.revalidate()
+            headerMetaPanel.repaint()
+            footerActions.revalidate()
+            footerActions.repaint()
+            footerBar.revalidate()
+            footerBar.repaint()
+            footerPanel.revalidate()
+            footerPanel.repaint()
+            refreshPopupSize()
+        }
+
+        footerPanel.add(footerBar, BorderLayout.CENTER)
+
+        container.add(headerPanel, BorderLayout.NORTH)
+        container.add(scrollPane, BorderLayout.CENTER)
+        container.add(footerPanel, BorderLayout.SOUTH)
+
+        popup = JBPopupFactory.getInstance()
+            .createComponentPopupBuilder(container, null)
             .setShowBorder(false)
             .setShowShadow(false)
-            .setResizable(true)
-            .setMovable(true)
+            .setResizable(false)
             .setRequestFocus(true)
             .createPopup()
 
-        if (issue.issueStatus == 0) {
-            fun addHandleButton(text: String, status: Int) {
-                val btn = JButton(text)
-                btn.addActionListener {
-                    aiIssueHandler?.invoke(issue.id, status) { _ -> }
-                }
-                actionPanel.add(btn)
-            }
-            addHandleButton("采纳", 1)
-            addHandleButton("误报", 2)
-            addHandleButton("忽略", 3)
-            panel.add(actionPanel)
-        }
-
+        renderIssueState()
         popup.showInBestPositionFor(editor)
         SwingUtilities.invokeLater {
-            val window = SwingUtilities.getWindowAncestor(panel) ?: return@invokeLater
-            window.background = Color(0, 0, 0, 0)
-            val arc = JBUI.scale(24).toDouble()
-            window.shape = java.awt.geom.RoundRectangle2D.Double(
-                0.0,
-                0.0,
-                window.width.toDouble(),
-                window.height.toDouble(),
-                arc,
-                arc
-            )
+            refreshPopupSize()
+            val window = SwingUtilities.getWindowAncestor(container) ?: return@invokeLater
 
             var lastScreenPoint: Point? = null
             val dragHandler = object : MouseAdapter() {
@@ -645,12 +1023,12 @@ class LineCommentManager(private val project: Project) {
                     lastScreenPoint = current
                 }
             }
-            titleRow.cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
-            popupTitle.cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
-            titleRow.addMouseListener(dragHandler)
-            titleRow.addMouseMotionListener(dragHandler)
-            popupTitle.addMouseListener(dragHandler)
-            popupTitle.addMouseMotionListener(dragHandler)
+            headerPanel.cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
+            titleLabel.cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
+            headerPanel.addMouseListener(dragHandler)
+            headerPanel.addMouseMotionListener(dragHandler)
+            titleLabel.addMouseListener(dragHandler)
+            titleLabel.addMouseMotionListener(dragHandler)
         }
     }
 
@@ -681,20 +1059,23 @@ class LineCommentManager(private val project: Project) {
         val isMac = System.getProperty("os.name").contains("mac", ignoreCase = true)
         val submitShortcutText = if (isMac) "⌘Enter" else "Ctrl+Enter"
 
-        val bgMain = JBColor(Color(0x2B2B2B), Color(0xF2F2F2))
-        val bgHeader = JBColor(Color(0x3C3F41), Color(0xE8E8E8))
-        val bgCard = JBColor(Color(0x323232), Color(0xFFFFFF))
-        val bgReply = JBColor(Color(0x393939), Color(0xF7F7F7))
-        val bgComposer = JBColor(Color(0x252525), Color(0xFFFFFF))
-        val textMain = JBColor(Color(0xBBBBBB), Color(0x2F2F2F))
-        val textContent = JBColor(Color(0xD1D1D1), Color(0x202124))
-        val textDim = JBColor(Color(0x888888), Color(0x7A7A7A))
-        val accentBlue = JBColor(Color(0x1A73E8), Color(0x1A73E8))
-        val accentGreen = JBColor(Color(0x57D163), Color(0x1E8E3E))
-        val accentOrange = JBColor(Color(0xF29900), Color(0xF29900))
-        val borderColor = JBColor(Color(0x515151), Color(0xD0D0D0))
+        val bgMain = JBColor(Color(0xF7F8FA), Color(0x2B2D30))
+        val bgHeader = JBColor(Color(0xF3F4F6), Color(0x313438))
+        val bgCard = JBColor(Color(0xFFFFFF), Color(0x3C3F41))
+        val bgReply = JBColor(Color(0xF7F8FA), Color(0x35383C))
+        val bgComposer = JBColor(Color(0xFFFFFF), Color(0x2F3337))
+        val textMain = JBColor(Color(0x5F6368), Color(0x9AA0A6))
+        val textContent = JBColor(Color(0x202124), Color(0xDFE1E5))
+        val textDim = JBColor(Color(0x80868B), Color(0x7F8790))
+        val accentBlue = JBColor(Color(0x1A73E8), Color(0x6EA8FF))
+        val accentGreen = JBColor(Color(0x1E8E3E), Color(0x57D163))
+        val accentOrange = JBColor(Color(0xF29900), Color(0xF6C26B))
+        val borderColor = JBColor(Color(0xD0D7DE), Color(0x4B5563))
 
         fun alpha(color: Color, alpha: Int): Color = Color(color.red, color.green, color.blue, alpha.coerceIn(0, 255))
+
+        val mutedButtonFill = alpha(borderColor, 18)
+        val mutedButtonHoverFill = alpha(borderColor, 30)
 
         fun formatRootTime(timestamp: Long): String {
             val calendar = java.util.Calendar.getInstance()
@@ -741,7 +1122,9 @@ class LineCommentManager(private val project: Project) {
             private val arc: Int,
             private val leftStripe: Color? = null,
             private val leftStripeWidth: Int = JBUI.scale(4),
-            private val drawShadow: Boolean = false
+            private val drawShadow: Boolean = false,
+            private val outlineColor: Color? = null,
+            private val outlineWidth: Float = JBUI.scale(1f)
         ) : JPanel() {
             init {
                 isOpaque = false
@@ -751,6 +1134,7 @@ class LineCommentManager(private val project: Project) {
                 val g2 = g.create() as Graphics2D
                 try {
                     g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                    g2.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE)
                     if (drawShadow) {
                         g2.color = alpha(Color.BLACK, 26)
                         g2.fillRoundRect(JBUI.scale(1), JBUI.scale(2), width - JBUI.scale(2), height - JBUI.scale(3), arc, arc)
@@ -763,6 +1147,19 @@ class LineCommentManager(private val project: Project) {
                         g2.color = leftStripe
                         g2.fillRoundRect(0, 0, width - 1, height - 1, arc, arc)
                         g2.clip = clip
+                    }
+                    if (outlineColor != null) {
+                        g2.color = outlineColor
+                        g2.stroke = BasicStroke(outlineWidth)
+                        val inset = outlineWidth / 2f
+                        g2.drawRoundRect(
+                            inset.toInt(),
+                            inset.toInt(),
+                            (width - 1 - outlineWidth).coerceAtLeast(0f).toInt(),
+                            (height - 1 - outlineWidth).coerceAtLeast(0f).toInt(),
+                            arc,
+                            arc
+                        )
                     }
                 } finally {
                     g2.dispose()
@@ -899,15 +1296,21 @@ class LineCommentManager(private val project: Project) {
             return button
         }
 
-        fun createActionButton(text: String, foreground: Color = textMain, border: Color = borderColor): JButton {
+        fun createActionButton(
+            text: String,
+            foreground: Color = textMain,
+            border: Color = borderColor,
+            fill: Color = mutedButtonFill,
+            hoverFill: Color = mutedButtonHoverFill
+        ): JButton {
             return createRoundedButton(
                 text = text,
-                fillColor = alpha(Color.WHITE, 13),
-                hoverFillColor = alpha(Color.WHITE, 26),
+                fillColor = fill,
+                hoverFillColor = hoverFill,
                 foregroundColor = foreground,
                 outlineColor = border,
                 fontSize = 11f,
-                padding = JBUI.insets(2, 1),
+                padding = JBUI.insets(1, 3),
                 arc = JBUI.scale(8)
             )
         }
@@ -920,7 +1323,7 @@ class LineCommentManager(private val project: Project) {
                 foregroundColor = Color.WHITE,
                 fontSize = if (compact) 11f else 13f,
                 bold = true,
-                padding = if (compact) JBUI.insets(3, 8) else JBUI.insets(4, 4),
+                padding = if (compact) JBUI.insets(2, 3) else JBUI.insets(2, 5),
                 arc = JBUI.scale(8)
             )
         }
@@ -943,11 +1346,21 @@ class LineCommentManager(private val project: Project) {
             val label = JBLabel(text)
             label.foreground = textColor
             label.font = label.font.deriveFont(11f)
-            return RoundedBlockPanel(alpha(textColor, 51), JBUI.scale(20)).apply {
+            return RoundedBlockPanel(alpha(textColor, 38), JBUI.scale(20)).apply {
                 layout = BorderLayout()
-                border = JBUI.Borders.empty(2, 8)
+                border = javax.swing.BorderFactory.createCompoundBorder(
+                    JBUI.Borders.customLine(alpha(textColor, 90)),
+                    JBUI.Borders.empty(2, 8)
+                )
                 add(label, BorderLayout.CENTER)
                 preferredSize = Dimension(preferredSize.width, JBUI.scale(20))
+            }
+        }
+
+        fun createStatusText(text: String, textColor: Color): JComponent {
+            return JBLabel(text).apply {
+                foreground = textColor
+                font = font.deriveFont(11f)
             }
         }
 
@@ -1072,14 +1485,14 @@ class LineCommentManager(private val project: Project) {
         headerPanel.minimumSize = headerSize
         headerPanel.maximumSize = Dimension(Int.MAX_VALUE, headerHeight)
 
-        val headerIconLabel = JBLabel("💬")
-        headerIconLabel.font = headerIconLabel.font.deriveFont(16f)
-        headerIconLabel.border = JBUI.Borders.emptyRight(8)
+        val headerIconLabel = JBLabel(CommentBubbleIcon()).apply {
+            border = JBUI.Borders.emptyRight(8)
+        }
         val titleLabel = JBLabel("行评论 · L${line + 1}")
         titleLabel.font = titleLabel.font.deriveFont(Font.BOLD, 13f)
-        titleLabel.foreground = textMain
+        titleLabel.foreground = textContent
         val countLabel = JBLabel("0个评论单元")
-        countLabel.foreground = textDim
+        countLabel.foreground = textContent
         countLabel.font = countLabel.font.deriveFont(11f)
 
         headerPanel.add(headerIconLabel)
@@ -1090,7 +1503,7 @@ class LineCommentManager(private val project: Project) {
         val middlePanel = JPanel()
         middlePanel.layout = BoxLayout(middlePanel, BoxLayout.Y_AXIS)
         middlePanel.background = bgMain
-        middlePanel.border = JBUI.Borders.empty(12, 12, 0, 12)
+        middlePanel.border = JBUI.Borders.empty(12, 12, 12, 12)
 
         val scrollPane = JBScrollPane(middlePanel)
         scrollPane.border = JBUI.Borders.empty()
@@ -1135,27 +1548,32 @@ class LineCommentManager(private val project: Project) {
             onCancel: () -> Unit,
             onSubmit: (String) -> Unit
         ): JComponent {
-            val panel = RoundedBlockPanel(bgComposer, JBUI.scale(4))
-            panel.layout = BorderLayout(0, JBUI.scale(5))
-            panel.border = javax.swing.BorderFactory.createCompoundBorder(
-                JBUI.Borders.customLine(accentBlue),
-                JBUI.Borders.empty(8)
+            val panel = RoundedBlockPanel(
+                fill = bgComposer,
+                arc = JBUI.scale(10),
+                outlineColor = accentBlue,
+                outlineWidth = JBUI.scale(1f)
             )
+            panel.layout = BorderLayout(0, JBUI.scale(5))
+            panel.border = JBUI.Borders.empty(8)
             panel.alignmentX = Component.LEFT_ALIGNMENT
 
             val area = PlaceholderTextArea("输入回复内容...")
             area.lineWrap = true
             area.wrapStyleWord = true
             area.rows = 3
+            area.isOpaque = false
             area.background = bgComposer
-            area.foreground = Color.WHITE
-            area.caretColor = Color.WHITE
+            area.foreground = textContent
+            area.caretColor = textContent
             area.font = area.font.deriveFont(13f)
             area.border = JBUI.Borders.empty()
             area.margin = JBUI.insets(0)
 
             val scroll = JBScrollPane(area)
+            scroll.isOpaque = false
             scroll.border = JBUI.Borders.empty()
+            scroll.viewport.isOpaque = false
             scroll.viewport.background = bgComposer
             scroll.horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
             scroll.preferredSize = Dimension(0, JBUI.scale(60))
@@ -1198,7 +1616,12 @@ class LineCommentManager(private val project: Project) {
         }
 
         fun buildReplyCard(reply: LineComment, floorMap: Map<String, Int>): JComponent {
-            val replyCard = RoundedBlockPanel(bgReply, JBUI.scale(4))
+            val replyCard = RoundedBlockPanel(
+                fill = bgReply,
+                arc = JBUI.scale(10),
+                outlineColor = alpha(borderColor, 140),
+                outlineWidth = JBUI.scale(1f)
+            )
             replyCard.layout = BoxLayout(replyCard, BoxLayout.Y_AXIS)
             replyCard.border = JBUI.Borders.empty(8)
             replyCard.alignmentX = Component.LEFT_ALIGNMENT
@@ -1310,9 +1733,12 @@ class LineCommentManager(private val project: Project) {
             val isCollapsed = collapsedByRootId.getOrPut(root.id) { resolved }
             val fillColor = if (resolved) alpha(bgCard, 220) else bgCard
 
-            val card = RoundedBlockPanel(fillColor, JBUI.scale(6), statusColor, drawShadow = true)
+            val card = RoundedBlockPanel(fillColor, JBUI.scale(6), statusColor)
             card.layout = BoxLayout(card, BoxLayout.Y_AXIS)
-            card.border = JBUI.Borders.empty(10, 6, 10, 10)
+            card.border = javax.swing.BorderFactory.createCompoundBorder(
+                JBUI.Borders.customLine(alpha(borderColor, 140)),
+                JBUI.Borders.empty(10, 6, 10, 10)
+            )
             card.alignmentX = Component.LEFT_ALIGNMENT
 
             val headerRow = JPanel().apply {
@@ -1345,12 +1771,9 @@ class LineCommentManager(private val project: Project) {
             val rightMeta = JPanel().apply {
                 layout = BoxLayout(this, BoxLayout.X_AXIS)
                 isOpaque = false
-                add(JBLabel(statusText).apply {
-                    foreground = statusColor
-                    font = font.deriveFont(11f)
-                    border = JBUI.Borders.emptyRight(8)
-                })
+                add(if (resolved) createStatusPill(statusText, statusColor) else createStatusText(statusText, statusColor))
                 if (replies.isNotEmpty()) {
+                    add(Box.createHorizontalStrut(JBUI.scale(8)))
                     add(createToggleButton(
                         if (isCollapsed) "🔽 展开 ${replies.size} 条回复" else "🔼 收起回复"
                     ) {
@@ -1384,7 +1807,13 @@ class LineCommentManager(private val project: Project) {
             }
             actionRow.add(replyButton)
             if (!resolved) {
-                val resolveButton = createActionButton("✓ 标记已解决", foreground = accentGreen, border = alpha(accentGreen, 77))
+                val resolveButton = createActionButton(
+                    "✓ 标记已解决",
+                    foreground = accentGreen,
+                    border = alpha(accentGreen, 90),
+                    fill = alpha(accentGreen, 18),
+                    hoverFill = alpha(accentGreen, 30)
+                )
                 resolveButton.addActionListener {
                     resolveThread(root) { rebuild() }
                 }
@@ -1438,7 +1867,7 @@ class LineCommentManager(private val project: Project) {
             val footerLeft = JPanel().apply {
                 layout = BoxLayout(this, BoxLayout.X_AXIS)
                 isOpaque = false
-                add(createAvatar(currentUserName, size = 24, text = "ME", color = Color(0x1A73E8)))
+                add(createAvatar(currentUserName, size = 24, text = "ME", color = accentBlue))
                 add(Box.createHorizontalStrut(JBUI.scale(8)))
                 add(JBLabel("$currentUserName (当前用户)").apply {
                     foreground = textContent

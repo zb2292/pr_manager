@@ -14,8 +14,9 @@ class PrApiService(
     private val resolveUrl: String,
     private val reviewUrl: String,
     private val mergeUrl: String,
-    private val aiReviewDetailUrl: String,
-    private val aiHandleIssueUrl: String
+    private val aiReviewPrDetailUrl: String,
+    private val aiHandleIssueUrl: String,
+    private val aiReviewFileDetailUrl: String
 ) {
     fun fetchPrList(requestBody: String): HttpResponse<String> {
         return executeApi("fetchPrList", listUrl, requestBody)
@@ -96,7 +97,7 @@ class PrApiService(
 
     fun fetchAiReviewOverview(prId: Long): HttpResponse<String> {
         val payload = mapOf("prId" to prId)
-        return executeApi("fetchAiReviewOverview", aiReviewDetailUrl, objectMapper.writeValueAsString(payload))
+        return executeApi("fetchAiReviewOverview", aiReviewPrDetailUrl, objectMapper.writeValueAsString(payload))
     }
 
     fun fetchAiReviewDetail(prId: Long, filePath: String): HttpResponse<String> {
@@ -104,7 +105,7 @@ class PrApiService(
             "prId" to prId,
             "filePath" to filePath
         )
-        return executeApi("fetchAiReviewDetail", aiReviewDetailUrl, objectMapper.writeValueAsString(payload))
+        return executeApi("fetchAiReviewDetail", aiReviewFileDetailUrl, objectMapper.writeValueAsString(payload))
     }
 
     fun handleAiReviewIssue(issueId: Long, issueStatus: Int, issueHandleEmpOa: String): HttpResponse<String> {

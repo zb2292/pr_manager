@@ -108,7 +108,64 @@ class StatusBadgeLabel : JBLabel() {
     }
 }
 
+private fun withAlpha(color: Color, alpha: Int): Color {
+    return Color(color.red, color.green, color.blue, alpha.coerceIn(0, 255))
+}
+
+class OutlinedPillLabel(
+    private val minHeight: Int = JBUI.scale(20)
+) : JBLabel("", SwingConstants.CENTER) {
+    private var pillColor: Color = JBColor(Color(0x5F6368), Color(0x9AA0A6))
+
+    init {
+        isOpaque = false
+        isVisible = false
+        horizontalAlignment = SwingConstants.CENTER
+        verticalAlignment = SwingConstants.CENTER
+        border = JBUI.Borders.empty(2, 8)
+        foreground = pillColor
+    }
+
+    fun setPill(text: String, color: Color = pillColor) {
+        this.text = text
+        pillColor = color
+        foreground = color
+        isVisible = text.isNotBlank()
+        revalidate()
+        repaint()
+    }
+
+    override fun getPreferredSize(): Dimension {
+        val size = super.getPreferredSize()
+        return Dimension(size.width, size.height.coerceAtLeast(minHeight))
+    }
+
+    override fun paintComponent(g: Graphics) {
+        if (text.isNullOrBlank()) {
+            super.paintComponent(g)
+            return
+        }
+        val g2 = g.create() as Graphics2D
+        try {
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+            val arc = JBUI.scale(16)
+            g2.color = withAlpha(pillColor, 38)
+            g2.fillRoundRect(0, 0, width - 1, height - 1, arc, arc)
+            g2.color = withAlpha(pillColor, 90)
+            g2.drawRoundRect(0, 0, width - 1, height - 1, arc, arc)
+        } finally {
+            g2.dispose()
+        }
+        super.paintComponent(g)
+    }
+}
+
 class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true, true) {
+    private val detailAuthorPillColor = JBColor(Color(0x1A73E8), Color(0x6EA8FF))
+    private val detailCreateTimePillColor = JBColor(Color(0x8E24AA), Color(0xC77DFF))
+    private val detailBranchPillColor = JBColor(Color(0xF29900), Color(0xF6C26B))
+    private val detailIssuePillColor = JBColor(Color(0xD93025), Color(0xF47067))
+
     private val objectMapper = ObjectMapper()
     private val config = Properties().apply {
         val stream = PrManagerPanel::class.java.getResourceAsStream("/prviewer.properties")
@@ -145,7 +202,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private val resolveUrl = buildUrl(config.getProperty("prviewer.api.resolve.path", "/pset/api/gitee/resoveNote"))
     private val reviewUrl = buildUrl(config.getProperty("prviewer.api.review.path", "/api/pr/review"))
     private val mergeUrl = buildUrl(config.getProperty("prviewer.api.merge.path", "/api/pr/merge"))
-    private val aiReviewDetailUrl = buildUrl(config.getProperty("prviewer.api.aiReviewDetail.path", "/pset/api/gitee/aiReviewDetailData"))
+    private val aiReviewPrDetailUrl = buildUrl(config.getProperty("prviewer.api.aiReviewPrDetail.path", "/pset/api/gitee/queryAiReviewPrDetailData"))
+    private val aiReviewFileDetailUrl = buildUrl(config.getProperty("prviewer.api.aiReviewFileDetail.path", "/pset/api/gitee/queryAiReviewFileIssueDetailData"))
     private val aiHandleIssueUrl = buildUrl(config.getProperty("prviewer.api.aiHandleIssue.path", "/pset/api/gitee/handleAiReviewIssue"))
 
     private val apiService = PrApiService(
@@ -159,7 +217,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         resolveUrl = resolveUrl,
         reviewUrl = reviewUrl,
         mergeUrl = mergeUrl,
-        aiReviewDetailUrl = aiReviewDetailUrl,
+        aiReviewPrDetailUrl = aiReviewPrDetailUrl,
+        aiReviewFileDetailUrl = aiReviewFileDetailUrl,
         aiHandleIssueUrl = aiHandleIssueUrl
     )
 
@@ -216,14 +275,22 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private val detailPanel = JPanel(BorderLayout())
     private val detailHeaderTitle = JBLabel("-")
     private val detailStatus: StatusBadgeLabel = StatusBadgeLabel()
-    private val detailMeta = JBLabel("-")
-    private val issueCountLabel = JBLabel("未解决问题: 0/0")
+    private val detailAuthorLabel = OutlinedPillLabel()
+    private val detailCreateTimeLabel = OutlinedPillLabel()
+    private val detailBranchLabel = OutlinedPillLabel()
+    private val issueCountLabel = OutlinedPillLabel()
     private val aiReviewBadgeLabel = JBLabel().apply {
         isOpaque = false
         icon = AiBadgeIcon(AiReviewBadgeState.NO_DATA.color)
         toolTipText = "当前无AI评审结果"
         cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-        border = JBUI.Borders.emptyLeft(8)
+        horizontalAlignment = SwingConstants.CENTER
+        verticalAlignment = SwingConstants.CENTER
+        val badgeSize = Dimension(JBUI.scale(20), JBUI.scale(20))
+        preferredSize = badgeSize
+        minimumSize = badgeSize
+        maximumSize = badgeSize
+        border = JBUI.Borders.empty()
         addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
                 if (!SwingUtilities.isLeftMouseButton(e)) return
@@ -339,8 +406,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
         detailHeaderTitle.font = detailHeaderTitle.font.deriveFont(Font.BOLD, globalUiFontSize + 1f)
         detailStatus.font = detailStatus.font.deriveFont(Font.PLAIN, globalUiFontSize)
-        detailMeta.font = detailMeta.font.deriveFont(Font.PLAIN, globalUiFontSize)
-        issueCountLabel.font = issueCountLabel.font.deriveFont(Font.PLAIN, globalUiFontSize)
+        listOf(detailAuthorLabel, detailCreateTimeLabel, detailBranchLabel, issueCountLabel).forEach {
+            it.font = it.font.deriveFont(Font.PLAIN, globalUiFontSize)
+        }
         reviewActionButton.font = reviewActionButton.font.deriveFont(Font.PLAIN, globalUiFontSize)
 
         detailTabs.font = detailTabs.font.deriveFont(Font.PLAIN, globalUiFontSize)
@@ -589,16 +657,17 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         titleRow.add(detailStatus, BorderLayout.EAST)
 
         val metaRow = JPanel(BorderLayout())
-        val leftMeta = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
+        val leftMeta = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(8), 0))
         leftMeta.isOpaque = false
-        leftMeta.add(detailMeta)
-        issueCountLabel.border = JBUI.Borders.emptyLeft(20)
+        leftMeta.add(detailAuthorLabel)
+        leftMeta.add(detailCreateTimeLabel)
+        leftMeta.add(detailBranchLabel)
         leftMeta.add(issueCountLabel)
-        leftMeta.add(aiReviewBadgeLabel)
         metaRow.add(leftMeta, BorderLayout.WEST)
 
-        val rightMeta = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(6), 0))
+        val rightMeta = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0))
         rightMeta.isOpaque = false
+        rightMeta.add(aiReviewBadgeLabel)
         reviewActionButton.isVisible = false
         rightMeta.add(reviewActionButton)
         metaRow.add(rightMeta, BorderLayout.EAST)
@@ -1476,8 +1545,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         detailHeaderTitle.text = "未选择 PR"
         detailStatus.isVisible = false
         detailStatus.setBadge("", JBColor.GRAY)
-        detailMeta.text = "请选择左侧 PR 查看详情"
-        issueCountLabel.text = "未解决问题: 0/0"
+        detailAuthorLabel.setPill("")
+        detailCreateTimeLabel.setPill("")
+        detailBranchLabel.setPill("")
+        issueCountLabel.setPill("")
         reviewActionButton.isVisible = false
 
         overviewDesc.text = ""
@@ -1501,8 +1572,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         detailHeaderTitle.text = "加载中..."
         detailStatus.isVisible = false
         detailStatus.setBadge("", JBColor.GRAY)
-        detailMeta.text = ""
-        issueCountLabel.text = "未解决问题: 0/0"
+        detailAuthorLabel.setPill("")
+        detailCreateTimeLabel.setPill("")
+        detailBranchLabel.setPill("")
+        issueCountLabel.setPill("")
         currentAiOverview = null
         aiIssueCountByFileMap = emptyMap()
         currentDiffFilePath = null
@@ -1552,8 +1625,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         detailStatus.isVisible = true
         detailStatus.setBadge(badge.text, badge.color)
 
-        val meta = "创建人: ${detail.author}      创建时间: ${detail.createTime}      分支信息: ${detail.sourceBranch} -> ${detail.targetBranch}"
-        detailMeta.text = meta
+        detailAuthorLabel.setPill("创建人: ${detail.author}", detailAuthorPillColor)
+        detailCreateTimeLabel.setPill("创建时间: ${detail.createTime}", detailCreateTimePillColor)
+        detailBranchLabel.setPill("分支信息: ${detail.sourceBranch} -> ${detail.targetBranch}", detailBranchPillColor)
+        issueCountLabel.setPill("未解决问题: 0/0", detailIssuePillColor)
 
         overviewDesc.text = detail.overview.desc
         keyReviewersField.text = detail.overview.keyReviewers.joinToString(",")
@@ -1669,7 +1744,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 LineCommentStore.replaceAll(result.comments)
                 PrManagerFileLogger.info("Notes loaded: prId=${detail.id} total=${result.stats.total} unresolved=${result.stats.unresolved}")
                 SwingUtilities.invokeLater {
-                    issueCountLabel.text = "未解决问题: ${result.stats.unresolved}/${result.stats.total}"
+                    issueCountLabel.setPill("未解决问题: ${result.stats.unresolved}/${result.stats.total}", detailIssuePillColor)
                     changeTree.repaint()
                 }
             } catch (e: Exception) {
@@ -2779,28 +2854,49 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             issueLabel.minimumSize = issueSlotSize
             issueLabel.preferredSize = issueSlotSize
             issueLabel.maximumSize = issueSlotSize
+            aiLabel.minimumSize = issueSlotSize
+            aiLabel.preferredSize = issueSlotSize
+            aiLabel.maximumSize = issueSlotSize
             issueLabel.horizontalAlignment = SwingConstants.LEFT
+            aiLabel.horizontalAlignment = SwingConstants.LEFT
             mainLabel.icon = changeTypeIcon(userObject.changeType)
             mainLabel.verticalAlignment = SwingConstants.CENTER
             issueLabel.verticalAlignment = SwingConstants.CENTER
             aiLabel.verticalAlignment = SwingConstants.CENTER
+
+            val neutralColor = JBColor(Color(0x5F6368), Color(0x9AA0A6))
+            val dangerColor = JBColor(Color(0xD93025), Color(0xF47067))
+            val warnColor = JBColor(Color(0xF29900), Color(0xF6C26B))
+            val issueText = issueBadge?.let { "${it.first}/${it.second}" }.orEmpty()
+            val aiText = if (hasAiIssue) "${aiBadge.first}/${aiBadge.second}" else ""
 
             if (sel) {
                 rowPanel.background = fallbackRenderer.backgroundSelectionColor
                 mainLabel.foreground = fallbackRenderer.textSelectionColor
                 issueLabel.foreground = fallbackRenderer.textSelectionColor
                 aiLabel.foreground = fallbackRenderer.textSelectionColor
+                issueLabel.text = issueText.padEnd(5, ' ')
+                aiLabel.text = aiText
             } else {
                 rowPanel.background = fallbackRenderer.backgroundNonSelectionColor
                 mainLabel.foreground = changeTypeColor(userObject.changeType)
-                issueLabel.foreground = JBColor(Color(0x5F6368), Color(0x9AA0A6))
-                aiLabel.foreground = JBColor(Color(0x000000), Color(0x000000))
+                issueLabel.foreground = if ((issueBadge?.first ?: 0) > 0) dangerColor else neutralColor
+                aiLabel.foreground = neutralColor
+                issueLabel.text = issueBadge?.let { badge ->
+                    if (badge.first > 0) {
+                        "<html><span style='font-family:monospace;color:${toHex(dangerColor)};'>${badge.first}</span><span style='font-family:monospace;color:${toHex(neutralColor)};'>/${badge.second}</span></html>"
+                    } else {
+                        issueText.padEnd(5, ' ')
+                    }
+                }.orEmpty()
+                aiLabel.text = if (hasAiIssue) {
+                    "<html><span style='font-family:monospace;color:${toHex(dangerColor)};'>${aiBadge.first}</span><span style='font-family:monospace;color:${toHex(neutralColor)};'>/</span><span style='font-family:monospace;color:${toHex(warnColor)};'>${aiBadge.second}</span></html>"
+                } else {
+                    ""
+                }
             }
 
             mainLabel.text = baseText
-            val issueText = issueBadge?.let { "${it.first}/${it.second}" }.orEmpty()
-            issueLabel.text = issueText.padEnd(5, ' ')
-            aiLabel.text = if (hasAiIssue) "${aiBadge.first}/${aiBadge.second}" else ""
             return rowPanel
         }
     }
@@ -2935,11 +3031,21 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             val g2 = g.create() as Graphics2D
             try {
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                g2.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE)
+                g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+
+                val inset = JBUI.scale(0.5f)
+                val circle = java.awt.geom.Ellipse2D.Float(
+                    x + inset,
+                    y + inset,
+                    size - inset * 2,
+                    size - inset * 2
+                )
                 g2.color = color
-                g2.fillOval(x, y, size, size)
+                g2.fill(circle)
                 g2.color = color.darker()
                 g2.stroke = BasicStroke(JBUI.scale(1f))
-                g2.drawOval(x, y, size, size)
+                g2.draw(circle)
 
                 val text = "AI"
                 val font = g2.font.deriveFont(Font.BOLD, JBUI.scale(8f))

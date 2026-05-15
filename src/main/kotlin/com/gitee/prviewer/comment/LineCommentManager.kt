@@ -1310,7 +1310,7 @@ class LineCommentManager(private val project: Project) {
                 foregroundColor = foreground,
                 outlineColor = border,
                 fontSize = 11f,
-                padding = JBUI.insets(1, 3),
+                padding = JBUI.insets(1, 0),
                 arc = JBUI.scale(8)
             )
         }
@@ -1323,7 +1323,7 @@ class LineCommentManager(private val project: Project) {
                 foregroundColor = Color.WHITE,
                 fontSize = if (compact) 11f else 13f,
                 bold = true,
-                padding = if (compact) JBUI.insets(2, 3) else JBUI.insets(2, 5),
+                padding = if (compact) JBUI.insets(2, 0) else JBUI.insets(2, 0),
                 arc = JBUI.scale(8)
             )
         }

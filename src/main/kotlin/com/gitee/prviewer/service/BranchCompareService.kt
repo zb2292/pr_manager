@@ -15,18 +15,21 @@ class BranchCompareService(private val project: Project) {
         val repo = GitRepositoryManager.getInstance(project).repositories.firstOrNull()
             ?: return CompareResult(emptyList(), "未找到 Git 仓库")
 
-        val mergeBase = resolveMergeBase(repo, sourceBranch, targetBranch)
-        val result = if (!mergeBase.isNullOrBlank()) {
-            runDiffFromBase(repo, mergeBase, targetBranch)
-        } else {
-            runDiff(repo, sourceBranch, targetBranch)
-        }
-        if (!result.success()) {
-            val message = result.errorOutput.joinToString("\n").ifBlank { "分支对比失败" }
+        val (nameStatusResult, numStatResult) = resolveDiffResults(repo, sourceBranch, targetBranch)
+        if (!nameStatusResult.success()) {
+            val message = nameStatusResult.errorOutput.joinToString("\n").ifBlank { "分支对比失败" }
             return CompareResult(emptyList(), message)
         }
 
-        val changes = result.output.mapNotNull { parseDiffLine(it) }
+        val numStatByPath = if (numStatResult.success()) {
+            numStatResult.output.mapNotNull { parseNumStatLine(it) }.toMap()
+        } else {
+            emptyMap()
+        }
+
+        val changes = nameStatusResult.output.mapNotNull { line ->
+            parseDiffLine(line, numStatByPath)
+        }
         return CompareResult(changes)
     }
 
@@ -37,6 +40,19 @@ class BranchCompareService(private val project: Project) {
         val result = Git.getInstance().runCommand(handler)
         if (!result.success()) return null
         return result.output.joinToString("\n")
+    }
+
+    private fun resolveDiffResults(
+        repo: GitRepository,
+        sourceBranch: String,
+        targetBranch: String
+    ): Pair<git4idea.commands.GitCommandResult, git4idea.commands.GitCommandResult> {
+        val mergeBase = resolveMergeBase(repo, sourceBranch, targetBranch)
+        return if (!mergeBase.isNullOrBlank()) {
+            runDiffFromBase(repo, mergeBase, targetBranch) to runNumStatFromBase(repo, mergeBase, targetBranch)
+        } else {
+            runDiff(repo, sourceBranch, targetBranch) to runNumStat(repo, sourceBranch, targetBranch)
+        }
     }
 
     private fun runDiff(repo: GitRepository, sourceBranch: String, targetBranch: String) =
@@ -53,6 +69,20 @@ class BranchCompareService(private val project: Project) {
             }
         )
 
+    private fun runNumStat(repo: GitRepository, sourceBranch: String, targetBranch: String) =
+        Git.getInstance().runCommand(
+            GitLineHandler(project, repo.root, GitCommand.DIFF).apply {
+                addParameters("--numstat", "-M", "-C", sourceBranch, targetBranch)
+            }
+        )
+
+    private fun runNumStatFromBase(repo: GitRepository, mergeBase: String, sourceBranch: String) =
+        Git.getInstance().runCommand(
+            GitLineHandler(project, repo.root, GitCommand.DIFF).apply {
+                addParameters("--numstat", "-M", "-C", mergeBase, sourceBranch)
+            }
+        )
+
     private fun resolveMergeBase(repo: GitRepository, branchA: String, branchB: String): String? {
         val handler = GitLineHandler(project, repo.root, GitCommand.MERGE_BASE)
         handler.addParameters(branchA, branchB)
@@ -61,7 +91,7 @@ class BranchCompareService(private val project: Project) {
         return result.output.firstOrNull()?.trim().takeUnless { it.isNullOrBlank() }
     }
 
-    private fun parseDiffLine(line: String): ChangeItem? {
+    private fun parseDiffLine(line: String, numStatByPath: Map<String, Pair<Int, Int>>): ChangeItem? {
         if (line.isBlank()) return null
         val columns = line.split('\t')
         if (columns.size < 2) return null
@@ -72,12 +102,35 @@ class BranchCompareService(private val project: Project) {
                 if (columns.size < 3) return null
                 val fromPath = columns[1].trim()
                 val toPath = columns[2].trim()
-                if (toPath.isBlank()) null else ChangeItem(toPath, status, fromPath.ifBlank { null })
+                if (toPath.isBlank()) {
+                    null
+                } else {
+                    val stats = numStatByPath[toPath] ?: 0 to 0
+                    ChangeItem(toPath, status, fromPath.ifBlank { null }, stats.first, stats.second)
+                }
             }
+
             else -> {
                 val path = columns[1].trim()
-                if (path.isBlank()) null else ChangeItem(path, status)
+                if (path.isBlank()) {
+                    null
+                } else {
+                    val stats = numStatByPath[path] ?: 0 to 0
+                    ChangeItem(path, status, additions = stats.first, deletions = stats.second)
+                }
             }
         }
+    }
+
+    private fun parseNumStatLine(line: String): Pair<String, Pair<Int, Int>>? {
+        if (line.isBlank()) return null
+        val columns = line.split('\t')
+        if (columns.size < 3) return null
+
+        val additions = columns[0].toIntOrNull() ?: 0
+        val deletions = columns[1].toIntOrNull() ?: 0
+        val path = columns.last().trim()
+        if (path.isBlank()) return null
+        return path to (additions to deletions)
     }
 }

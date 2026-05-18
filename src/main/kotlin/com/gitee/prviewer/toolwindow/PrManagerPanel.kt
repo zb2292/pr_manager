@@ -46,10 +46,11 @@ import git4idea.commands.GitCommand
 import git4idea.commands.GitLineHandler
 import git4idea.repo.GitRepositoryManager
 import java.awt.*
-import java.util.Properties
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.event.MouseMotionAdapter
+import java.awt.geom.RoundRectangle2D
+import java.util.Properties
 import javax.swing.Box
 import javax.swing.BoxLayout
 import javax.swing.ButtonGroup
@@ -59,10 +60,14 @@ import javax.swing.Icon
 import javax.swing.JMenuItem
 import javax.swing.JPanel
 import javax.swing.JPopupMenu
+import javax.swing.JToggleButton
+import javax.swing.Scrollable
 import javax.swing.ScrollPaneConstants
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
-import javax.swing.JToggleButton
+import javax.swing.event.DocumentEvent
+import javax.swing.event.DocumentListener
+import javax.swing.plaf.basic.BasicTabbedPaneUI
 import javax.swing.table.AbstractTableModel
 import javax.swing.table.TableCellRenderer
 import javax.swing.tree.DefaultMutableTreeNode
@@ -158,6 +163,166 @@ class OutlinedPillLabel(
         }
         super.paintComponent(g)
     }
+}
+
+class RoundedOutlinePanel(
+    fillColor: Color,
+    outlineColor: Color,
+    private val arc: Int = JBUI.scale(14),
+    private val lineWidth: Float = JBUI.scale(1f)
+) : JPanel() {
+    private var fillColor: Color = fillColor
+    private var outlineColor: Color = outlineColor
+
+    init {
+        isOpaque = false
+    }
+
+    fun updateColors(fillColor: Color, outlineColor: Color) {
+        this.fillColor = fillColor
+        this.outlineColor = outlineColor
+        repaint()
+    }
+
+    override fun paint(g: Graphics) {
+        if (width <= 0 || height <= 0) {
+            super.paint(g)
+            return
+        }
+        val g2 = g.create() as Graphics2D
+        try {
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+            g2.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE)
+            val inset = lineWidth / 2f
+            val shape = RoundRectangle2D.Float(
+                inset,
+                inset,
+                (width - lineWidth).coerceAtLeast(0f),
+                (height - lineWidth).coerceAtLeast(0f),
+                arc.toFloat(),
+                arc.toFloat()
+            )
+            g2.color = fillColor
+            g2.fill(shape)
+            val originalClip = g2.clip
+            g2.clip = shape
+            super.paint(g2)
+            g2.clip = originalClip
+            g2.color = outlineColor
+            g2.stroke = BasicStroke(lineWidth)
+            g2.draw(shape)
+        } finally {
+            g2.dispose()
+        }
+    }
+}
+
+private class TimelineMarkerPanel(
+    private val dotColor: Color,
+    private val lineColor: Color,
+    private val highlight: Boolean,
+    private val isLast: Boolean
+) : JComponent() {
+    init {
+        isOpaque = false
+        preferredSize = Dimension(JBUI.scale(28), JBUI.scale(84))
+        minimumSize = preferredSize
+    }
+
+    override fun paintComponent(g: Graphics) {
+        val g2 = g.create() as Graphics2D
+        try {
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+            val centerX = width / 2f
+            val dotRadius = JBUI.scale(if (highlight) 5 else 4).toFloat()
+            val dotCenterY = JBUI.scale(18).toFloat()
+            if (!isLast) {
+                g2.color = lineColor
+                g2.stroke = BasicStroke(1f)
+                g2.drawLine(centerX.toInt(), (dotCenterY + dotRadius + JBUI.scale(4)).toInt(), centerX.toInt(), height)
+            }
+            if (highlight) {
+                g2.color = withAlpha(dotColor, 64)
+                val haloRadius = dotRadius + JBUI.scale(4)
+                g2.fillOval(
+                    (centerX - haloRadius).toInt(),
+                    (dotCenterY - haloRadius).toInt(),
+                    (haloRadius * 2).toInt(),
+                    (haloRadius * 2).toInt()
+                )
+            }
+            g2.color = dotColor
+            g2.fillOval(
+                (centerX - dotRadius).toInt(),
+                (dotCenterY - dotRadius).toInt(),
+                (dotRadius * 2).toInt(),
+                (dotRadius * 2).toInt()
+            )
+        } finally {
+            g2.dispose()
+        }
+    }
+}
+
+private class CommitPointerPanel(
+    fillColor: Color,
+    outlineColor: Color
+) : JComponent() {
+    private var fillColor: Color = fillColor
+    private var outlineColor: Color = outlineColor
+
+    init {
+        isOpaque = false
+        preferredSize = Dimension(JBUI.scale(12), JBUI.scale(36))
+        minimumSize = preferredSize
+    }
+
+    fun updateColors(fillColor: Color, outlineColor: Color) {
+        this.fillColor = fillColor
+        this.outlineColor = outlineColor
+        repaint()
+    }
+
+    override fun paintComponent(g: Graphics) {
+        if (width <= 0 || height <= 0) return
+        val g2 = g.create() as Graphics2D
+        try {
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+            val size = JBUI.scale(10)
+            val halfSize = size / 2f
+            val centerX = width / 2f
+            val centerY = JBUI.scale(18).toFloat().coerceIn(halfSize + 1f, height - halfSize - 1f)
+            val polygon = Polygon(
+                intArrayOf((centerX - halfSize).toInt(), centerX.toInt(), (centerX + halfSize).toInt(), centerX.toInt()),
+                intArrayOf(centerY.toInt(), (centerY - halfSize).toInt(), centerY.toInt(), (centerY + halfSize).toInt()),
+                4
+            )
+            g2.color = fillColor
+            g2.fillPolygon(polygon)
+            g2.color = outlineColor
+            g2.drawPolygon(polygon)
+        } finally {
+            g2.dispose()
+        }
+    }
+}
+
+private class ViewportWidthPanel : JPanel(), Scrollable {
+    override fun getPreferredScrollableViewportSize(): Dimension = preferredSize
+
+    override fun getScrollableUnitIncrement(visibleRect: Rectangle, orientation: Int, direction: Int): Int = JBUI.scale(16)
+
+    override fun getScrollableBlockIncrement(visibleRect: Rectangle, orientation: Int, direction: Int): Int {
+        return if (orientation == SwingConstants.VERTICAL) {
+            (visibleRect.height - JBUI.scale(16)).coerceAtLeast(JBUI.scale(16))
+        } else {
+            (visibleRect.width - JBUI.scale(16)).coerceAtLeast(JBUI.scale(16))
+        }
+    }
+
+    override fun getScrollableTracksViewportWidth(): Boolean = true
+
+    override fun getScrollableTracksViewportHeight(): Boolean = false
 }
 
 class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true, true) {
@@ -270,27 +435,38 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private var hasMorePrs = false
     private val pageSize = config.getProperty("prviewer.api.pageSize", "10").toIntOrNull() ?: 10
 
-    private val detailCard = JPanel(java.awt.CardLayout())
-    private val detailEmpty = JPanel(BorderLayout())
-    private val detailPanel = JPanel(BorderLayout())
+    private val detailAccentColor = JBColor(Color(0x3574F0), Color(0x4C8DFF))
+    private val detailCard = JPanel(java.awt.CardLayout()).apply { isOpaque = false }
+    private val detailEmpty = JPanel(BorderLayout()).apply { isOpaque = false }
+    private val detailPanel = JPanel(BorderLayout()).apply { isOpaque = false }
     private val detailHeaderTitle = JBLabel("-")
     private val detailStatus: StatusBadgeLabel = StatusBadgeLabel()
+    private val detailRefreshButton = JButton(AllIcons.Actions.Refresh).apply {
+        text = ""
+        toolTipText = "刷新当前 PR 详情"
+        isOpaque = false
+        isContentAreaFilled = false
+        isBorderPainted = false
+        isFocusPainted = false
+        cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+        background = JBColor(Color(0, 0, 0, 0), Color(0, 0, 0, 0))
+        border = JBUI.Borders.empty(4)
+        val buttonSize = Dimension(JBUI.scale(28), JBUI.scale(28))
+        preferredSize = buttonSize
+        minimumSize = buttonSize
+        maximumSize = buttonSize
+        addActionListener {
+            currentDetailId?.let { showDetail(it) }
+        }
+    }
     private val detailAuthorLabel = OutlinedPillLabel()
     private val detailCreateTimeLabel = OutlinedPillLabel()
     private val detailBranchLabel = OutlinedPillLabel()
     private val issueCountLabel = OutlinedPillLabel()
-    private val aiReviewBadgeLabel = JBLabel().apply {
+    private val aiReviewBadgeLabel = OutlinedPillLabel().apply {
         isOpaque = false
-        icon = AiBadgeIcon(AiReviewBadgeState.NO_DATA.color)
-        toolTipText = "当前无AI评审结果"
-        cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-        horizontalAlignment = SwingConstants.CENTER
-        verticalAlignment = SwingConstants.CENTER
-        val badgeSize = Dimension(JBUI.scale(20), JBUI.scale(20))
-        preferredSize = badgeSize
-        minimumSize = badgeSize
-        maximumSize = badgeSize
-        border = JBUI.Borders.empty()
+        toolTipText = "当前未发起AI评审"
+        cursor = Cursor.getDefaultCursor()
         addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
                 if (!SwingUtilities.isLeftMouseButton(e)) return
@@ -300,9 +476,30 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }
         })
     }
+    private val detailMetaRow = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
+        isOpaque = false
+        alignmentX = Component.LEFT_ALIGNMENT
+        add(detailAuthorLabel)
+        add(Box.createHorizontalStrut(JBUI.scale(8)))
+        add(detailBranchLabel)
+        add(Box.createHorizontalStrut(JBUI.scale(8)))
+        add(detailCreateTimeLabel)
+        add(Box.createHorizontalStrut(JBUI.scale(8)))
+        add(issueCountLabel)
+        add(Box.createHorizontalStrut(JBUI.scale(8)))
+        add(aiReviewBadgeLabel)
+    }
     private val reviewActionButton = JButton()
     private val detailTabs = JBTabbedPane()
     private val fileChangeTabTitleLabel = JBLabel("文件改动")
+    private val fileChangeTabCountLabel = OutlinedPillLabel(JBUI.scale(16)).apply {
+        setPill("0", JBColor(Color(0x5F6368), Color(0x9AA0A6)))
+    }
+    private val commitTabCountLabel = OutlinedPillLabel(JBUI.scale(16)).apply {
+        setPill("0", JBColor(Color(0x5F6368), Color(0x9AA0A6)))
+    }
+    private val detailTabHeaders = mutableListOf<DetailTabHeader>()
+    private var detailTabHeaderListenerBound = false
     private val fileChangeWarningButton = JBLabel(IconManager.getInstance().getIcon("/icons/file-change-warning.svg", javaClass)).apply {
         isVisible = false
         toolTipText = null
@@ -314,13 +511,6 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             minimumSize = iconSize
             maximumSize = iconSize
         }
-        addMouseListener(object : MouseAdapter() {
-            override fun mouseClicked(e: MouseEvent) {
-                if (SwingUtilities.isLeftMouseButton(e)) {
-                    toggleFileChangeWarningBalloon()
-                }
-            }
-        })
     }
     private val commitWarningLabel = JBLabel(IconManager.getInstance().getIcon("/icons/file-change-warning.svg", javaClass)).apply {
         isVisible = false
@@ -333,13 +523,6 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             minimumSize = iconSize
             maximumSize = iconSize
         }
-        addMouseListener(object : MouseAdapter() {
-            override fun mouseClicked(e: MouseEvent) {
-                if (SwingUtilities.isLeftMouseButton(e)) {
-                    toggleCommitWarningBalloon()
-                }
-            }
-        })
     }
     private var fileChangeWarningText: String? = null
     private var commitWarningText: String? = null
@@ -347,6 +530,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private var fileChangeWarningBalloon: Balloon? = null
 
     private val overviewDesc = JBTextArea()
+    private val reviewStatusCardsPanel = JPanel(GridLayout(0, 2, JBUI.scale(12), JBUI.scale(12))).apply {
+        isOpaque = false
+    }
     private val keyReviewersField = JBTextField()
     private val keyReviewerHint = JBLabel("-")
     private val reviewersField = JBTextField()
@@ -354,16 +540,44 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private val mergeTypeField = JBTextField()
     private val deleteBranchCheck = JBCheckBox("合并后删除源分支")
 
+    private val changeSearchField = JBTextField()
+    private val changeSummaryLabel = JBLabel("0 个文件变更")
+    private val changeAdditionsLabel = JBLabel("+0")
+    private val changeDeletionsLabel = JBLabel("-0")
+    private val changeTreeToggleButton = JToggleButton("树状").apply {
+        isFocusable = false
+        isFocusPainted = false
+        isSelected = true
+        margin = JBUI.insets(0, 10, 0, 10)
+    }
+    private val changeFlatToggleButton = JToggleButton("平铺").apply {
+        isFocusable = false
+        isFocusPainted = false
+        margin = JBUI.insets(0, 10, 0, 10)
+    }
+    private val changeViewModeGroup = ButtonGroup().apply {
+        add(changeTreeToggleButton)
+        add(changeFlatToggleButton)
+    }
     private val changeTreeRoot = DefaultMutableTreeNode("ROOT")
     private val changeTreeModel = DefaultTreeModel(changeTreeRoot)
     private val changeTree = Tree(changeTreeModel)
+    private val commitSummaryLabel = JBLabel("0 条提交")
+    private val commitTimelineContent = ViewportWidthPanel().apply {
+        layout = BoxLayout(this, BoxLayout.Y_AXIS)
+        isOpaque = false
+    }
     private val commitTableModel = CommitTableModel()
     private val commitTable = JBTable(commitTableModel)
 
     private var currentDetail: PrDetail? = null
+    private var currentDetailId: Long? = null
     private var currentAiOverview: AiReviewOverview? = null
     private var aiReviewBadgeState: AiReviewBadgeState = AiReviewBadgeState.NO_DATA
     private var aiIssueCountByFileMap: Map<String, Pair<Int, Int>> = emptyMap()
+    private var reviewIssueCountByFileMap: Map<String, Pair<Int, Int>> = emptyMap()
+    private var currentFileChanges: List<ChangeItem> = emptyList()
+    private var changeTreeFlatMode = false
     private var currentDiffFilePath: String? = null
     private val mockAiIssueStatusOverrides = mutableMapOf<Long, Int>()
 
@@ -406,8 +620,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
         detailHeaderTitle.font = detailHeaderTitle.font.deriveFont(Font.BOLD, globalUiFontSize + 1f)
         detailStatus.font = detailStatus.font.deriveFont(Font.PLAIN, globalUiFontSize)
-        listOf(detailAuthorLabel, detailCreateTimeLabel, detailBranchLabel, issueCountLabel).forEach {
-            it.font = it.font.deriveFont(Font.PLAIN, globalUiFontSize)
+        detailRefreshButton.font = detailRefreshButton.font.deriveFont(Font.PLAIN, globalUiFontSize)
+        listOf(detailAuthorLabel, detailCreateTimeLabel, detailBranchLabel, issueCountLabel, aiReviewBadgeLabel, fileChangeTabCountLabel, commitTabCountLabel).forEach {
+            it.font = it.font.deriveFont(Font.PLAIN, globalUiFontSize - 1f)
         }
         reviewActionButton.font = reviewActionButton.font.deriveFont(Font.PLAIN, globalUiFontSize)
 
@@ -419,6 +634,14 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         reviewerHint.font = reviewerHint.font.deriveFont(Font.PLAIN, globalUiFontSize)
         mergeTypeField.font = mergeTypeField.font.deriveFont(Font.PLAIN, globalUiFontSize)
         deleteBranchCheck.font = deleteBranchCheck.font.deriveFont(Font.PLAIN, globalUiFontSize)
+        changeSearchField.font = changeSearchField.font.deriveFont(Font.PLAIN, globalUiFontSize)
+        listOf(changeSummaryLabel, changeAdditionsLabel, changeDeletionsLabel, commitSummaryLabel).forEach {
+            it.font = it.font.deriveFont(Font.PLAIN, globalUiFontSize)
+        }
+        listOf(changeTreeToggleButton, changeFlatToggleButton).forEach {
+            it.font = it.font.deriveFont(Font.PLAIN, globalUiFontSize - 1f)
+        }
+        updateDetailMetaRowIndent()
 
         changeTree.font = changeTree.font.deriveFont(Font.PLAIN, globalUiFontSize)
         commitTable.font = commitTable.font.deriveFont(Font.PLAIN, globalUiFontSize)
@@ -635,8 +858,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         detailEmpty.border = JBUI.Borders.empty(12)
         detailCard.add(detailEmpty, "empty")
 
-        val detailRoot = JPanel(BorderLayout())
-        detailRoot.border = JBUI.Borders.emptyLeft(1)
+        val detailRoot = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            border = JBUI.Borders.empty()
+        }
         detailRoot.add(buildDetailHeader(), BorderLayout.NORTH)
         detailRoot.add(buildDetailTabs(), BorderLayout.CENTER)
         detailPanel.add(detailRoot, BorderLayout.CENTER)
@@ -647,38 +872,75 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun buildDetailHeader(): JComponent {
-        val header = JPanel(BorderLayout())
-        header.border = JBUI.Borders.emptyBottom(4)
+        val header = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            isOpaque = false
+            border = JBUI.Borders.empty(8, 0, 12, 0)
+        }
 
-        val titleRow = JPanel(BorderLayout())
-        titleRow.border = JBUI.Borders.emptyBottom(6)
-        detailHeaderTitle.font = detailHeaderTitle.font.deriveFont(Font.BOLD, globalUiFontSize + 1f)
-        titleRow.add(detailHeaderTitle, BorderLayout.WEST)
-        titleRow.add(detailStatus, BorderLayout.EAST)
+        val titleRow = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.X_AXIS)
+            isOpaque = false
+            alignmentX = Component.LEFT_ALIGNMENT
+            val inset = detailHorizontalInset()
+            border = JBUI.Borders.empty(0, inset, 10, inset)
+            add(detailHeaderTitle)
+            add(Box.createHorizontalStrut(JBUI.scale(10)))
+            add(detailStatus)
+            add(Box.createHorizontalGlue())
+            add(detailRefreshButton)
+        }
+        detailHeaderTitle.font = detailHeaderTitle.font.deriveFont(Font.BOLD, globalUiFontSize + 2f)
 
-        val metaRow = JPanel(BorderLayout())
-        val leftMeta = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(8), 0))
-        leftMeta.isOpaque = false
-        leftMeta.add(detailAuthorLabel)
-        leftMeta.add(detailCreateTimeLabel)
-        leftMeta.add(detailBranchLabel)
-        leftMeta.add(issueCountLabel)
-        metaRow.add(leftMeta, BorderLayout.WEST)
+        updateDetailMetaRowIndent()
 
-        val rightMeta = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0))
-        rightMeta.isOpaque = false
-        rightMeta.add(aiReviewBadgeLabel)
-        reviewActionButton.isVisible = false
-        rightMeta.add(reviewActionButton)
-        metaRow.add(rightMeta, BorderLayout.EAST)
-
-        header.add(titleRow, BorderLayout.NORTH)
-        header.add(metaRow, BorderLayout.SOUTH)
+        header.add(titleRow)
+        header.add(detailMetaRow)
         return header
     }
 
     private fun buildDetailTabs(): JComponent {
         detailTabs.border = JBUI.Borders.empty()
+        detailTabs.isOpaque = false
+        detailTabs.background = UIUtil.getPanelBackground()
+        detailTabs.setUI(object : BasicTabbedPaneUI() {
+            override fun installDefaults() {
+                super.installDefaults()
+                tabAreaInsets = Insets(0, 0, 0, 0)
+                contentBorderInsets = Insets(0, 0, 0, 0)
+                selectedTabPadInsets = Insets(0, 0, 0, 0)
+            }
+
+            override fun getTabInsets(tabPlacement: Int, tabIndex: Int): Insets = Insets(0, 0, 0, 0)
+
+            override fun getTabLabelShiftX(tabPlacement: Int, tabIndex: Int, isSelected: Boolean): Int = 0
+
+            override fun getTabLabelShiftY(tabPlacement: Int, tabIndex: Int, isSelected: Boolean): Int = 0
+
+            override fun paintTabArea(g: Graphics, tabPlacement: Int, selectedIndex: Int) {
+                super.paintTabArea(g, tabPlacement, selectedIndex)
+                if (tabPane.tabCount <= 0) return
+                val g2 = g.create() as Graphics2D
+                try {
+                    val (leftInset, rightInset) = detailTabUnderlineSideInsets()
+                    val lineHeight = JBUI.scale(1)
+                    val y = calculateTabAreaHeight(tabPlacement, runCount, maxTabHeight) - lineHeight
+                    val width = (tabPane.width - leftInset - rightInset).coerceAtLeast(0)
+                    g2.color = JBColor(Color.BLACK, Color.BLACK)
+                    g2.fillRect(leftInset, y, width, lineHeight)
+                } finally {
+                    g2.dispose()
+                }
+            }
+
+            override fun paintTabBackground(g: Graphics, tabPlacement: Int, tabIndex: Int, x: Int, y: Int, w: Int, h: Int, isSelected: Boolean) = Unit
+
+            override fun paintTabBorder(g: Graphics, tabPlacement: Int, tabIndex: Int, x: Int, y: Int, w: Int, h: Int, isSelected: Boolean) = Unit
+
+            override fun paintContentBorder(g: Graphics, tabPlacement: Int, selectedIndex: Int) = Unit
+
+            override fun paintFocusIndicator(g: Graphics, tabPlacement: Int, rects: Array<Rectangle>, tabIndex: Int, iconRect: Rectangle, textRect: Rectangle, isSelected: Boolean) = Unit
+        })
         detailTabs.addTab("概览", buildOverviewPanel())
         detailTabs.addTab("文件改动", buildFileChangePanel())
         detailTabs.addTab("提交记录", buildCommitPanel())
@@ -686,39 +948,155 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         return detailTabs
     }
 
+    private fun detailSurfaceFill(): Color = UIUtil.getTextFieldBackground()
+
+    private fun detailOutlineColor(): Color = withAlpha(UIUtil.getBoundsColor(), 160)
+
+    private fun detailMutedColor(): Color = JBColor(Color(0x5F6368), Color(0x9AA0A6))
+
+    private fun detailSectionTitleFontSize(): Float = globalUiFontSize + 1f
+
+    private fun detailHorizontalInset(): Int {
+        val metricsOwner = if (detailHeaderTitle.font != null) detailHeaderTitle else detailTabs
+        return metricsOwner.getFontMetrics(metricsOwner.font).charWidth('中').coerceAtLeast(JBUI.scale(12))
+    }
+
+    private fun detailContentSideInsets(component: Component?): Pair<Int, Int> {
+        fun borderInsets(target: JComponent?): Pair<Int, Int>? {
+            val insets = target?.border?.getBorderInsets(target) ?: return null
+            return insets.left to insets.right
+        }
+
+        val defaultInset = detailHorizontalInset()
+        return when (component) {
+            is JBScrollPane -> {
+                val view = component.viewport?.view as? JComponent
+                borderInsets(view) ?: (defaultInset to defaultInset)
+            }
+            is JComponent -> borderInsets(component) ?: (defaultInset to defaultInset)
+            else -> defaultInset to defaultInset
+        }
+    }
+
+    private fun detailTabUnderlineSideInsets(): Pair<Int, Int> {
+        val overviewComponent = if (detailTabs.tabCount > 0) detailTabs.getComponentAt(0) else null
+        return detailContentSideInsets(overviewComponent)
+    }
+
+    private fun buildDetailTabBody(topInset: Int = 12, bottomInset: Int = 10): ViewportWidthPanel {
+        return ViewportWidthPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            isOpaque = false
+            border = JBUI.Borders.empty(topInset, detailHorizontalInset(), bottomInset, detailHorizontalInset())
+        }
+    }
+
+    private fun stretchDetailTabChild(component: JComponent, stretchVertically: Boolean = false): JComponent {
+        component.alignmentX = Component.LEFT_ALIGNMENT
+        component.maximumSize = Dimension(Int.MAX_VALUE, if (stretchVertically) Int.MAX_VALUE else component.preferredSize.height)
+        return component
+    }
+
+    private fun normalizeFilePathKey(path: String): String {
+        return path.trim()
+            .replace('\\', '/')
+            .removePrefix("./")
+            .trim('/')
+    }
+
+    private fun buildReviewIssueCountByFileMap(stats: IssueStats): Map<String, Pair<Int, Int>> {
+        return stats.issues
+            .groupBy { normalizeFilePathKey(it.file) }
+            .mapValues { (_, items) ->
+                items.count { it.status.trim().lowercase() == "open" } to items.size
+            }
+    }
+
+    private fun detailTabBadgeColor(): Color = JBColor(Color(0x5F6368), Color(0x9AA0A6))
+
+    private fun aiReviewBadgeText(state: AiReviewBadgeState): String = when (state) {
+        AiReviewBadgeState.NO_DATA -> "AI评审：未发起"
+        AiReviewBadgeState.STALE -> "AI评审：待更新"
+        AiReviewBadgeState.PASS -> "AI评审：通过"
+        AiReviewBadgeState.FAIL -> "AI评审：不通过"
+    }
+
+    private fun updateDetailMetaRowIndent() {
+        val inset = detailHorizontalInset()
+        detailMetaRow.border = JBUI.Borders.empty(0, inset, 0, inset)
+        detailMetaRow.revalidate()
+        detailMetaRow.repaint()
+    }
+
+    private fun styleSegmentedToggle(button: JToggleButton, selected: Boolean) {
+        button.background = if (selected) withAlpha(detailAccentColor, 34) else detailSurfaceFill()
+        button.foreground = if (selected) UIUtil.getLabelForeground() else detailMutedColor()
+        button.font = button.font.deriveFont(if (selected) Font.BOLD else Font.PLAIN, globalUiFontSize - 1f)
+        button.isOpaque = true
+        button.isBorderPainted = false
+        button.border = JBUI.Borders.empty(4, 12)
+    }
+
+    private fun updateChangeModeToggleStyle() {
+        styleSegmentedToggle(changeTreeToggleButton, !changeTreeFlatMode)
+        styleSegmentedToggle(changeFlatToggleButton, changeTreeFlatMode)
+    }
+
+    private fun updateDetailTabCounters(fileCount: Int = currentFileChanges.size, commitCount: Int = commitTableModel.rowCount) {
+        fileChangeTabCountLabel.setPill(fileCount.toString(), detailTabBadgeColor())
+        commitTabCountLabel.setPill(commitCount.toString(), detailTabBadgeColor())
+        detailTabs.revalidate()
+        detailTabs.repaint()
+    }
+
+    private fun wrapDetailSurface(
+        component: JComponent,
+        fillColor: Color = detailSurfaceFill(),
+        outlineColor: Color = detailOutlineColor(),
+        padding: Insets = JBUI.insets(12)
+    ): JComponent {
+        return RoundedOutlinePanel(
+            fillColor = fillColor,
+            outlineColor = outlineColor,
+            arc = JBUI.scale(14)
+        ).apply {
+            layout = BorderLayout()
+            border = JBUI.Borders.empty(padding.top, padding.left, padding.bottom, padding.right)
+            add(component, BorderLayout.CENTER)
+        }
+    }
+
     private fun buildOverviewPanel(): JComponent {
-        val panel = JPanel()
-        panel.layout = BoxLayout(panel, BoxLayout.Y_AXIS)
-        panel.border = JBUI.Borders.empty(8, 0, 8, 8)
+        val panel = buildDetailTabBody()
 
         overviewDesc.lineWrap = true
         overviewDesc.wrapStyleWord = true
-        overviewDesc.rows = 4
+        overviewDesc.rows = 6
         overviewDesc.isEditable = false
-        val descScroll = JBScrollPane(overviewDesc)
-        val panelBackground = panel.background
-        overviewDesc.isOpaque = true
-        overviewDesc.background = panelBackground
-        descScroll.viewport.isOpaque = true
-        descScroll.viewport.background = panelBackground
-        descScroll.background = panelBackground
-        keyReviewersField.background = panelBackground
-        reviewersField.background = panelBackground
-        keyReviewersField.isOpaque = false
-        reviewersField.isOpaque = false
-        val descLineHeight = overviewDesc.getFontMetrics(overviewDesc.font).height
-        val descHeight = descLineHeight * 4 + JBUI.scale(12)
-        val descSize = Dimension(JBUI.scale(780), descHeight)
-        descScroll.preferredSize = descSize
-        descScroll.minimumSize = descSize
+        overviewDesc.isOpaque = false
+        overviewDesc.border = JBUI.Borders.empty()
+        overviewDesc.background = detailSurfaceFill()
+        overviewDesc.alignmentX = Component.LEFT_ALIGNMENT
 
-        keyReviewersField.isEditable = false
-        reviewersField.isEditable = false
-        mergeTypeField.isEditable = false
+        val descScroll = JBScrollPane(overviewDesc).apply {
+            border = JBUI.Borders.empty()
+            isOpaque = false
+            viewport.isOpaque = false
+            background = detailSurfaceFill()
+            viewport.background = detailSurfaceFill()
+            val descLineHeight = overviewDesc.getFontMetrics(overviewDesc.font).height
+            val descHeight = descLineHeight * 6 + JBUI.scale(20)
+            preferredSize = Dimension(JBUI.scale(320), descHeight)
+            minimumSize = Dimension(0, descHeight)
+            maximumSize = Dimension(Int.MAX_VALUE, descHeight)
+        }
 
-        panel.add(section("描述", descScroll))
-        panel.add(section("关键评审人员", buildReviewerRow(keyReviewersField, keyReviewerHint)))
-        panel.add(section("普通评审人员", buildReviewerRow(reviewersField, reviewerHint)))
+        reviewStatusCardsPanel.alignmentX = Component.LEFT_ALIGNMENT
+        renderReviewStatusCards(null)
+
+        panel.add(buildOverviewSection("PR 描述", wrapDetailSurface(descScroll, padding = JBUI.insets(18))))
+        panel.add(Box.createVerticalStrut(JBUI.scale(16)))
+        panel.add(buildOverviewSection("审查状态", reviewStatusCardsPanel))
         panel.add(Box.createVerticalGlue())
 
         return JBScrollPane(
@@ -727,32 +1105,135 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
         ).apply {
             border = JBUI.Borders.empty()
+            isOpaque = false
+            viewport.isOpaque = false
             verticalScrollBar.unitIncrement = JBUI.scale(16)
         }
     }
 
-    private fun buildReviewerRow(field: JBTextField, hint: JBLabel): JComponent {
-        val row = JPanel(BorderLayout())
-        row.alignmentX = Component.LEFT_ALIGNMENT
-        row.isOpaque = false
-        val charWidth = field.getFontMetrics(field.font).charWidth('中')
-        val leftShift = Math.round(charWidth / 5f)
-        row.border = JBUI.Borders.emptyLeft(-leftShift)
+    private fun renderReviewStatusCards(detail: PrDetail?) {
+        reviewStatusCardsPanel.removeAll()
+        val reviewers = when {
+            detail == null -> emptyList()
+            detail.reviewerInfos.isNotEmpty() -> detail.reviewerInfos
+            else -> (detail.overview.keyReviewers + detail.overview.reviewers)
+                .distinct()
+                .map { ReviewerInfo(it, "pending") }
+        }
 
-        val fieldHeight = field.getFontMetrics(field.font).height + JBUI.scale(10)
-        val fieldSize = Dimension(JBUI.scale(347), fieldHeight)
-        field.preferredSize = fieldSize
-        field.minimumSize = fieldSize
-        field.maximumSize = fieldSize
+        if (reviewers.isEmpty()) {
+            reviewStatusCardsPanel.layout = GridLayout(1, 1, 0, 0)
+            reviewStatusCardsPanel.add(
+                wrapDetailSurface(
+                    JBLabel("暂无审查人信息").apply {
+                        foreground = detailMutedColor()
+                        border = JBUI.Borders.empty(4, 2)
+                    },
+                    padding = JBUI.insets(14)
+                )
+            )
+        } else {
+            reviewStatusCardsPanel.layout = GridLayout((reviewers.size + 1) / 2, 2, JBUI.scale(12), JBUI.scale(12))
+            reviewers.forEach { reviewStatusCardsPanel.add(buildReviewStatusCard(it)) }
+            if (reviewers.size % 2 != 0) {
+                reviewStatusCardsPanel.add(JPanel().apply { isOpaque = false })
+            }
+        }
+        reviewStatusCardsPanel.revalidate()
+        reviewStatusCardsPanel.repaint()
+    }
 
-        hint.border = JBUI.Borders.emptyLeft(8)
-        hint.minimumSize = Dimension(0, fieldHeight)
-        hint.preferredSize = Dimension(0, fieldHeight)
-        hint.maximumSize = Dimension(Int.MAX_VALUE, fieldHeight)
+    private fun buildReviewStatusCard(reviewer: ReviewerInfo): JComponent {
+        val statusColor = reviewerStatusColor(reviewer.approveStatus)
+        val statusText = reviewerStatusText(reviewer.approveStatus)
+        val normalizedStatus = reviewer.approveStatus.trim().lowercase()
+        val statusIcon = when (normalizedStatus) {
+            "approved" -> AllIcons.Actions.Checked
+            "rejected" -> AllIcons.General.Error
+            else -> AllIcons.Actions.Pause
+        }
+        val avatarBackground = if (reviewer.approveStatus.trim().equals("approved", true)) {
+            withAlpha(statusColor, 38)
+        } else {
+            detailSurfaceFill()
+        }
 
-        row.add(field, BorderLayout.WEST)
-        row.add(hint, BorderLayout.CENTER)
-        return row
+        val avatar = RoundedOutlinePanel(
+            fillColor = avatarBackground,
+            outlineColor = withAlpha(statusColor, 90),
+            arc = JBUI.scale(18)
+        ).apply {
+            preferredSize = Dimension(JBUI.scale(32), JBUI.scale(32))
+            minimumSize = preferredSize
+            maximumSize = preferredSize
+            layout = GridBagLayout()
+            add(JBLabel(ReviewerAvatarIcon(reviewer.username, statusColor)))
+        }
+
+        val textPanel = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            isOpaque = false
+            add(JBLabel(reviewer.username.ifBlank { "未知评审人" }).apply {
+                font = font.deriveFont(Font.BOLD, globalUiFontSize)
+                alignmentX = Component.LEFT_ALIGNMENT
+            })
+            add(Box.createVerticalStrut(JBUI.scale(4)))
+            add(JBLabel(statusText, statusIcon, SwingConstants.LEFT).apply {
+                foreground = statusColor
+                iconTextGap = JBUI.scale(6)
+                alignmentX = Component.LEFT_ALIGNMENT
+            })
+        }
+
+        val content = JPanel(BorderLayout(JBUI.scale(10), 0)).apply {
+            isOpaque = false
+            add(avatar, BorderLayout.WEST)
+            add(textPanel, BorderLayout.CENTER)
+        }
+
+        return wrapDetailSurface(content, padding = JBUI.insets(14))
+    }
+
+    private fun reviewerStatusText(status: String): String = when (status.trim().lowercase()) {
+        "approved" -> "已通过审查"
+        "rejected" -> "已拒绝"
+        else -> "等待审查..."
+    }
+
+    private fun buildOverviewSection(title: String, body: JComponent): JComponent {
+        return JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            isOpaque = false
+            alignmentX = Component.LEFT_ALIGNMENT
+            val titleLabel = JBLabel(title).apply {
+                font = font.deriveFont(Font.BOLD, detailSectionTitleFontSize())
+                foreground = detailMutedColor()
+                border = JBUI.Borders.emptyBottom(8)
+                alignmentX = Component.LEFT_ALIGNMENT
+            }
+            body.alignmentX = Component.LEFT_ALIGNMENT
+            add(titleLabel)
+            add(body)
+            maximumSize = Dimension(Int.MAX_VALUE, preferredSize.height)
+        }
+    }
+
+    private fun buildOverviewInfoCard(title: String, field: JBTextField, hint: JBLabel): JComponent {
+        hint.foreground = detailMutedColor()
+        hint.border = JBUI.Borders.emptyTop(8)
+        hint.toolTipText = hint.text
+        val content = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            isOpaque = false
+            add(JBLabel(title).apply {
+                font = font.deriveFont(Font.BOLD, globalUiFontSize + 1f)
+                alignmentX = Component.LEFT_ALIGNMENT
+            })
+            add(Box.createVerticalStrut(JBUI.scale(8)))
+            add(field.apply { alignmentX = Component.LEFT_ALIGNMENT })
+            add(hint.apply { alignmentX = Component.LEFT_ALIGNMENT })
+        }
+        return wrapDetailSurface(content, padding = JBUI.insets(14))
     }
 
     private fun buildSingleFieldRow(field: JBTextField): JComponent {
@@ -773,29 +1254,60 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private fun section(title: String, component: JComponent): JComponent {
         val wrapper = JPanel(BorderLayout())
         wrapper.alignmentX = Component.LEFT_ALIGNMENT
-        val label = JBLabel(title)
-        val charWidth = label.getFontMetrics(label.font).charWidth('中')
-        val leftInset = Math.round(charWidth / 6f)
-        label.font = label.font.deriveFont(Font.BOLD, globalUiFontSize + 1f)
-        label.border = JBUI.Borders.empty(0, leftInset, 8, 0)
-        wrapper.add(label, BorderLayout.NORTH)
-        val body = JPanel(BorderLayout()).apply {
-            isOpaque = false
-            border = JBUI.Borders.emptyLeft(leftInset)
-            add(component, BorderLayout.CENTER)
+        wrapper.isOpaque = false
+        val label = JBLabel(title).apply {
+            font = font.deriveFont(Font.BOLD, globalUiFontSize + 1f)
+            border = JBUI.Borders.emptyBottom(8)
+            foreground = detailMutedColor()
         }
-        wrapper.add(body, BorderLayout.CENTER)
+        wrapper.add(label, BorderLayout.NORTH)
+        wrapper.add(component, BorderLayout.CENTER)
         wrapper.border = JBUI.Borders.emptyBottom(12)
-        wrapper.maximumSize = Dimension(Int.MAX_VALUE, wrapper.preferredSize.height)
         return wrapper
     }
 
     private fun buildFileChangePanel(): JComponent {
+        val changeSearchHint = "按名称搜索文件..."
+        changeSearchField.emptyText.text = changeSearchHint
+        changeSearchField.isOpaque = false
+        changeSearchField.border = JBUI.Borders.empty()
+        val changeSearchWidth = (changeSearchField.getFontMetrics(changeSearchField.font).stringWidth(changeSearchHint) + JBUI.scale(32)) * 2
+        val changeSearchSize = Dimension(changeSearchWidth, changeSearchField.preferredSize.height)
+        changeSearchField.preferredSize = changeSearchSize
+        changeSearchField.minimumSize = changeSearchSize
+        changeSummaryLabel.foreground = detailMutedColor()
+        changeAdditionsLabel.foreground = JBColor(Color(0x1E8E3E), Color(0x57D163))
+        changeDeletionsLabel.foreground = JBColor(Color(0xD93025), Color(0xF47067))
+
+        changeSearchField.document.addDocumentListener(object : DocumentListener {
+            override fun insertUpdate(e: DocumentEvent?) = applyChangeTreeFilter()
+            override fun removeUpdate(e: DocumentEvent?) = applyChangeTreeFilter()
+            override fun changedUpdate(e: DocumentEvent?) = applyChangeTreeFilter()
+        })
+
+        changeTreeToggleButton.addActionListener {
+            if (changeTreeFlatMode) {
+                changeTreeFlatMode = false
+                updateChangeModeToggleStyle()
+                applyChangeTreeFilter()
+            }
+        }
+        changeFlatToggleButton.addActionListener {
+            if (!changeTreeFlatMode) {
+                changeTreeFlatMode = true
+                updateChangeModeToggleStyle()
+                applyChangeTreeFilter()
+            }
+        }
+        updateChangeModeToggleStyle()
+
         changeTree.emptyText.text = "暂无对比结果"
         changeTree.cellRenderer = ChangeTreeCellRenderer()
         changeTree.isRootVisible = false
         changeTree.showsRootHandles = true
         changeTree.toggleClickCount = 0
+        changeTree.isOpaque = false
+        changeTree.border = JBUI.Borders.empty(6, 6)
         changeTree.addTreeSelectionListener {
             val node = changeTree.lastSelectedPathComponent as? DefaultMutableTreeNode ?: return@addTreeSelectionListener
             val selected = node.userObject as? ChangeItem ?: return@addTreeSelectionListener
@@ -804,58 +1316,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
         changeTree.addMouseMotionListener(object : MouseMotionAdapter() {
             override fun mouseMoved(e: MouseEvent) {
-                val row = changeTree.getRowForLocation(e.x, e.y)
-                if (row < 0) {
-                    changeTree.toolTipText = null
-                    return
-                }
-                val path = changeTree.getPathForRow(row)
-                val node = path?.lastPathComponent as? DefaultMutableTreeNode
-                val change = node?.userObject as? ChangeItem
-                if (change == null) {
-                    changeTree.toolTipText = null
-                    return
-                }
-
-                val rowBounds = changeTree.getRowBounds(row)
-                if (rowBounds == null) {
-                    changeTree.toolTipText = null
-                    return
-                }
-
-                val typeLabel = changeTypeFullText(change.changeType)
-                val renameHint = if (typeLabel.startsWith("RENAMED") && !change.fromFilePath.isNullOrBlank()) {
-                    " from ${change.fromFilePath}"
-                } else {
-                    ""
-                }
-                val baseText = "${change.filePath.substringAfterLast('/')} ($typeLabel$renameHint)"
-                val font = changeTree.font.deriveFont(Font.PLAIN, globalUiFontSize)
-                val badgeFont = Font(Font.MONOSPACED, Font.PLAIN, font.size)
-                val fm = changeTree.getFontMetrics(font)
-                val badgeFm = changeTree.getFontMetrics(badgeFont)
-                val iconWidth = changeTypeIcon(change.changeType).iconWidth
-                val iconTextGap = JBUI.scale(4)
-                val badgeGap = JBUI.scale(12)
-                val aiGap = JBUI.scale(8)
-                val mainWidth = iconWidth + iconTextGap + fm.stringWidth(baseText)
-                val issueSlotWidth = badgeFm.stringWidth("00/00")
-
-                val issueStartX = rowBounds.x + mainWidth + badgeGap
-                val issueEndX = issueStartX + issueSlotWidth
-
-                val issueText = issueCountByFile(change.filePath)?.let { "${it.first}/${it.second}" } ?: "0/0"
-                val aiBadge = aiIssueCountByFile(change.filePath)
-                val hasAiIssue = aiBadge.first > 0 || aiBadge.second > 0
-                val aiText = if (hasAiIssue) "${aiBadge.first}/${aiBadge.second}" else "无"
-                val aiStartX = issueEndX + aiGap
-                val aiEndX = aiStartX + badgeFm.stringWidth(aiText)
-
-                changeTree.toolTipText = when {
-                    e.x in issueStartX until issueEndX -> "评审问题（未解决/总数）：$issueText"
-                    hasAiIssue && e.x in aiStartX until aiEndX -> "AI评审 错误问题/警告问题：$aiText"
-                    else -> null
-                }
+                val path = resolveTreePathAtPoint(changeTree, e.x, e.y)
+                changeTree.toolTipText = (changeTree.cellRenderer as? ChangeTreeCellRenderer)?.tooltipAt(changeTree, path, e.x, e.y)
             }
         })
         changeTree.addMouseListener(object : MouseAdapter() {
@@ -875,7 +1337,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 if (e.clickCount != 2 || !SwingUtilities.isLeftMouseButton(e)) return
                 val path = changeTree.getPathForLocation(e.x, e.y) ?: return
                 val node = path.lastPathComponent as? DefaultMutableTreeNode ?: return
-                if (node.userObject !is String) return
+                if (node.userObject !is String || changeTreeFlatMode) return
                 if (changeTree.isExpanded(path)) {
                     changeTree.collapsePath(path)
                 } else {
@@ -883,122 +1345,433 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 }
             }
         })
-        return JBScrollPane(changeTree).apply {
+
+        val togglePanel = JPanel(GridLayout(1, 2, 0, 0)).apply {
+            isOpaque = false
+            add(changeTreeToggleButton)
+            add(changeFlatToggleButton)
+        }
+
+        val toolbar = JPanel(BorderLayout(JBUI.scale(8), 0)).apply {
+            isOpaque = false
+            add(wrapDetailSurface(changeSearchField, fillColor = detailSurfaceFill(), padding = JBUI.insets(5, 10)), BorderLayout.WEST)
+            add(wrapDetailSurface(togglePanel, padding = JBUI.insets(2)), BorderLayout.EAST)
+        }
+
+        val treeScroll = JBScrollPane(changeTree).apply {
             border = JBUI.Borders.empty()
+            isOpaque = false
+            viewport.isOpaque = false
+            background = detailSurfaceFill()
+            viewport.background = detailSurfaceFill()
+        }
+
+        val footer = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(14), 0)).apply {
+            isOpaque = false
+            border = JBUI.Borders.customLineTop(detailOutlineColor())
+            add(changeSummaryLabel)
+            add(changeAdditionsLabel)
+            add(changeDeletionsLabel)
+        }
+
+        val treeWrapper = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            add(treeScroll, BorderLayout.CENTER)
+            add(JPanel(BorderLayout()).apply {
+                isOpaque = false
+                border = JBUI.Borders.empty(8)
+                add(footer, BorderLayout.WEST)
+            }, BorderLayout.SOUTH)
+        }
+
+        val body = buildDetailTabBody().apply {
+            add(stretchDetailTabChild(toolbar))
+            add(Box.createVerticalStrut(JBUI.scale(10)))
+            add(stretchDetailTabChild(wrapDetailSurface(treeWrapper, padding = JBUI.insets(8, 8, 0, 8)), stretchVertically = true))
+        }
+
+        return JPanel(BorderLayout()).apply {
+            isOpaque = false
+            add(body, BorderLayout.CENTER)
+        }
+    }
+
+    private fun applyChangeTreeFilter() {
+        val keyword = changeSearchField.text?.trim().orEmpty().lowercase()
+        val visibleChanges = if (keyword.isBlank()) {
+            currentFileChanges
+        } else {
+            currentFileChanges.filter {
+                it.filePath.lowercase().contains(keyword) || it.filePath.substringAfterLast('/').lowercase().contains(keyword)
+            }
+        }
+        changeTree.emptyText.text = when {
+            currentFileChanges.isEmpty() -> "暂无对比结果"
+            visibleChanges.isEmpty() -> "未找到匹配文件"
+            else -> ""
+        }
+        renderChangeTreeNodes(visibleChanges)
+    }
+
+    private fun renderChangeTreeNodes(changes: List<ChangeItem>) {
+        changeTreeRoot.removeAllChildren()
+        var insertedFiles = 0
+
+        if (changeTreeFlatMode) {
+            changes.sortedBy { it.filePath.lowercase() }.forEach { change ->
+                changeTreeRoot.add(DefaultMutableTreeNode(change))
+                insertedFiles++
+            }
+        } else {
+            changes.forEach { change ->
+                if (insertChangeNode(change)) {
+                    insertedFiles++
+                }
+            }
+            sortTree(changeTreeRoot)
+            compactDirectoryTree(changeTreeRoot)
+        }
+
+        changeTree.showsRootHandles = !changeTreeFlatMode
+        changeTreeModel.reload()
+        if (!changeTreeFlatMode) {
+            expandAllFromRoot()
+            SwingUtilities.invokeLater { expandAllFromRoot() }
+        }
+
+        val additions = changes.sumOf { it.additions }
+        val deletions = changes.sumOf { it.deletions }
+        changeSummaryLabel.text = "${changes.size} 个文件变更"
+        changeAdditionsLabel.text = "+$additions additions"
+        changeDeletionsLabel.text = "-$deletions deletions"
+        updateDetailTabCounters(fileCount = currentFileChanges.size)
+
+        if (insertedFiles < changes.size) {
+            updateStatus("文件树构建异常: 期望${changes.size}，实际$insertedFiles")
         }
     }
 
     private fun buildCommitPanel(): JComponent {
-        commitTable.fillsViewportHeight = true
-        commitTable.rowHeight = JBUI.scale(26)
-        commitTable.setShowGrid(false)
-        commitTable.tableHeader.reorderingAllowed = false
-        commitTable.setRowSelectionAllowed(false)
-        commitTable.setColumnSelectionAllowed(false)
-        commitTable.selectionModel.setSelectionInterval(-1, -1)
-        commitTable.columnModel.selectionModel.setSelectionInterval(-1, -1)
-        if (commitTable.columnModel.columnCount > 3) {
-            commitTable.columnModel.getColumn(0).preferredWidth = JBUI.scale(60)
-            commitTable.columnModel.getColumn(1).preferredWidth = JBUI.scale(60)
-            commitTable.columnModel.getColumn(2).preferredWidth = JBUI.scale(360)
-            commitTable.columnModel.getColumn(3).preferredWidth = JBUI.scale(90)
-            commitTable.columnModel.getColumn(1).cellRenderer = CommitHashCellRenderer()
-        }
-
-        commitTable.addMouseMotionListener(object : MouseMotionAdapter() {
-            override fun mouseMoved(e: MouseEvent) {
-                val row = commitTable.rowAtPoint(e.point)
-                val col = commitTable.columnAtPoint(e.point)
-                if (row >= 0 && col == 1) {
-                    commitTable.toolTipText = if (commitTableModel.isMissingAt(row)) {
-                        "当前分支不包含此记录"
-                    } else {
-                        commitTableModel.getFullHashAt(row).ifBlank { null }
-                    }
-                } else {
-                    commitTable.toolTipText = null
-                }
-            }
-        })
-        commitTable.addMouseListener(object : MouseAdapter() {
-            override fun mouseExited(e: MouseEvent) {
-                commitTable.toolTipText = null
-            }
-
-            override fun mousePressed(e: MouseEvent) {
-                showCopyHashPopup(e)
-            }
-
-            override fun mouseReleased(e: MouseEvent) {
-                showCopyHashPopup(e)
-            }
-
-            private fun showCopyHashPopup(e: MouseEvent) {
-                if (!e.isPopupTrigger) return
-                val row = commitTable.rowAtPoint(e.point)
-                val col = commitTable.columnAtPoint(e.point)
-                if (row < 0 || col != 1) return
-                val fullHash = commitTableModel.getFullHashAt(row)
-                if (fullHash.isBlank()) return
-                val menu = javax.swing.JPopupMenu()
-                val item = javax.swing.JMenuItem("复制提交编号")
-                item.addActionListener {
-                    copyToClipboard(fullHash)
-                    updateStatus("已复制提交编号: ${fullHash.take(7)}")
-                }
-                menu.add(item)
-                menu.show(commitTable, e.x, e.y)
-            }
-        })
-
-        val copyActionKey = "copyCommitHash"
-        commitTable.inputMap.put(javax.swing.KeyStroke.getKeyStroke("meta C"), copyActionKey)
-        commitTable.inputMap.put(javax.swing.KeyStroke.getKeyStroke("ctrl C"), copyActionKey)
-        commitTable.actionMap.put(copyActionKey, object : javax.swing.AbstractAction() {
-            override fun actionPerformed(e: java.awt.event.ActionEvent?) {
-                val row = commitTable.selectedRow
-                val col = commitTable.selectedColumn
-                if (row >= 0 && col == 1) {
-                    val fullHash = commitTableModel.getFullHashAt(row)
-                    if (fullHash.isNotBlank()) {
-                        copyToClipboard(fullHash)
-                        updateStatus("已复制提交编号: ${fullHash.take(7)}")
-                        return
-                    }
-                }
-                if (row >= 0 && col >= 0) {
-                    copyToClipboard(commitTable.getValueAt(row, col)?.toString().orEmpty())
-                }
-            }
-        })
-
-        return JBScrollPane(commitTable).apply {
+        val timelineScroll = JBScrollPane(
+            commitTimelineContent,
+            ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
+            ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+        ).apply {
             border = JBUI.Borders.empty()
+            isOpaque = false
+            viewport.isOpaque = false
+            background = detailSurfaceFill()
+            viewport.background = detailSurfaceFill()
+            verticalScrollBar.unitIncrement = JBUI.scale(16)
         }
+
+        val body = buildDetailTabBody().apply {
+            add(stretchDetailTabChild(wrapDetailSurface(timelineScroll, padding = JBUI.insets(14)), stretchVertically = true))
+        }
+
+        return JPanel(BorderLayout()).apply {
+            isOpaque = false
+            add(body, BorderLayout.CENTER)
+        }
+    }
+
+    private fun renderCommitTimeline(commits: List<CommitItem>, missingHashes: Set<String> = emptySet()) {
+        commitTimelineContent.removeAll()
+        commitSummaryLabel.text = "${commits.size} 条提交"
+        updateDetailTabCounters(commitCount = commits.size)
+
+        if (commits.isEmpty()) {
+            commitTimelineContent.add(JBLabel("暂无提交记录").apply {
+                foreground = detailMutedColor()
+                border = JBUI.Borders.empty(6, 4)
+                alignmentX = Component.LEFT_ALIGNMENT
+            })
+            commitTimelineContent.revalidate()
+            commitTimelineContent.repaint()
+            return
+        }
+
+        commits.forEachIndexed { index, commit ->
+            commitTimelineContent.add(
+                createCommitTimelineItem(
+                    commit = commit,
+                    highlight = index == 0,
+                    isLast = index == commits.lastIndex,
+                    missing = missingHashes.contains(commit.hash)
+                )
+            )
+            if (index < commits.lastIndex) {
+                commitTimelineContent.add(Box.createVerticalStrut(JBUI.scale(10)))
+            }
+        }
+        commitTimelineContent.revalidate()
+        commitTimelineContent.repaint()
+    }
+
+    private fun createCommitTimelineItem(
+        commit: CommitItem,
+        highlight: Boolean,
+        isLast: Boolean,
+        missing: Boolean
+    ): JComponent {
+        val lineColor = withAlpha(UIUtil.getBoundsColor(), 140)
+        val dangerColor = JBColor(Color(0xD93025), Color(0xF47067))
+        val markerColor = when {
+            missing -> dangerColor
+            highlight -> detailAccentColor
+            else -> detailMutedColor()
+        }
+        val hashColor = if (missing) dangerColor else detailAccentColor
+        val title = JBLabel(commit.message.ifBlank { "(无提交信息)" }).apply {
+            font = font.deriveFont(Font.BOLD, globalUiFontSize + 0.5f)
+        }
+        val hashBadge = buildCommitHashBadge(commit.hash, hashColor)
+
+        val metaLeft = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(8), 0)).apply {
+            isOpaque = false
+            add(JBLabel(commit.author.ifBlank { "未知作者" }, ReviewerAvatarIcon(commit.author.ifBlank { "?" }, detailAccentColor), SwingConstants.LEFT).apply {
+                foreground = detailMutedColor()
+                iconTextGap = JBUI.scale(6)
+            })
+            add(JBLabel("|").apply { foreground = detailMutedColor() })
+            add(JBLabel(commit.time.ifBlank { "-" }).apply { foreground = detailMutedColor() })
+            if (missing) {
+                add(JBLabel("（当前分支缺少该提交）").apply { foreground = dangerColor })
+            }
+        }
+
+        val statsPanel = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0)).apply {
+            isOpaque = false
+            if (commit.additions > 0) {
+                add(JBLabel("+${commit.additions}").apply {
+                    foreground = JBColor(Color(0x1E8E3E), Color(0x57D163))
+                    font = Font(Font.MONOSPACED, Font.PLAIN, font.size)
+                })
+            }
+            if (commit.deletions > 0) {
+                add(JBLabel("-${commit.deletions}").apply {
+                    foreground = dangerColor
+                    font = Font(Font.MONOSPACED, Font.PLAIN, font.size)
+                })
+            }
+        }
+
+        val metaRow = JPanel(BorderLayout(JBUI.scale(8), 0)).apply {
+            isOpaque = false
+            add(metaLeft, BorderLayout.WEST)
+            if (statsPanel.componentCount > 0) {
+                add(statsPanel, BorderLayout.EAST)
+            }
+        }
+
+        val content = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            isOpaque = false
+            add(JPanel(BorderLayout(JBUI.scale(8), 0)).apply {
+                isOpaque = false
+                add(title, BorderLayout.CENTER)
+                add(hashBadge, BorderLayout.EAST)
+            })
+            add(Box.createVerticalStrut(JBUI.scale(8)))
+            add(metaRow)
+        }
+
+        val baseFillColor = when {
+            missing -> withAlpha(dangerColor, 12)
+            highlight -> withAlpha(detailAccentColor, 20)
+            else -> detailSurfaceFill()
+        }
+        val hoverFillColor = when {
+            missing -> withAlpha(dangerColor, 18)
+            highlight -> withAlpha(detailAccentColor, 26)
+            else -> withAlpha(detailAccentColor, 10)
+        }
+        val baseOutlineColor = when {
+            missing -> withAlpha(dangerColor, 120)
+            highlight -> withAlpha(detailAccentColor, 150)
+            else -> detailOutlineColor()
+        }
+        val hoverOutlineColor = when {
+            missing -> withAlpha(dangerColor, 165)
+            highlight -> withAlpha(detailAccentColor, 190)
+            else -> withAlpha(UIUtil.getBoundsColor(), 220)
+        }
+
+        val card = RoundedOutlinePanel(baseFillColor, baseOutlineColor, arc = JBUI.scale(14)).apply {
+            layout = BorderLayout()
+            border = JBUI.Borders.empty(14)
+            add(content, BorderLayout.CENTER)
+        }
+        val pointer = CommitPointerPanel(baseFillColor, baseOutlineColor)
+        val marker = TimelineMarkerPanel(markerColor, lineColor, highlight || missing, isLast)
+        val cardWrapper = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            add(pointer, BorderLayout.WEST)
+            add(card, BorderLayout.CENTER)
+        }
+
+        val rowPanel = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            alignmentX = Component.LEFT_ALIGNMENT
+            add(marker, BorderLayout.WEST)
+            add(cardWrapper, BorderLayout.CENTER)
+            maximumSize = Dimension(Int.MAX_VALUE, preferredSize.height)
+        }
+
+        fun applyHoverState(hovered: Boolean) {
+            val fill = if (hovered) hoverFillColor else baseFillColor
+            val outline = if (hovered) hoverOutlineColor else baseOutlineColor
+            card.updateColors(fill, outline)
+            pointer.updateColors(fill, outline)
+        }
+
+        val hoverListener = object : MouseAdapter() {
+            override fun mouseEntered(e: MouseEvent) {
+                applyHoverState(true)
+            }
+
+            override fun mouseExited(e: MouseEvent) {
+                SwingUtilities.invokeLater {
+                    if (!isPointerInside(rowPanel)) {
+                        applyHoverState(false)
+                    }
+                }
+            }
+        }
+        listOf(rowPanel, cardWrapper, card, pointer, content, title, hashBadge, metaRow, metaLeft, statsPanel).forEach {
+            it.addMouseListener(hoverListener)
+        }
+
+        return rowPanel
+    }
+
+    private fun buildCommitHashBadge(hash: String, color: Color): JComponent {
+        val label = JBLabel(if (hash.length > 7) hash.take(7) else hash).apply {
+            font = Font(Font.MONOSPACED, Font.PLAIN, font.size)
+            foreground = color
+            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            toolTipText = hash
+            border = JBUI.Borders.empty(2, 8)
+            addMouseListener(object : MouseAdapter() {
+                override fun mouseClicked(e: MouseEvent) {
+                    if (!SwingUtilities.isLeftMouseButton(e) || hash.isBlank()) return
+                    copyToClipboard(hash)
+                    updateStatus("已复制提交编号: ${hash.take(7)}")
+                }
+            })
+        }
+        return wrapDetailSurface(label, fillColor = detailSurfaceFill(), outlineColor = withAlpha(color, 110), padding = JBUI.insets(0))
     }
 
     private fun setupDetailTabsHeader() {
-        detailTabs.setTabComponentAt(0, createDetailTabHeader("概览", null))
-        detailTabs.setTabComponentAt(1, createDetailTabHeader("文件改动", fileChangeWarningButton))
-        detailTabs.setTabComponentAt(2, createDetailTabHeader("提交记录", commitWarningLabel))
+        detailTabHeaders.clear()
+        val headers = listOf(
+            createDetailTabHeader("概览", null, null, isFirst = true),
+            createDetailTabHeader("文件改动", fileChangeTabCountLabel, fileChangeWarningButton),
+            createDetailTabHeader("提交记录", commitTabCountLabel, commitWarningLabel, isLast = true)
+        )
+        headers.forEachIndexed { index, header ->
+            detailTabs.setTabComponentAt(index, header)
+            detailTabHeaders.add(header)
+        }
+        if (!detailTabHeaderListenerBound) {
+            detailTabs.addChangeListener { updateDetailTabHeaderStates() }
+            detailTabHeaderListenerBound = true
+        }
+        updateDetailTabCounters(0, 0)
+        updateDetailTabHeaderStates()
     }
 
-    private fun createDetailTabHeader(title: String, tail: JComponent?): JComponent {
-        val titleLabel = JBLabel(title).apply {
-            font = font.deriveFont(Font.PLAIN, globalUiFontSize)
-        }
-        if (title == "文件改动") {
-            fileChangeTabTitleLabel.font = titleLabel.font
+    private fun createDetailTabHeader(
+        title: String,
+        badge: JComponent?,
+        tail: JComponent?,
+        isFirst: Boolean = false,
+        isLast: Boolean = false
+    ): DetailTabHeader {
+        val titleLabel = if (title == "文件改动") {
             fileChangeTabTitleLabel.text = title
+            fileChangeTabTitleLabel
+        } else {
+            JBLabel(title)
         }
-        return JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
+        titleLabel.font = titleLabel.font.deriveFont(Font.PLAIN, detailSectionTitleFontSize())
+        return DetailTabHeader(titleLabel, badge, tail, isFirst, isLast)
+    }
+
+    private fun updateDetailTabHeaderStates() {
+        detailTabHeaders.forEachIndexed { index, header ->
+            header.setSelectedState(index == detailTabs.selectedIndex)
+        }
+    }
+
+    private fun isPointerInside(component: Component): Boolean {
+        val pointerLocation = MouseInfo.getPointerInfo()?.location ?: return false
+        val localPoint = Point(pointerLocation)
+        SwingUtilities.convertPointFromScreen(localPoint, component)
+        return component.contains(localPoint)
+    }
+
+    private fun resolveTreePathAtPoint(tree: javax.swing.JTree, x: Int, y: Int): TreePath? {
+        tree.getPathForLocation(x, y)?.let { return it }
+        val closest = tree.getClosestPathForLocation(x, y) ?: return null
+        val bounds = tree.getPathBounds(closest) ?: return null
+        return closest.takeIf { y >= bounds.y && y < bounds.y + bounds.height }
+    }
+
+    private inner class DetailTabHeader(
+        private val titleLabel: JBLabel,
+        badge: JComponent?,
+        tail: JComponent?,
+        private val isFirst: Boolean,
+        private val isLast: Boolean
+    ) : JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)) {
+        private var selectedState = false
+
+        init {
             isOpaque = false
-            border = JBUI.Borders.empty(0, JBUI.scale(12), 0, JBUI.scale(12))
-            add(if (title == "文件改动") fileChangeTabTitleLabel else titleLabel)
+            val sideInset = detailHorizontalInset()
+            border = JBUI.Borders.empty(
+                0,
+                if (isFirst) sideInset else JBUI.scale(12),
+                JBUI.scale(12),
+                if (isLast) sideInset else JBUI.scale(12)
+            )
+            add(titleLabel)
+            if (badge != null) {
+                add(Box.createHorizontalStrut(JBUI.scale(6)))
+                add(badge)
+            }
             if (tail != null) {
                 add(Box.createHorizontalStrut(JBUI.scale(6)))
                 add(tail)
             }
+        }
+
+        override fun paintComponent(g: Graphics) {
+            super.paintComponent(g)
+            if (!selectedState) return
+            val visibleChildren = components.filter { it.isVisible && it.width > 0 && it.height > 0 }
+            if (visibleChildren.isEmpty()) return
+            val startX = visibleChildren.minOf { it.x }
+            val endX = visibleChildren.maxOf { it.x + it.width }
+            val indicatorHeight = JBUI.scale(3)
+            val indicatorWidth = (endX - startX).coerceAtLeast(JBUI.scale(16))
+            val g2 = g.create() as Graphics2D
+            try {
+                g2.color = JBColor(Color.BLACK, Color.BLACK)
+                g2.fillRoundRect(startX, height - indicatorHeight, indicatorWidth, indicatorHeight, indicatorHeight, indicatorHeight)
+            } finally {
+                g2.dispose()
+            }
+        }
+
+        fun setSelectedState(selected: Boolean) {
+            selectedState = selected
+            titleLabel.foreground = if (selected) UIUtil.getLabelForeground() else detailMutedColor()
+            titleLabel.font = titleLabel.font.deriveFont(if (selected) Font.BOLD else Font.PLAIN, detailSectionTitleFontSize())
+            revalidate()
+            repaint()
         }
     }
 
@@ -1086,7 +1859,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         SwingUtilities.invokeLater {
             fileChangeWarningText = tooltip
             fileChangeWarningButton.isVisible = visible
-            fileChangeWarningButton.toolTipText = null
+            fileChangeWarningButton.toolTipText = tooltip
             fileChangeTabTitleLabel.toolTipText = null
             if (!visible) {
                 hideFileChangeWarningBalloon()
@@ -1104,7 +1877,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 null
             }
             commitWarningLabel.isVisible = visible
-            commitWarningLabel.toolTipText = null
+            commitWarningLabel.toolTipText = commitWarningText
             if (!visible) {
                 hideCommitWarningBalloon()
             }
@@ -1532,8 +2305,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private fun renderEmptyDetail() {
         currentDetail = null
+        currentDetailId = null
         currentAiOverview = null
         aiIssueCountByFileMap = emptyMap()
+        reviewIssueCountByFileMap = emptyMap()
+        currentFileChanges = emptyList()
+        changeTreeFlatMode = false
         currentDiffFilePath = null
         mockAiIssueStatusOverrides.clear()
         updateAiReviewBadge(AiReviewBadgeState.NO_DATA)
@@ -1545,13 +2322,19 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         detailHeaderTitle.text = "未选择 PR"
         detailStatus.isVisible = false
         detailStatus.setBadge("", JBColor.GRAY)
+        updateDetailMetaRowIndent()
+        detailAuthorLabel.icon = null
         detailAuthorLabel.setPill("")
+        detailCreateTimeLabel.icon = null
         detailCreateTimeLabel.setPill("")
+        detailBranchLabel.icon = null
         detailBranchLabel.setPill("")
         issueCountLabel.setPill("")
+        issueCountLabel.toolTipText = null
         reviewActionButton.isVisible = false
 
         overviewDesc.text = ""
+        renderReviewStatusCards(null)
         keyReviewersField.text = ""
         keyReviewersField.toolTipText = null
         keyReviewerHint.text = "-"
@@ -1560,28 +2343,51 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         reviewerHint.text = "-"
         mergeTypeField.text = ""
         deleteBranchCheck.isSelected = false
+        changeSearchField.text = ""
+        changeSummaryLabel.text = "0 个文件变更"
+        changeAdditionsLabel.text = "+0 additions"
+        changeDeletionsLabel.text = "-0 deletions"
+        updateChangeModeToggleStyle()
 
         changeTreeRoot.removeAllChildren()
         changeTree.emptyText.text = "暂无对比结果"
         changeTreeModel.reload()
         commitTableModel.setRows(emptyList())
+        renderCommitTimeline(emptyList())
+        updateDetailTabCounters(0, 0)
     }
 
     private fun showDetail(prId: Long) {
+        currentDetailId = prId
+        changeTreeFlatMode = false
         (detailCard.layout as java.awt.CardLayout).show(detailCard, "detail")
         detailHeaderTitle.text = "加载中..."
         detailStatus.isVisible = false
         detailStatus.setBadge("", JBColor.GRAY)
+        updateDetailMetaRowIndent()
+        detailAuthorLabel.icon = null
         detailAuthorLabel.setPill("")
+        detailCreateTimeLabel.icon = null
         detailCreateTimeLabel.setPill("")
+        detailBranchLabel.icon = null
         detailBranchLabel.setPill("")
         issueCountLabel.setPill("")
+        issueCountLabel.toolTipText = null
         currentAiOverview = null
         aiIssueCountByFileMap = emptyMap()
+        reviewIssueCountByFileMap = emptyMap()
+        currentFileChanges = emptyList()
         currentDiffFilePath = null
         mockAiIssueStatusOverrides.clear()
         updateAiReviewBadge(AiReviewBadgeState.NO_DATA)
         reviewActionButton.isVisible = false
+        changeSearchField.text = ""
+        changeSummaryLabel.text = "0 个文件变更"
+        changeAdditionsLabel.text = "+0 additions"
+        changeDeletionsLabel.text = "-0 deletions"
+        updateChangeModeToggleStyle()
+        renderReviewStatusCards(null)
+        renderCommitTimeline(emptyList())
         PrManagerFileLogger.info("Start loading PR detail: prId=$prId")
 
         ApplicationManager.getApplication().executeOnPooledThread {
@@ -1624,20 +2430,30 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         val badge = statusBadge(detail.status)
         detailStatus.isVisible = true
         detailStatus.setBadge(badge.text, badge.color)
+        updateDetailMetaRowIndent()
 
-        detailAuthorLabel.setPill("创建人: ${detail.author}", detailAuthorPillColor)
-        detailCreateTimeLabel.setPill("创建时间: ${detail.createTime}", detailCreateTimePillColor)
-        detailBranchLabel.setPill("分支信息: ${detail.sourceBranch} -> ${detail.targetBranch}", detailBranchPillColor)
-        issueCountLabel.setPill("未解决问题: 0/0", detailIssuePillColor)
+        detailAuthorLabel.icon = ReviewerAvatarIcon(detail.author.ifBlank { "?" }, detailAuthorPillColor)
+        detailAuthorLabel.iconTextGap = JBUI.scale(6)
+        detailAuthorLabel.setPill(detail.author.ifBlank { "未知作者" }, detailAuthorPillColor)
+        detailCreateTimeLabel.icon = ClockMetaIcon(detailCreateTimePillColor)
+        detailCreateTimeLabel.iconTextGap = JBUI.scale(6)
+        detailCreateTimeLabel.setPill(detail.createTime.ifBlank { "时间未知" }, detailCreateTimePillColor)
+        detailBranchLabel.icon = BranchMetaIcon(detailBranchPillColor)
+        detailBranchLabel.iconTextGap = JBUI.scale(6)
+        detailBranchLabel.setPill("${detail.sourceBranch} → ${detail.targetBranch}", detailBranchPillColor)
+        issueCountLabel.setPill("评审问题 0/0", detailIssuePillColor)
+        issueCountLabel.toolTipText = "评审未解决问题/总问题=0/0"
 
-        overviewDesc.text = detail.overview.desc
-        keyReviewersField.text = detail.overview.keyReviewers.joinToString(",")
-        keyReviewersField.toolTipText = detail.overview.keyReviewers.joinToString(",")
+        overviewDesc.text = detail.overview.desc.ifBlank { "暂无描述" }
+        renderReviewStatusCards(detail)
+        keyReviewersField.text = detail.overview.keyReviewers.joinToString(",").ifBlank { "暂无关键评审人员" }
+        keyReviewersField.toolTipText = detail.overview.keyReviewers.joinToString(",").ifBlank { null }
         keyReviewerHint.text = "至少需要 ${detail.overview.needKeyReviewers} 名关键评审成员评审通过后可合并"
 
-        reviewersField.text = detail.overview.reviewers.joinToString(",")
-        reviewersField.toolTipText = detail.overview.reviewers.joinToString(",")
+        reviewersField.text = detail.overview.reviewers.joinToString(",").ifBlank { "暂无普通评审人员" }
+        reviewersField.toolTipText = detail.overview.reviewers.joinToString(",").ifBlank { null }
         reviewerHint.text = "至少需要 ${detail.overview.needReviewers} 名普通评审成员评审通过后可合并"
+        updateDetailTabCounters(0, 0)
 
 //        setupReviewAction(detail)
     }
@@ -1744,7 +2560,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 LineCommentStore.replaceAll(result.comments)
                 PrManagerFileLogger.info("Notes loaded: prId=${detail.id} total=${result.stats.total} unresolved=${result.stats.unresolved}")
                 SwingUtilities.invokeLater {
-                    issueCountLabel.setPill("未解决问题: ${result.stats.unresolved}/${result.stats.total}", detailIssuePillColor)
+                    reviewIssueCountByFileMap = buildReviewIssueCountByFileMap(result.stats)
+                    issueCountLabel.setPill("评审问题 ${result.stats.unresolved}/${result.stats.total}", detailIssuePillColor)
+                    issueCountLabel.toolTipText = "评审未解决问题/总问题=${result.stats.unresolved}/${result.stats.total}"
                     changeTree.repaint()
                 }
             } catch (e: Exception) {
@@ -1794,8 +2612,13 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private fun updateAiReviewBadge(state: AiReviewBadgeState) {
         aiReviewBadgeState = state
-        aiReviewBadgeLabel.icon = AiBadgeIcon(state.color)
-        aiReviewBadgeLabel.toolTipText = if (state == AiReviewBadgeState.NO_DATA) "当前无AI评审结果" else "查看AI评审总览"
+        aiReviewBadgeLabel.setPill(aiReviewBadgeText(state), state.color)
+        aiReviewBadgeLabel.cursor = if (state == AiReviewBadgeState.NO_DATA) Cursor.getDefaultCursor() else Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+        aiReviewBadgeLabel.toolTipText = when (state) {
+            AiReviewBadgeState.NO_DATA -> "当前未发起AI评审"
+            AiReviewBadgeState.STALE -> "AI评审结果已过期，点击查看详情"
+            else -> "查看AI评审总览"
+        }
         aiReviewBadgeLabel.repaint()
     }
 
@@ -1940,9 +2763,14 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 SwingUtilities.invokeLater {
                     if (result.error != null) {
                         PrManagerFileLogger.warn("Load file changes failed: ${result.error}")
+                        currentFileChanges = emptyList()
                         changeTreeRoot.removeAllChildren()
+                        changeSummaryLabel.text = "0 个文件变更"
+                        changeAdditionsLabel.text = "+0 additions"
+                        changeDeletionsLabel.text = "-0 deletions"
                         changeTree.emptyText.text = result.error
                         changeTreeModel.reload()
+                        updateDetailTabCounters(fileCount = 0)
                         return@invokeLater
                     }
                     buildChangeTree(result.changes)
@@ -1955,24 +2783,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun buildChangeTree(changes: List<ChangeItem>) {
-        changeTreeRoot.removeAllChildren()
-        var insertedFiles = 0
-
-        changes.forEach { change ->
-            if (insertChangeNode(change)) {
-                insertedFiles++
-            }
-        }
-
-        sortTree(changeTreeRoot)
-        compactDirectoryTree(changeTreeRoot)
-        changeTreeModel.reload()
-        expandAllFromRoot()
-        SwingUtilities.invokeLater { expandAllFromRoot() }
-
-        if (insertedFiles < changes.size) {
-            updateStatus("文件树构建异常: 期望${changes.size}，实际$insertedFiles")
-        }
+        currentFileChanges = changes
+        changeTree.emptyText.text = if (changes.isEmpty()) "暂无对比结果" else "未找到匹配文件"
+        applyChangeTreeFilter()
     }
 
     private fun insertChangeNode(change: ChangeItem): Boolean {
@@ -2201,6 +3014,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     PrManagerFileLogger.warn("Load commit records fallback: repository not found")
                     SwingUtilities.invokeLater {
                         commitTableModel.setRows(fallbackCommits)
+                        renderCommitTimeline(fallbackCommits)
                         updateCommitWarning(false)
                     }
                     return@executeOnPooledThread
@@ -2218,6 +3032,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                         PrManagerFileLogger.warn("Load commit records fallback: invalid refs sourceRef=$sourceRef targetRef=$targetRef")
                         SwingUtilities.invokeLater {
                             commitTableModel.setRows(fallbackCommits)
+                            renderCommitTimeline(fallbackCommits)
                             updateCommitWarning(false)
                         }
                         return@executeOnPooledThread
@@ -2232,12 +3047,15 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 PrManagerFileLogger.info("Commit records loaded: prId=${detail.id} count=${commits.size} missing=${missingHashes.size}")
                 SwingUtilities.invokeLater {
                     commitTableModel.setRows(commits, missingHashes)
+                    renderCommitTimeline(commits, missingHashes)
                     updateCommitWarning(missingHashes.isNotEmpty())
                 }
             } catch (e: Exception) {
                 PrManagerFileLogger.error("Load commit records error: prId=${detail.id}", e)
                 SwingUtilities.invokeLater {
-                    commitTableModel.setRows(detail.commits.sortedByDescending { it.time })
+                    val fallbackCommits = detail.commits.sortedByDescending { it.time }
+                    commitTableModel.setRows(fallbackCommits)
+                    renderCommitTimeline(fallbackCommits)
                     updateCommitWarning(false)
                 }
             }
@@ -2295,9 +3113,31 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         )
         val result = Git.getInstance().runCommand(handler)
         if (!result.success()) return emptyList()
-        return result.output
+        val commits = result.output
             .mapNotNull { parseCommitLine(it) }
             .sortedByDescending { it.time }
+        return enrichCommitStats(repo, commits)
+    }
+
+    private fun enrichCommitStats(repo: git4idea.repo.GitRepository, commits: List<CommitItem>): List<CommitItem> {
+        if (commits.isEmpty()) return commits
+        return commits.map { commit ->
+            val (additions, deletions) = loadCommitStat(repo, commit.hash)
+            if (additions == 0 && deletions == 0) commit else commit.copy(additions = additions, deletions = deletions)
+        }
+    }
+
+    private fun loadCommitStat(repo: git4idea.repo.GitRepository, hash: String): Pair<Int, Int> {
+        if (hash.isBlank()) return 0 to 0
+        val handler = GitLineHandler(project, repo.root, GitCommand.SHOW)
+        handler.addParameters("--shortstat", "--format=", hash)
+        val result = Git.getInstance().runCommand(handler)
+        if (!result.success()) return 0 to 0
+        val summaryLine = result.output.firstOrNull { it.contains("insertion") || it.contains("deletion") || it.contains("changed") }
+            ?: return 0 to 0
+        val additions = Regex("(\\d+) insertion").find(summaryLine)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+        val deletions = Regex("(\\d+) deletion").find(summaryLine)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+        return additions to deletions
     }
 
     private fun parseCommitLine(line: String): CommitItem? {
@@ -2449,6 +3289,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             baseCommitSha = baseCommitSha,
             reviewPass = fallback?.canBeMerge ?: false,
             overview = overview,
+            reviewerInfos = fallback?.reviewers ?: emptyList(),
             commits = commits
         )
     }
@@ -2613,11 +3454,13 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private fun flattenAiTreeIssueCount(nodes: List<AiTreeNode>): Map<String, Pair<Int, Int>> {
         val result = mutableMapOf<String, Pair<Int, Int>>()
         fun walk(node: AiTreeNode, parentPath: String) {
-            val fullPath = listOf(parentPath, node.nodeName)
-                .filter { it.isNotBlank() }
-                .joinToString("/")
-                .replace("//", "/")
-                .trim('/')
+            val fullPath = normalizeFilePathKey(
+                listOf(parentPath, node.nodeName)
+                    .filter { it.isNotBlank() }
+                    .joinToString("/")
+                    .replace("//", "/")
+                    .trim('/')
+            )
             val isFolder = node.type.equals("FOLDER", true) || node.type.equals("FOLDERS", true)
             if (!isFolder) {
                 result[fullPath] = node.issueErrorCount to node.issueWarnCount
@@ -2794,24 +3637,105 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private inner class ChangeTreeCellRenderer : javax.swing.tree.TreeCellRenderer {
         private val fallbackRenderer = DefaultTreeCellRenderer()
-        private val rowPanel = JPanel().apply {
-            val flow = FlowLayout(FlowLayout.LEFT, 0, 0)
-            flow.alignOnBaseline = true
-            layout = flow
-            isOpaque = true
+        private val statsPanel = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0)).apply {
+            isOpaque = false
+        }
+        private val rowPanel = object : JPanel(BorderLayout(JBUI.scale(10), 0)) {
+            override fun paintComponent(g: Graphics) {
+                val outlineColor = getClientProperty("outlineColor") as? Color
+                if (background.alpha > 0 || outlineColor != null) {
+                    val g2 = g.create() as Graphics2D
+                    try {
+                        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                        val shape = RoundRectangle2D.Float(0.5f, 0.5f, (width - 1f).coerceAtLeast(0f), (height - 1f).coerceAtLeast(0f), JBUI.scale(10).toFloat(), JBUI.scale(10).toFloat())
+                        if (background.alpha > 0) {
+                            g2.color = background
+                            g2.fill(shape)
+                        }
+                        if (outlineColor != null) {
+                            g2.color = outlineColor
+                            g2.draw(shape)
+                        }
+                    } finally {
+                        g2.dispose()
+                    }
+                }
+                super.paintComponent(g)
+            }
+        }.apply {
+            isOpaque = false
+            border = JBUI.Borders.empty(3, 6, 3, 6)
+        }
+        private val infoPanel = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(20), 0)).apply {
+            isOpaque = false
+        }
+        private val aiStatsPanel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
+            isOpaque = false
         }
         private val mainLabel = javax.swing.JLabel()
-        private val issueLabel = javax.swing.JLabel()
-        private val aiLabel = javax.swing.JLabel()
-        private val badgeGap = Box.createHorizontalStrut(JBUI.scale(12))
-        private val aiGap = Box.createHorizontalStrut(JBUI.scale(8))
+        private val reviewIssueLabel = javax.swing.JLabel()
+        private val aiErrorLabel = javax.swing.JLabel()
+        private val aiSlashLabel = javax.swing.JLabel("/")
+        private val aiWarnLabel = javax.swing.JLabel()
+        private val additionLabel = javax.swing.JLabel()
+        private val deletionLabel = javax.swing.JLabel()
 
         init {
-            rowPanel.add(mainLabel)
-            rowPanel.add(badgeGap)
-            rowPanel.add(issueLabel)
-            rowPanel.add(aiGap)
-            rowPanel.add(aiLabel)
+            aiStatsPanel.add(aiErrorLabel)
+            aiStatsPanel.add(aiSlashLabel)
+            aiStatsPanel.add(aiWarnLabel)
+            infoPanel.add(mainLabel)
+            infoPanel.add(reviewIssueLabel)
+            infoPanel.add(aiStatsPanel)
+            rowPanel.add(infoPanel, BorderLayout.CENTER)
+            statsPanel.add(additionLabel)
+            statsPanel.add(deletionLabel)
+            rowPanel.add(statsPanel, BorderLayout.EAST)
+        }
+
+        fun tooltipAt(tree: javax.swing.JTree, path: TreePath?, mouseX: Int, mouseY: Int): String? {
+            if (path == null) return null
+            val node = path.lastPathComponent as? DefaultMutableTreeNode ?: return null
+            val row = tree.getRowForPath(path)
+            if (row < 0) return null
+            val component = getTreeCellRendererComponent(tree, node, false, tree.isExpanded(path), node.isLeaf, row, false) as? JComponent ?: return null
+            val bounds = tree.getPathBounds(path) ?: return null
+            val visibleRect = tree.visibleRect
+            val rendererWidth = (visibleRect.x + visibleRect.width - bounds.x).coerceAtLeast(bounds.width)
+            component.setBounds(0, 0, rendererWidth, bounds.height)
+            component.doLayout()
+            val point = Point(mouseX - bounds.x, mouseY - bounds.y)
+
+            fun tooltipFor(target: Component, tooltip: String?, extraX: Int = 0, extraY: Int = JBUI.scale(1)): String? {
+                if (!target.isVisible || tooltip.isNullOrBlank()) return null
+                val parent = target.parent ?: return null
+                val rect = SwingUtilities.convertRectangle(parent, target.bounds, component).apply { grow(extraX, extraY) }
+                return tooltip.takeIf { rect.contains(point) }
+            }
+
+            val aiTooltip = tooltipFor(aiStatsPanel, aiErrorLabel.toolTipText, JBUI.scale(2))
+                ?: tooltipFor(aiErrorLabel, aiErrorLabel.toolTipText, JBUI.scale(1))
+                ?: tooltipFor(aiSlashLabel, aiSlashLabel.toolTipText, JBUI.scale(1))
+                ?: tooltipFor(aiWarnLabel, aiWarnLabel.toolTipText, JBUI.scale(1))
+            if (aiTooltip != null) return aiTooltip
+
+            val reviewTooltip = tooltipFor(reviewIssueLabel, reviewIssueLabel.toolTipText, JBUI.scale(8), JBUI.scale(2))
+                ?: reviewIssueLabel.toolTipText?.takeIf {
+                    if (!reviewIssueLabel.isVisible || reviewIssueLabel.text.isBlank()) {
+                        false
+                    } else {
+                        val left = (reviewIssueLabel.x - JBUI.scale(2)).coerceAtLeast(0)
+                        val right = if (aiStatsPanel.isVisible) {
+                            aiStatsPanel.x - JBUI.scale(2)
+                        } else {
+                            reviewIssueLabel.x + reviewIssueLabel.width + JBUI.scale(10)
+                        }
+                        right > left &&
+                            point.x >= left && point.x <= right &&
+                            point.y >= reviewIssueLabel.y && point.y <= reviewIssueLabel.y + reviewIssueLabel.height
+                    }
+                }
+            return reviewTooltip
         }
 
         override fun getTreeCellRendererComponent(
@@ -2826,77 +3750,103 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             val base = fallbackRenderer.getTreeCellRendererComponent(tree, value, sel, expanded, leaf, row, hasFocus)
             val node = value as? DefaultMutableTreeNode
             val userObject = node?.userObject
-
-            if (userObject !is ChangeItem) {
+            if (userObject !is ChangeItem && userObject !is String) {
                 if (base is javax.swing.JComponent) {
                     base.font = base.font.deriveFont(Font.PLAIN, globalUiFontSize)
                 }
                 return base
             }
 
-            val fileName = userObject.filePath.substringAfterLast('/')
-            val typeLabel = changeTypeFullText(userObject.changeType)
-            val fromPath = userObject.fromFilePath
-            val renameHint = if (typeLabel.startsWith("RENAMED") && !fromPath.isNullOrBlank()) " from $fromPath" else ""
-            val baseText = "$fileName ($typeLabel$renameHint)"
-            val issueBadge = issueCountByFile(userObject.filePath)
-            val aiBadge = aiIssueCountByFile(userObject.filePath)
-            val hasAiIssue = aiBadge.first > 0 || aiBadge.second > 0
+            rowPanel.background = if (sel) withAlpha(detailAccentColor, 22) else Color(0, 0, 0, 0)
+            rowPanel.putClientProperty(
+                "outlineColor",
+                if (sel) withAlpha(detailAccentColor, 92) else null
+            )
 
             val font = fallbackRenderer.font.deriveFont(Font.PLAIN, globalUiFontSize)
-            val badgeFont = Font(Font.MONOSPACED, Font.PLAIN, font.size)
+            val statFont = Font(Font.MONOSPACED, Font.PLAIN, font.size)
+            val reviewPlaceholderWidth = mainLabel.getFontMetrics(statFont).stringWidth("0/0")
+            val statHeight = mainLabel.getFontMetrics(statFont).height
             mainLabel.font = font
-            issueLabel.font = badgeFont
-            aiLabel.font = badgeFont
-            val issueSlotWidth = issueLabel.getFontMetrics(badgeFont).stringWidth("00/00")
-            val issueSlotHeight = issueLabel.getFontMetrics(badgeFont).height
-            val issueSlotSize = Dimension(issueSlotWidth, issueSlotHeight)
-            issueLabel.minimumSize = issueSlotSize
-            issueLabel.preferredSize = issueSlotSize
-            issueLabel.maximumSize = issueSlotSize
-            aiLabel.minimumSize = issueSlotSize
-            aiLabel.preferredSize = issueSlotSize
-            aiLabel.maximumSize = issueSlotSize
-            issueLabel.horizontalAlignment = SwingConstants.LEFT
-            aiLabel.horizontalAlignment = SwingConstants.LEFT
-            mainLabel.icon = changeTypeIcon(userObject.changeType)
+            mainLabel.foreground = UIUtil.getLabelForeground()
             mainLabel.verticalAlignment = SwingConstants.CENTER
-            issueLabel.verticalAlignment = SwingConstants.CENTER
-            aiLabel.verticalAlignment = SwingConstants.CENTER
+            reviewIssueLabel.font = statFont
+            reviewIssueLabel.verticalAlignment = SwingConstants.CENTER
+            reviewIssueLabel.horizontalAlignment = SwingConstants.LEFT
+            aiErrorLabel.font = statFont
+            aiSlashLabel.font = statFont
+            aiWarnLabel.font = statFont
+            aiErrorLabel.verticalAlignment = SwingConstants.CENTER
+            aiSlashLabel.verticalAlignment = SwingConstants.CENTER
+            aiWarnLabel.verticalAlignment = SwingConstants.CENTER
+            additionLabel.font = statFont
+            deletionLabel.font = statFont
+            additionLabel.verticalAlignment = SwingConstants.CENTER
+            deletionLabel.verticalAlignment = SwingConstants.CENTER
+            additionLabel.foreground = JBColor(Color(0x1E8E3E), Color(0x57D163))
+            deletionLabel.foreground = JBColor(Color(0xD93025), Color(0xF47067))
+            aiErrorLabel.foreground = JBColor(Color(0xD93025), Color(0xF47067))
+            aiWarnLabel.foreground = JBColor(Color(0xF29900), Color(0xF6C26B))
+            aiSlashLabel.foreground = detailMutedColor()
 
-            val neutralColor = JBColor(Color(0x5F6368), Color(0x9AA0A6))
-            val dangerColor = JBColor(Color(0xD93025), Color(0xF47067))
-            val warnColor = JBColor(Color(0xF29900), Color(0xF6C26B))
-            val issueText = issueBadge?.let { "${it.first}/${it.second}" }.orEmpty()
-            val aiText = if (hasAiIssue) "${aiBadge.first}/${aiBadge.second}" else ""
-
-            if (sel) {
-                rowPanel.background = fallbackRenderer.backgroundSelectionColor
-                mainLabel.foreground = fallbackRenderer.textSelectionColor
-                issueLabel.foreground = fallbackRenderer.textSelectionColor
-                aiLabel.foreground = fallbackRenderer.textSelectionColor
-                issueLabel.text = issueText.padEnd(5, ' ')
-                aiLabel.text = aiText
-            } else {
-                rowPanel.background = fallbackRenderer.backgroundNonSelectionColor
-                mainLabel.foreground = changeTypeColor(userObject.changeType)
-                issueLabel.foreground = if ((issueBadge?.first ?: 0) > 0) dangerColor else neutralColor
-                aiLabel.foreground = neutralColor
-                issueLabel.text = issueBadge?.let { badge ->
-                    if (badge.first > 0) {
-                        "<html><span style='font-family:monospace;color:${toHex(dangerColor)};'>${badge.first}</span><span style='font-family:monospace;color:${toHex(neutralColor)};'>/${badge.second}</span></html>"
-                    } else {
-                        issueText.padEnd(5, ' ')
-                    }
-                }.orEmpty()
-                aiLabel.text = if (hasAiIssue) {
-                    "<html><span style='font-family:monospace;color:${toHex(dangerColor)};'>${aiBadge.first}</span><span style='font-family:monospace;color:${toHex(neutralColor)};'>/</span><span style='font-family:monospace;color:${toHex(warnColor)};'>${aiBadge.second}</span></html>"
-                } else {
-                    ""
-                }
+            if (userObject is String) {
+                mainLabel.icon = AllIcons.Nodes.Folder
+                mainLabel.iconTextGap = JBUI.scale(8)
+                mainLabel.text = userObject
+                reviewIssueLabel.text = ""
+                reviewIssueLabel.toolTipText = null
+                reviewIssueLabel.preferredSize = Dimension(reviewPlaceholderWidth, statHeight)
+                reviewIssueLabel.minimumSize = reviewIssueLabel.preferredSize
+                aiStatsPanel.isVisible = false
+                aiErrorLabel.toolTipText = null
+                aiSlashLabel.toolTipText = null
+                aiWarnLabel.toolTipText = null
+                additionLabel.text = ""
+                deletionLabel.text = ""
+                additionLabel.isVisible = false
+                deletionLabel.isVisible = false
+                statsPanel.isVisible = false
+                return rowPanel
             }
 
-            mainLabel.text = baseText
+            val change = userObject as ChangeItem
+            val normalizedFilePath = normalizeFilePathKey(change.filePath)
+            val fileName = change.filePath.substringAfterLast('/')
+            val reviewStats = reviewIssueCountByFileMap[normalizedFilePath]
+            val unresolved = reviewStats?.first ?: 0
+            val total = reviewStats?.second ?: 0
+            val reviewText = if (total > 0) "$unresolved/$total" else ""
+            val reviewWidth = maxOf(reviewPlaceholderWidth, reviewIssueLabel.getFontMetrics(statFont).stringWidth(reviewText.ifBlank { "0/0" }))
+            reviewIssueLabel.preferredSize = Dimension(reviewWidth, statHeight)
+            reviewIssueLabel.minimumSize = reviewIssueLabel.preferredSize
+            reviewIssueLabel.text = if (total > 0) {
+                val unresolvedColor = if (unresolved > 0) "#D93025" else "#5F6368"
+                "<html><span style='color:$unresolvedColor;'>$unresolved</span><span style='color:#000000;'>/$total</span></html>"
+            } else {
+                ""
+            }
+            reviewIssueLabel.foreground = detailMutedColor()
+            reviewIssueLabel.toolTipText = if (total > 0) "评审未解决问题/总问题=$unresolved/$total" else null
+
+            val aiStats = aiIssueCountByFileMap[normalizedFilePath] ?: (0 to 0)
+            val showAiStats = aiStats.first > 0 || aiStats.second > 0
+            aiStatsPanel.isVisible = showAiStats
+            aiSlashLabel.isVisible = showAiStats
+            aiErrorLabel.text = if (showAiStats) aiStats.first.toString() else ""
+            aiWarnLabel.text = if (showAiStats) aiStats.second.toString() else ""
+            val aiTooltip = if (showAiStats) "AI错误问题数/警告问题数=${aiStats.first}/${aiStats.second}" else null
+            aiErrorLabel.toolTipText = aiTooltip
+            aiSlashLabel.toolTipText = aiTooltip
+            aiWarnLabel.toolTipText = aiTooltip
+
+            mainLabel.icon = changeTypeIcon(change.changeType)
+            mainLabel.iconTextGap = JBUI.scale(8)
+            additionLabel.text = if (change.additions > 0) "+${change.additions}" else ""
+            deletionLabel.text = if (change.deletions > 0) "-${change.deletions}" else ""
+            additionLabel.isVisible = additionLabel.text.isNotBlank()
+            deletionLabel.isVisible = deletionLabel.text.isNotBlank()
+            statsPanel.isVisible = additionLabel.isVisible || deletionLabel.isVisible
+            mainLabel.text = fileName
             return rowPanel
         }
     }
@@ -3065,6 +4015,54 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         override fun getIconHeight(): Int = size
     }
 
+    private class BranchMetaIcon(private val color: Color) : Icon {
+        private val size = JBUI.scale(14)
+
+        override fun paintIcon(c: Component?, g: Graphics, x: Int, y: Int) {
+            val g2 = g.create() as Graphics2D
+            try {
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                g2.color = color
+                g2.stroke = BasicStroke(JBUI.scale(1.2f))
+                val startX = x + JBUI.scale(2)
+                val centerY = y + size / 2
+                g2.drawLine(startX, centerY, x + size - JBUI.scale(4), centerY)
+                g2.drawLine(x + size - JBUI.scale(6), centerY - JBUI.scale(3), x + size - JBUI.scale(2), centerY)
+                g2.drawLine(x + size - JBUI.scale(6), centerY + JBUI.scale(3), x + size - JBUI.scale(2), centerY)
+            } finally {
+                g2.dispose()
+            }
+        }
+
+        override fun getIconWidth(): Int = size
+
+        override fun getIconHeight(): Int = size
+    }
+
+    private class ClockMetaIcon(private val color: Color) : Icon {
+        private val size = JBUI.scale(14)
+
+        override fun paintIcon(c: Component?, g: Graphics, x: Int, y: Int) {
+            val g2 = g.create() as Graphics2D
+            try {
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                g2.color = color
+                g2.stroke = BasicStroke(JBUI.scale(1.2f))
+                g2.drawOval(x + 1, y + 1, size - 3, size - 3)
+                val centerX = x + size / 2
+                val centerY = y + size / 2
+                g2.drawLine(centerX, centerY, centerX, y + JBUI.scale(4))
+                g2.drawLine(centerX, centerY, x + size - JBUI.scale(4), centerY + JBUI.scale(2))
+            } finally {
+                g2.dispose()
+            }
+        }
+
+        override fun getIconWidth(): Int = size
+
+        override fun getIconHeight(): Int = size
+    }
+
     private class ReviewerAvatarIcon(
         private val username: String,
         private val color: Color
@@ -3174,6 +4172,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         val baseCommitSha: String,
         val reviewPass: Boolean,
         val overview: PrOverview,
+        val reviewerInfos: List<ReviewerInfo>,
         val commits: List<CommitItem>
     )
 
@@ -3196,7 +4195,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         val author: String,
         val hash: String,
         val message: String,
-        val time: String
+        val time: String,
+        val additions: Int = 0,
+        val deletions: Int = 0
     )
 
     private enum class PrState {

@@ -479,6 +479,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private var userTriggeredListScroll = false
     private var lastListScrollValue = 0
     private var hasMorePrs = false
+    private var prListQueryVersion = 0L
+    private var prListLoadSequence = 0L
+    private var activePrListLoadId = 0L
     private val pageSize = config.getProperty("prviewer.api.pageSize", "10").toIntOrNull() ?: 10
 
     private val detailAccentColor = JBColor(Color(0x3574F0), Color(0x4C8DFF))
@@ -1710,7 +1713,6 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             commitTimelineContent.add(
                 createCommitTimelineItem(
                     commit = commit,
-                    highlight = index == 0,
                     isLast = index == commits.lastIndex,
                     missing = missingHashes.contains(commit.hash)
                 )
@@ -1725,18 +1727,14 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private fun createCommitTimelineItem(
         commit: CommitItem,
-        highlight: Boolean,
         isLast: Boolean,
         missing: Boolean
     ): JComponent {
         val lineColor = withAlpha(UIUtil.getBoundsColor(), 140)
         val dangerColor = JBColor(Color(0xD93025), Color(0xF47067))
-        val markerColor = when {
-            missing -> dangerColor
-            highlight -> detailAccentColor
-            else -> detailMutedColor()
-        }
-        val hashColor = if (missing) dangerColor else detailAccentColor
+        val neutralAccentColor = UIUtil.getLabelForeground()
+        val markerColor = neutralAccentColor
+        val hashColor = neutralAccentColor
         val title = JBLabel(commit.message.ifBlank { "(无提交信息)" }).apply {
             font = font.deriveFont(Font.BOLD, globalUiFontSize + 0.5f)
         }
@@ -1791,26 +1789,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             add(metaRow)
         }
 
-        val baseFillColor = when {
-            missing -> withAlpha(dangerColor, 12)
-            highlight -> withAlpha(detailAccentColor, 20)
-            else -> detailSurfaceFill()
-        }
-        val hoverFillColor = when {
-            missing -> withAlpha(dangerColor, 18)
-            highlight -> withAlpha(detailAccentColor, 26)
-            else -> withAlpha(detailAccentColor, 10)
-        }
-        val baseOutlineColor = when {
-            missing -> withAlpha(dangerColor, 120)
-            highlight -> withAlpha(detailAccentColor, 150)
-            else -> detailOutlineColor()
-        }
-        val hoverOutlineColor = when {
-            missing -> withAlpha(dangerColor, 165)
-            highlight -> withAlpha(detailAccentColor, 190)
-            else -> withAlpha(UIUtil.getBoundsColor(), 220)
-        }
+        val baseFillColor = detailSurfaceFill()
+        val hoverFillColor = withAlpha(UIUtil.getLabelForeground(), 10)
+        val baseOutlineColor = detailOutlineColor()
+        val hoverOutlineColor = withAlpha(UIUtil.getBoundsColor(), 220)
 
         val card = RoundedOutlinePanel(baseFillColor, baseOutlineColor, arc = JBUI.scale(14)).apply {
             layout = BorderLayout()
@@ -1818,7 +1800,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             add(content, BorderLayout.CENTER)
         }
         val pointer = CommitPointerPanel(baseFillColor, baseOutlineColor)
-        val marker = TimelineMarkerPanel(markerColor, lineColor, highlight || missing, isLast)
+        val marker = TimelineMarkerPanel(markerColor, lineColor, false, isLast)
         val cardWrapper = JPanel(BorderLayout()).apply {
             isOpaque = false
             add(pointer, BorderLayout.WEST)
@@ -2416,6 +2398,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private fun resetAndLoad() {
         PrManagerFileLogger.info("Reset list state and reload")
+        prListQueryVersion += 1
+        activePrListLoadId = 0L
+        isLoading = false
         currentPage = 1
         totalPage = 0
         totalCount = 0
@@ -2437,13 +2422,16 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun loadPrs(append: Boolean = false) {
+        val queryVersion = prListQueryVersion
         if (isLoading) return
         if (append && totalPage > 0 && currentPage >= totalPage) return
         if (append && totalCount > 0 && tableModel.rowCount >= totalCount) return
+        val loadId = ++prListLoadSequence
+        activePrListLoadId = loadId
         isLoading = true
         statusLabel.text = "加载中..."
         updateLoadMoreState(loading = append, hasMore = false)
-        PrManagerFileLogger.info("Start loading PR list: append=$append currentPage=$currentPage totalPage=$totalPage")
+        PrManagerFileLogger.info("Start loading PR list: append=$append currentPage=$currentPage totalPage=$totalPage queryVersion=$queryVersion loadId=$loadId")
 
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
@@ -2466,6 +2454,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 }
 
                 SwingUtilities.invokeLater {
+                    if (queryVersion != prListQueryVersion || loadId != activePrListLoadId) {
+                        PrManagerFileLogger.info("Ignore stale PR list result: append=$append page=${result.page} queryVersion=$queryVersion activeQueryVersion=$prListQueryVersion loadId=$loadId activeLoadId=$activePrListLoadId")
+                        return@invokeLater
+                    }
                     totalCount = result.total
                     totalPage = result.totalPage
                     currentPage = result.page
@@ -2484,6 +2476,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             } catch (e: Exception) {
                 PrManagerFileLogger.error("Load PR list error", e)
                 SwingUtilities.invokeLater {
+                    if (queryVersion != prListQueryVersion || loadId != activePrListLoadId) return@invokeLater
                     if (!append) {
                         tableModel.setRows(emptyList(), append = false)
                         rebuildPrListCards()
@@ -2495,7 +2488,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     updateLoadMoreState(loading = false, hasMore = false)
                 }
             } finally {
-                isLoading = false
+                if (activePrListLoadId == loadId) {
+                    isLoading = false
+                }
             }
         }
     }
@@ -4028,7 +4023,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }
         }.apply {
             isOpaque = false
-            border = JBUI.Borders.empty(3, -2, 3, 6)
+            border = JBUI.Borders.empty(3, 0, 3, 6)
         }
         private val infoPanel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
             isOpaque = false

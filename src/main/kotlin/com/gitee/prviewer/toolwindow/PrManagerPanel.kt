@@ -1524,16 +1524,23 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }
 
             override fun mousePressed(e: MouseEvent) {
+                if (SwingUtilities.isLeftMouseButton(e)) {
+                    dismissSearchFieldFocus()
+                    resolveTreePathAtPoint(changeTree, e.x, e.y)?.let { changeTree.selectionPath = it }
+                }
                 showChangeTreePopup(e)
             }
 
             override fun mouseReleased(e: MouseEvent) {
+                if (SwingUtilities.isLeftMouseButton(e)) {
+                    openChangeFromMouseEvent(e)
+                }
                 showChangeTreePopup(e)
             }
 
             override fun mouseClicked(e: MouseEvent) {
                 if (e.clickCount != 2 || !SwingUtilities.isLeftMouseButton(e)) return
-                val path = changeTree.getPathForLocation(e.x, e.y) ?: return
+                val path = resolveTreePathAtPoint(changeTree, e.x, e.y) ?: return
                 val node = path.lastPathComponent as? DefaultMutableTreeNode ?: return
                 if (node.userObject !is String || changeTreeFlatMode) return
                 if (changeTree.isExpanded(path)) {
@@ -1903,6 +1910,14 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
     }
 
+    private fun selectDetailTab(index: Int) {
+        if (index !in 0 until detailTabs.tabCount) return
+        dismissSearchFieldFocus()
+        if (detailTabs.selectedIndex != index) {
+            detailTabs.selectedIndex = index
+        }
+    }
+
     private fun isPointerInside(component: Component): Boolean {
         val pointerLocation = MouseInfo.getPointerInfo()?.location ?: return false
         val localPoint = Point(pointerLocation)
@@ -1928,6 +1943,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
         init {
             isOpaque = false
+            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
             val sideInset = detailHorizontalInset()
             border = JBUI.Borders.empty(
                 0,
@@ -1943,6 +1959,25 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             if (tail != null) {
                 add(Box.createHorizontalStrut(JBUI.scale(6)))
                 add(tail)
+            }
+            bindClickHandlerRecursively(this)
+        }
+
+        private fun bindClickHandlerRecursively(component: Component) {
+            component.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            component.addMouseListener(object : MouseAdapter() {
+                override fun mousePressed(e: MouseEvent) {
+                    if (!SwingUtilities.isLeftMouseButton(e)) return
+                    val index = detailTabs.indexOfTabComponent(this@DetailTabHeader)
+                    selectDetailTab(index)
+                    when (component) {
+                        fileChangeWarningButton -> toggleFileChangeWarningBalloon()
+                        commitWarningLabel -> toggleCommitWarningBalloon()
+                    }
+                }
+            })
+            if (component is Container) {
+                component.components.forEach { child -> bindClickHandlerRecursively(child) }
             }
         }
 
@@ -2226,13 +2261,14 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun dismissSearchFieldFocus() {
-        if (searchField.isFocusOwner) {
+        val focusOwner = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
+        if (focusOwner === searchField || focusOwner === changeSearchField) {
             KeyboardFocusManager.getCurrentKeyboardFocusManager().clearGlobalFocusOwner()
         }
     }
 
     private fun installSearchFieldBlur(component: Component) {
-        if (component is javax.swing.text.JTextComponent) {
+        if (component is javax.swing.text.JTextComponent || component is javax.swing.JTree) {
             return
         }
         component.addMouseListener(object : MouseAdapter() {
@@ -3087,9 +3123,18 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
     }
 
+    private fun openChangeFromMouseEvent(e: MouseEvent) {
+        val path = resolveTreePathAtPoint(changeTree, e.x, e.y) ?: return
+        val node = path.lastPathComponent as? DefaultMutableTreeNode ?: return
+        val change = node.userObject as? ChangeItem ?: return
+        changeTree.selectionPath = path
+        currentDetail ?: return
+        openDiff(change)
+    }
+
     private fun showChangeTreePopup(e: MouseEvent) {
         if (!e.isPopupTrigger) return
-        val path = changeTree.getPathForLocation(e.x, e.y) ?: return
+        val path = resolveTreePathAtPoint(changeTree, e.x, e.y) ?: return
         changeTree.selectionPath = path
         val node = path.lastPathComponent as? DefaultMutableTreeNode ?: return
         if (node.userObject !is String) return

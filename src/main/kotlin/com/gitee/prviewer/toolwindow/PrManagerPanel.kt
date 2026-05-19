@@ -175,14 +175,25 @@ class RoundedOutlinePanel(
 ) : JPanel() {
     private var fillColor: Color = fillColor
     private var outlineColor: Color = outlineColor
+    private var fillColorProvider: (() -> Color)? = null
+    private var outlineColorProvider: (() -> Color)? = null
 
     init {
         isOpaque = false
     }
 
+    fun bindTheme(fillColorProvider: (() -> Color)?, outlineColorProvider: (() -> Color)?): RoundedOutlinePanel {
+        this.fillColorProvider = fillColorProvider
+        this.outlineColorProvider = outlineColorProvider
+        repaint()
+        return this
+    }
+
     fun updateColors(fillColor: Color, outlineColor: Color) {
         this.fillColor = fillColor
         this.outlineColor = outlineColor
+        fillColorProvider = null
+        outlineColorProvider = null
         repaint()
     }
 
@@ -191,6 +202,8 @@ class RoundedOutlinePanel(
             super.paint(g)
             return
         }
+        val resolvedFillColor = fillColorProvider?.invoke() ?: fillColor
+        val resolvedOutlineColor = outlineColorProvider?.invoke() ?: outlineColor
         val g2 = g.create() as Graphics2D
         try {
             g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
@@ -204,13 +217,13 @@ class RoundedOutlinePanel(
                 arc.toFloat(),
                 arc.toFloat()
             )
-            g2.color = fillColor
+            g2.color = resolvedFillColor
             g2.fill(shape)
             val originalClip = g2.clip
             g2.clip = shape
             super.paint(g2)
             g2.clip = originalClip
-            g2.color = outlineColor
+            g2.color = resolvedOutlineColor
             g2.stroke = BasicStroke(lineWidth)
             g2.draw(shape)
         } finally {
@@ -485,9 +498,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private val pageSize = config.getProperty("prviewer.api.pageSize", "10").toIntOrNull() ?: 10
 
     private val detailAccentColor = JBColor(Color(0x3574F0), Color(0x4C8DFF))
-    private val detailCard = JPanel(java.awt.CardLayout()).apply { isOpaque = false }
-    private val detailEmpty = JPanel(BorderLayout()).apply { isOpaque = false }
-    private val detailPanel = JPanel(BorderLayout()).apply { isOpaque = false }
+    private val detailCard = JPanel(java.awt.CardLayout()).apply { isOpaque = true }
+    private val detailEmpty = JPanel(BorderLayout()).apply { isOpaque = true }
+    private val detailPanel = JPanel(BorderLayout()).apply { isOpaque = true }
     private val detailHeaderTitle = JBLabel("-")
     private val detailStatus: StatusBadgeLabel = StatusBadgeLabel()
     private val detailRefreshButton = JButton(AllIcons.Actions.Refresh).apply {
@@ -629,6 +642,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private var changeTreeFlatMode = false
     private var currentDiffFilePath: String? = null
     private val mockAiIssueStatusOverrides = mutableMapOf<Long, Int>()
+    private var uiComponentsReady = false
 
     init {
         applyGlobalFontSettings()
@@ -636,8 +650,29 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         bindActions()
         bindCommentActions()
         installHomepageSearchFocusGuard()
+        uiComponentsReady = true
+        applyDetailThemeColors()
         PrManagerFileLogger.info("PR Manager panel initialized, mockEnabled=$mockEnabled")
         resetAndLoad()
+    }
+
+    override fun updateUI() {
+        super.updateUI()
+        if (!uiComponentsReady) return
+        SwingUtilities.invokeLater {
+            installDetailTabsUi()
+            applyDetailThemeColors()
+            updateFilterButtonStyles()
+            updateChangeModeToggleStyle()
+            rebuildPrListCards()
+            renderReviewStatusCards(currentDetail)
+            renderCommitTimeline(commitTableModel.getRows(), commitTableModel.getMissingHashes())
+            updateDetailTabHeaderStates()
+            changeTree.revalidate()
+            changeTree.repaint()
+            detailTabs.revalidate()
+            detailTabs.repaint()
+        }
     }
 
     private fun buildUrl(path: String): String {
@@ -750,10 +785,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         searchField.border = JBUI.Borders.empty(0, 0, 0, 0)
 
         val searchWrapper = RoundedOutlinePanel(
-            fillColor = JBColor(Color.WHITE, Color(0x2B2D30)),
-            outlineColor = JBColor(Color(0xD1D5DB), Color(0x4B5563)),
+            fillColor = searchFieldSurfaceFill(),
+            outlineColor = searchFieldOutlineColor(),
             arc = JBUI.scale(12)
-        ).apply {
+        ).bindTheme(::searchFieldSurfaceFill, ::searchFieldOutlineColor).apply {
             layout = BorderLayout(JBUI.scale(8), 0)
             border = JBUI.Borders.empty(8, 12)
             add(JBLabel(AllIcons.Actions.Search).apply {
@@ -1058,6 +1093,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun buildDetailPanel() {
+        applyDetailThemeColors()
         detailEmpty.border = JBUI.Borders.empty(12)
         detailCard.add(detailEmpty, "empty")
 
@@ -1102,10 +1138,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         return header
     }
 
-    private fun buildDetailTabs(): JComponent {
-        detailTabs.border = JBUI.Borders.empty()
-        detailTabs.isOpaque = false
-        detailTabs.background = UIUtil.getPanelBackground()
+    private fun installDetailTabsUi() {
         detailTabs.setUI(object : BasicTabbedPaneUI() {
             override fun installDefaults() {
                 super.installDefaults()
@@ -1121,18 +1154,26 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             override fun getTabLabelShiftY(tabPlacement: Int, tabIndex: Int, isSelected: Boolean): Int = 0
 
             override fun paintTabArea(g: Graphics, tabPlacement: Int, selectedIndex: Int) {
-                super.paintTabArea(g, tabPlacement, selectedIndex)
-                if (tabPane.tabCount <= 0) return
                 val g2 = g.create() as Graphics2D
                 try {
-                    val (leftInset, rightInset) = detailTabUnderlineSideInsets()
-                    val lineHeight = JBUI.scale(1)
-                    val y = calculateTabAreaHeight(tabPlacement, runCount, maxTabHeight) - lineHeight
-                    val width = (tabPane.width - leftInset - rightInset).coerceAtLeast(0)
-                    g2.color = JBColor(Color.BLACK, Color.BLACK)
-                    g2.fillRect(leftInset, y, width, lineHeight)
+                    val tabAreaHeight = calculateTabAreaHeight(tabPlacement, runCount, maxTabHeight)
+                    g2.color = detailTabPaneFill()
+                    g2.fillRect(0, 0, tabPane.width, tabAreaHeight)
                 } finally {
                     g2.dispose()
+                }
+                super.paintTabArea(g, tabPlacement, selectedIndex)
+                if (tabPane.tabCount <= 0) return
+                val underlineGraphics = g.create() as Graphics2D
+                try {
+                    val (leftInset, rightInset) = detailTabUnderlineSideInsets()
+                    val lineHeight = detailTabUnderlineHeight()
+                    val y = calculateTabAreaHeight(tabPlacement, runCount, maxTabHeight) - lineHeight
+                    val width = (tabPane.width - leftInset - rightInset).coerceAtLeast(0)
+                    underlineGraphics.color = detailTabUnderlineColor()
+                    underlineGraphics.fillRect(leftInset, y, width, lineHeight)
+                } finally {
+                    underlineGraphics.dispose()
                 }
             }
 
@@ -1144,6 +1185,13 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
             override fun paintFocusIndicator(g: Graphics, tabPlacement: Int, rects: Array<Rectangle>, tabIndex: Int, iconRect: Rectangle, textRect: Rectangle, isSelected: Boolean) = Unit
         })
+    }
+
+    private fun buildDetailTabs(): JComponent {
+        detailTabs.border = JBUI.Borders.empty()
+        detailTabs.isOpaque = true
+        detailTabs.background = detailTabPaneFill()
+        installDetailTabsUi()
         detailTabs.addTab("概览", buildOverviewPanel())
         detailTabs.addTab("文件改动", buildFileChangePanel())
         detailTabs.addTab("提交记录", buildCommitPanel())
@@ -1151,11 +1199,29 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         return detailTabs
     }
 
-    private fun detailSurfaceFill(): Color = UIUtil.getTextFieldBackground()
+    private fun detailPanelFill(): Color = JBColor(Color(0xFFFFFF), Color(0x2B2D30))
 
-    private fun detailOutlineColor(): Color = withAlpha(UIUtil.getBoundsColor(), 160)
+    private fun detailTabPaneFill(): Color = detailPanelFill()
 
-    private fun detailMutedColor(): Color = JBColor(Color(0x5F6368), Color(0x9AA0A6))
+    private fun detailSurfaceFill(): Color = JBColor(Color(0xF7F8FA), Color(0x313438))
+
+    private fun searchFieldSurfaceFill(): Color = JBColor(Color.WHITE, Color(0x2B2D30))
+
+    private fun searchFieldOutlineColor(): Color = JBColor(Color(0xD1D5DB), Color(0x4B5563))
+
+    private fun detailOutlineColor(): Color = JBColor(Color(0xD6DAE1), Color(0x4B515A))
+
+    private fun detailTabUnderlineColor(): Color = if (UIUtil.isUnderDarcula()) {
+        withAlpha(UIUtil.getLabelForeground(), 235)
+    } else {
+        Color(0xC4CAD4)
+    }
+
+    private fun detailTabUnderlineHeight(): Int = if (UIUtil.isUnderDarcula()) JBUI.scale(2) else JBUI.scale(1)
+
+    private fun detailPrimaryTextColor(): Color = JBColor(Color(0x1F2937), Color(0xF3F4F6))
+
+    private fun detailMutedColor(): Color = JBColor(Color(0x5F6368), Color(0xF3F4F6))
 
     private fun detailSectionTitleFontSize(): Float = globalUiFontSize + 1f
 
@@ -1215,7 +1281,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }
     }
 
-    private fun detailTabBadgeColor(): Color = JBColor(Color(0x5F6368), Color(0x9AA0A6))
+    private fun detailTabBadgeColor(): Color = JBColor(Color(0x5F6368), Color(0xF3F4F6))
 
     private fun aiReviewBadgeText(state: AiReviewBadgeState): String = when (state) {
         AiReviewBadgeState.NO_DATA -> "AI评审：未发起"
@@ -1231,13 +1297,67 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         detailMetaRow.repaint()
     }
 
+    private fun applyDetailThemeColors() {
+        val panelFill = detailPanelFill()
+        val tabFill = detailTabPaneFill()
+        detailCard.background = panelFill
+        detailEmpty.background = panelFill
+        detailPanel.background = panelFill
+        detailTabs.background = tabFill
+        overviewDesc.background = detailSurfaceFill()
+        repeat(detailTabs.tabCount) { index ->
+            when (val component = detailTabs.getComponentAt(index)) {
+                is JBScrollPane -> {
+                    component.background = tabFill
+                    component.viewport?.background = tabFill
+                }
+                is JComponent -> component.background = tabFill
+            }
+        }
+    }
+
+    private fun createDetailScrollPane(
+        view: Component,
+        verticalPolicy: Int,
+        horizontalPolicy: Int,
+        fillColorProvider: () -> Color
+    ): JBScrollPane {
+        return object : JBScrollPane(view, verticalPolicy, horizontalPolicy) {
+            override fun updateUI() {
+                super.updateUI()
+                border = JBUI.Borders.empty()
+                isOpaque = false
+                viewport?.isOpaque = true
+                background = fillColorProvider()
+                viewport?.background = fillColorProvider()
+            }
+        }.apply {
+            border = JBUI.Borders.empty()
+            isOpaque = false
+            viewport.isOpaque = true
+            background = fillColorProvider()
+            viewport.background = fillColorProvider()
+        }
+    }
+
     private fun styleSegmentedToggle(button: JToggleButton, selected: Boolean) {
-        button.background = if (selected) withAlpha(detailAccentColor, 34) else detailSurfaceFill()
-        button.foreground = if (selected) UIUtil.getLabelForeground() else detailMutedColor()
+        val darkTheme = UIUtil.isUnderDarcula()
+        val selectedBackground = if (darkTheme) withAlpha(detailAccentColor, 88) else withAlpha(detailAccentColor, 34)
+        val selectedForeground = if (darkTheme) Color.WHITE else UIUtil.getLabelForeground()
+        val selectedBorder = if (darkTheme) withAlpha(detailAccentColor, 220) else withAlpha(detailAccentColor, 150)
+        button.background = if (selected) selectedBackground else detailSurfaceFill()
+        button.foreground = if (selected) selectedForeground else detailMutedColor()
         button.font = button.font.deriveFont(if (selected) Font.BOLD else Font.PLAIN, globalUiFontSize - 1f)
         button.isOpaque = true
-        button.isBorderPainted = false
-        button.border = JBUI.Borders.empty(4, 12)
+        button.isBorderPainted = true
+        button.border = if (selected) {
+            javax.swing.BorderFactory.createCompoundBorder(
+                javax.swing.BorderFactory.createLineBorder(selectedBorder, JBUI.scale(1)),
+                JBUI.Borders.empty(3, 11)
+            )
+        } else {
+            JBUI.Borders.empty(4, 12)
+        }
     }
 
     private fun updateChangeModeToggleStyle() {
@@ -1256,13 +1376,15 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         component: JComponent,
         fillColor: Color = detailSurfaceFill(),
         outlineColor: Color = detailOutlineColor(),
+        fillColorProvider: (() -> Color)? = ::detailSurfaceFill,
+        outlineColorProvider: (() -> Color)? = ::detailOutlineColor,
         padding: Insets = JBUI.insets(12)
     ): JComponent {
         return RoundedOutlinePanel(
             fillColor = fillColor,
             outlineColor = outlineColor,
             arc = JBUI.scale(14)
-        ).apply {
+        ).bindTheme(fillColorProvider, outlineColorProvider).apply {
             layout = BorderLayout()
             border = JBUI.Borders.empty(padding.top, padding.left, padding.bottom, padding.right)
             add(component, BorderLayout.CENTER)
@@ -1270,7 +1392,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun buildOverviewPanel(): JComponent {
-        val panel = buildDetailTabBody()
+        val panel = buildDetailTabBody().apply {
+            isOpaque = true
+            background = detailTabPaneFill()
+        }
 
         overviewDesc.lineWrap = true
         overviewDesc.wrapStyleWord = true
@@ -1279,14 +1404,15 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         overviewDesc.isOpaque = false
         overviewDesc.border = JBUI.Borders.empty()
         overviewDesc.background = detailSurfaceFill()
+        overviewDesc.foreground = detailPrimaryTextColor()
         overviewDesc.alignmentX = Component.LEFT_ALIGNMENT
 
-        val descScroll = JBScrollPane(overviewDesc).apply {
-            border = JBUI.Borders.empty()
-            isOpaque = false
-            viewport.isOpaque = false
-            background = detailSurfaceFill()
-            viewport.background = detailSurfaceFill()
+        val descScroll = createDetailScrollPane(
+            overviewDesc,
+            ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
+            ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER,
+            fillColorProvider = ::detailSurfaceFill
+        ).apply {
             val descLineHeight = overviewDesc.getFontMetrics(overviewDesc.font).height
             val descHeight = descLineHeight * 6 + JBUI.scale(20)
             preferredSize = Dimension(JBUI.scale(320), descHeight)
@@ -1302,14 +1428,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         panel.add(buildOverviewSection("审查状态", reviewStatusCardsPanel))
         panel.add(Box.createVerticalGlue())
 
-        return JBScrollPane(
+        return createDetailScrollPane(
             panel,
             ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
-            ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+            ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER,
+            fillColorProvider = ::detailTabPaneFill
         ).apply {
-            border = JBUI.Borders.empty()
-            isOpaque = false
-            viewport.isOpaque = false
             verticalScrollBar.unitIncrement = JBUI.scale(16)
         }
     }
@@ -1378,6 +1502,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             isOpaque = false
             add(JBLabel(reviewer.username.ifBlank { "未知评审人" }).apply {
                 font = font.deriveFont(Font.BOLD, globalUiFontSize)
+                foreground = detailPrimaryTextColor()
                 alignmentX = Component.LEFT_ALIGNMENT
             })
             add(Box.createVerticalStrut(JBUI.scale(4)))
@@ -1572,17 +1697,26 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
         val toolbar = JPanel(BorderLayout(JBUI.scale(8), 0)).apply {
             isOpaque = false
-            add(wrapDetailSurface(changeSearchField, fillColor = detailSurfaceFill(), padding = JBUI.insets(5, 10)), BorderLayout.WEST)
+            add(
+                wrapDetailSurface(
+                    changeSearchField,
+                    fillColor = searchFieldSurfaceFill(),
+                    outlineColor = searchFieldOutlineColor(),
+                    fillColorProvider = ::searchFieldSurfaceFill,
+                    outlineColorProvider = ::searchFieldOutlineColor,
+                    padding = JBUI.insets(5, 10)
+                ),
+                BorderLayout.WEST
+            )
             add(wrapDetailSurface(togglePanel, padding = JBUI.insets(2)), BorderLayout.EAST)
         }
 
-        val treeScroll = JBScrollPane(changeTree).apply {
-            border = JBUI.Borders.empty()
-            isOpaque = false
-            viewport.isOpaque = false
-            background = detailSurfaceFill()
-            viewport.background = detailSurfaceFill()
-        }
+        val treeScroll = createDetailScrollPane(
+            changeTree,
+            ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
+            ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED,
+            fillColorProvider = ::detailSurfaceFill
+        )
 
         val footer = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(14), 0)).apply {
             isOpaque = false
@@ -1609,7 +1743,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
 
         return JPanel(BorderLayout()).apply {
-            isOpaque = false
+            isOpaque = true
+            background = detailTabPaneFill()
             add(body, BorderLayout.CENTER)
         }
     }
@@ -1670,16 +1805,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun buildCommitPanel(): JComponent {
-        val timelineScroll = JBScrollPane(
+        val timelineScroll = createDetailScrollPane(
             commitTimelineContent,
             ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
-            ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+            ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER,
+            fillColorProvider = ::detailSurfaceFill
         ).apply {
-            border = JBUI.Borders.empty()
-            isOpaque = false
-            viewport.isOpaque = false
-            background = detailSurfaceFill()
-            viewport.background = detailSurfaceFill()
             verticalScrollBar.unitIncrement = JBUI.scale(16)
         }
 
@@ -1688,7 +1819,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
 
         return JPanel(BorderLayout()).apply {
-            isOpaque = false
+            isOpaque = true
+            background = detailTabPaneFill()
             add(body, BorderLayout.CENTER)
         }
     }
@@ -1732,11 +1864,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     ): JComponent {
         val lineColor = withAlpha(UIUtil.getBoundsColor(), 140)
         val dangerColor = JBColor(Color(0xD93025), Color(0xF47067))
-        val neutralAccentColor = UIUtil.getLabelForeground()
-        val markerColor = neutralAccentColor
-        val hashColor = neutralAccentColor
+        val primaryTextColor = detailPrimaryTextColor()
+        val markerColor = primaryTextColor
+        val hashColor = primaryTextColor
         val title = JBLabel(commit.message.ifBlank { "(无提交信息)" }).apply {
             font = font.deriveFont(Font.BOLD, globalUiFontSize + 0.5f)
+            foreground = primaryTextColor
         }
         val hashBadge = buildCommitHashBadge(commit.hash, hashColor)
 
@@ -1857,7 +1990,14 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 }
             })
         }
-        return wrapDetailSurface(label, fillColor = detailSurfaceFill(), outlineColor = withAlpha(color, 110), padding = JBUI.insets(0))
+        return wrapDetailSurface(
+            label,
+            fillColor = detailSurfaceFill(),
+            outlineColor = withAlpha(color, 110),
+            fillColorProvider = ::detailSurfaceFill,
+            outlineColorProvider = { withAlpha(color, 110) },
+            padding = JBUI.insets(0)
+        )
     }
 
     private fun setupDetailTabsHeader() {
@@ -1938,7 +2078,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
             val sideInset = detailHorizontalInset()
             border = JBUI.Borders.empty(
-                0,
+                JBUI.scale(2),
                 if (isFirst) sideInset else JBUI.scale(12),
                 JBUI.scale(12),
                 if (isLast) sideInset else JBUI.scale(12)
@@ -1975,20 +2115,6 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
         override fun paintComponent(g: Graphics) {
             super.paintComponent(g)
-            if (!selectedState) return
-            val visibleChildren = components.filter { it.isVisible && it.width > 0 && it.height > 0 }
-            if (visibleChildren.isEmpty()) return
-            val startX = visibleChildren.minOf { it.x }
-            val endX = visibleChildren.maxOf { it.x + it.width }
-            val indicatorHeight = JBUI.scale(3)
-            val indicatorWidth = (endX - startX).coerceAtLeast(JBUI.scale(16))
-            val g2 = g.create() as Graphics2D
-            try {
-                g2.color = JBColor(Color.BLACK, Color.BLACK)
-                g2.fillRoundRect(startX, height - indicatorHeight, indicatorWidth, indicatorHeight, indicatorHeight, indicatorHeight)
-            } finally {
-                g2.dispose()
-            }
         }
 
         fun setSelectedState(selected: Boolean) {
@@ -4110,7 +4236,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             val metaFont = font.deriveFont(Font.PLAIN, (globalUiFontSize - 1f).coerceAtLeast(11f))
             val statFont = Font(Font.MONOSPACED, Font.PLAIN, font.size)
             mainLabel.font = font
-            mainLabel.foreground = UIUtil.getLabelForeground()
+            mainLabel.foreground = detailPrimaryTextColor()
             mainLabel.verticalAlignment = SwingConstants.CENTER
             changeTypeLabel.font = metaFont
             changeTypeLabel.verticalAlignment = SwingConstants.CENTER
@@ -4448,7 +4574,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             if (!hovered && !selectedState && !isLastCard) {
                 val g2 = g.create() as Graphics2D
                 try {
-                    g2.color = JBColor(Color(0xE5E7EB), Color(0x3A3D41))
+                    g2.color = JBColor(Color(0xE5E7EB), Color(0x6B7280))
                     val y = height - 1
                     g2.drawLine(JBUI.scale(8), y, width - JBUI.scale(8), y)
                 } finally {
@@ -4802,6 +4928,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             this.missingHashes = missingHashes
             fireTableDataChanged()
         }
+
+        fun getRows(): List<CommitItem> = rows
+
+        fun getMissingHashes(): Set<String> = missingHashes
 
         fun getFullHashAt(row: Int): String = rows.getOrNull(row)?.hash.orEmpty()
 

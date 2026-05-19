@@ -49,6 +49,7 @@ import java.awt.*
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.event.MouseMotionAdapter
+import java.awt.event.MouseWheelEvent
 import java.awt.geom.RoundRectangle2D
 import java.util.Properties
 import javax.swing.Box
@@ -214,6 +215,30 @@ class RoundedOutlinePanel(
         } finally {
             g2.dispose()
         }
+    }
+}
+
+private class SegmentedFilterButton(text: String) : JToggleButton(text) {
+    private val arc = JBUI.scale(8)
+
+    init {
+        isOpaque = false
+        isContentAreaFilled = false
+        border = JBUI.Borders.empty()
+    }
+
+    override fun paintComponent(g: Graphics) {
+        val g2 = g.create() as Graphics2D
+        try {
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+            if (isSelected) {
+                g2.color = background
+                g2.fillRoundRect(0, 0, width, height, arc, arc)
+            }
+        } finally {
+            g2.dispose()
+        }
+        super.paintComponent(g)
     }
 }
 
@@ -393,39 +418,48 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private val statusLabel = JBLabel("正在加载 PR 列表...")
     private val tableModel = PrTableModel()
-    private val prTable = JBTable(tableModel)
-    private var prTableScrollPane: JBScrollPane? = null
+    private val prListContent = ViewportWidthPanel().apply {
+        layout = BoxLayout(this, BoxLayout.Y_AXIS)
+        isOpaque = false
+        border = JBUI.Borders.empty()
+    }
+    private var prListScrollPane: JBScrollPane? = null
+    private val prCardMap = mutableMapOf<Long, PrCardPanel>()
+    private val prListSupplementCache = mutableMapOf<Long, PrListSupplement>()
+    private val prListSupplementLoading = mutableSetOf<Long>()
+    private var selectedPrId: Long? = null
     private val loadMoreLabel = JBLabel("加载更多中...", SwingConstants.CENTER)
     private val searchField = JBTextField()
-    private val createdByMeCheck = JBCheckBox("我创建的").apply {
-        isFocusable = false
-        isFocusPainted = false
-    }
-    private val reviewedByMeCheck = JBCheckBox("我评审的").apply {
-        isFocusable = false
-        isFocusPainted = false
-    }
-    private val filterCheckPanel = JPanel().apply {
-        layout = BoxLayout(this, BoxLayout.X_AXIS)
-        isOpaque = false
-        add(createdByMeCheck)
-        add(Box.createHorizontalStrut(JBUI.scale(6)))
-        add(reviewedByMeCheck)
-    }
     private val refreshButton = JButton()
-    private var suppressFilterCheckEvent = false
-    private val filterTabsPanel = JPanel().apply {
-        layout = BoxLayout(this, BoxLayout.X_AXIS)
-        isOpaque = false
-    }
-    private var filterTabsMinWidth = 0
-    private val filterButtons = listOf(
-        JToggleButton("开启的"),
-        JToggleButton("已合并"),
-        JToggleButton("已关闭")
+    private val statusFilterButtons = listOf(
+        SegmentedFilterButton("开启的"),
+        SegmentedFilterButton("已合并"),
+        SegmentedFilterButton("已关闭")
     )
+    private val roleFilterButtons = listOf(
+        SegmentedFilterButton("全部"),
+        SegmentedFilterButton("我创建的"),
+        SegmentedFilterButton("我评审的")
+    )
+    private val statusFilterPanel = RoundedOutlinePanel(
+        fillColor = JBColor(Color(0xE5E7EB), Color(0x3A3D41)),
+        outlineColor = JBColor(Color(0xE5E7EB), Color(0x3A3D41)),
+        arc = JBUI.scale(10)
+    ).apply {
+        layout = BoxLayout(this, BoxLayout.X_AXIS)
+        border = JBUI.Borders.empty(4)
+    }
+    private val roleFilterPanel = RoundedOutlinePanel(
+        fillColor = JBColor(Color(0xE5E7EB), Color(0x3A3D41)),
+        outlineColor = JBColor(Color(0xE5E7EB), Color(0x3A3D41)),
+        arc = JBUI.scale(10)
+    ).apply {
+        layout = BoxLayout(this, BoxLayout.X_AXIS)
+        border = JBUI.Borders.empty(4)
+    }
 
     private var activeFilter = PrFilter.OPEN
+    private var activeRoleFilter = PrRoleFilter.ALL
     private var currentPage = 1
     private var totalPage = 0
     private var totalCount = 0
@@ -608,13 +642,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         statusLabel.font = statusLabel.font.deriveFont(Font.PLAIN, globalUiFontSize)
         loadMoreLabel.font = loadMoreLabel.font.deriveFont(Font.PLAIN, globalUiFontSize)
         searchField.font = searchField.font.deriveFont(Font.PLAIN, globalUiFontSize)
-        createdByMeCheck.font = createdByMeCheck.font.deriveFont(Font.PLAIN, globalUiFontSize)
-        reviewedByMeCheck.font = reviewedByMeCheck.font.deriveFont(Font.PLAIN, globalUiFontSize)
-
-        prTable.font = prTable.font.deriveFont(Font.PLAIN, globalUiFontSize)
-        prTable.tableHeader.font = prTable.tableHeader.font.deriveFont(Font.BOLD, globalUiFontSize)
-
-        filterButtons.forEach { button ->
+        statusFilterButtons.forEach { button ->
+            button.font = button.font.deriveFont(Font.PLAIN, globalUiFontSize)
+        }
+        roleFilterButtons.forEach { button ->
             button.font = button.font.deriveFont(Font.PLAIN, globalUiFontSize)
         }
 
@@ -651,17 +682,21 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private fun buildMainPanel(): JPanel {
         val root = JPanel(BorderLayout())
         root.border = JBUI.Borders.empty(8)
+        root.isOpaque = false
+        val content = buildContentPanel()
         val contentScroll = JBScrollPane(
-            buildContentPanel(),
+            content,
             ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER,
             ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED
         ).apply {
             border = JBUI.Borders.empty()
             viewportBorder = null
+            isWheelScrollingEnabled = false
             horizontalScrollBar.unitIncrement = JBUI.scale(24)
         }
         root.add(contentScroll, BorderLayout.CENTER)
         root.add(buildStatusPanel(), BorderLayout.SOUTH)
+        installSearchFieldBlur(root)
         return root
     }
 
@@ -682,140 +717,96 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun buildTopBar(): JPanel {
-        if (filterTabsPanel.componentCount == 0) {
-            val group = ButtonGroup()
-            filterButtons.forEachIndexed { index, button ->
-                button.isFocusable = false
-                button.isFocusPainted = false
-                button.isBorderPainted = false
-                button.isContentAreaFilled = false
-                button.isOpaque = false
-                button.horizontalAlignment = SwingConstants.LEFT
-                button.horizontalTextPosition = SwingConstants.LEFT
-                button.iconTextGap = 0
-                button.margin = JBUI.insets(2, 2)
-                val charWidth = button.getFontMetrics(button.font).charWidth('中')
-                val baseWidth = charWidth * 4
-                val tabButtonWidth = if (index == filterButtons.lastIndex) baseWidth + JBUI.scale(10) else baseWidth
-                val tabButtonSize = Dimension(tabButtonWidth, button.preferredSize.height)
-                button.preferredSize = tabButtonSize
-                button.minimumSize = tabButtonSize
-                button.maximumSize = tabButtonSize
-                group.add(button)
-                filterTabsPanel.add(button)
-                if (index < filterButtons.lastIndex) {
-                    filterTabsPanel.add(Box.createHorizontalStrut(JBUI.scale(2)))
-                }
-            }
-            filterTabsPanel.add(Box.createHorizontalStrut(JBUI.scale(8)))
-            filterTabsPanel.add(filterCheckPanel)
-            filterButtons.first().isSelected = true
-            updateFilterButtonStyles()
-            filterTabsMinWidth = filterTabsPanel.preferredSize.width
-            filterTabsPanel.minimumSize = Dimension(filterTabsMinWidth, filterTabsPanel.preferredSize.height)
-        }
+        ensureListFilterGroupsInitialized()
 
         refreshButton.icon = AllIcons.Actions.Refresh
         refreshButton.text = ""
         refreshButton.toolTipText = "刷新"
+        refreshButton.isOpaque = false
+        refreshButton.isContentAreaFilled = false
+        refreshButton.isBorderPainted = false
+        refreshButton.isFocusPainted = false
+        refreshButton.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
         refreshButton.preferredSize = Dimension(JBUI.scale(28), JBUI.scale(28))
 
-        val searchHint = "标题"
-        searchField.emptyText.text = searchHint
+        searchField.emptyText.text = "搜索 PR 标题..."
+        searchField.isOpaque = false
+        searchField.border = JBUI.Borders.empty(0, 0, 0, 0)
 
-        createdByMeCheck.isOpaque = false
-        reviewedByMeCheck.isOpaque = false
+        val searchWrapper = RoundedOutlinePanel(
+            fillColor = JBColor(Color.WHITE, Color(0x2B2D30)),
+            outlineColor = JBColor(Color(0xD1D5DB), Color(0x4B5563)),
+            arc = JBUI.scale(12)
+        ).apply {
+            layout = BorderLayout(JBUI.scale(8), 0)
+            border = JBUI.Borders.empty(8, 12)
+            add(JBLabel(AllIcons.Actions.Search).apply {
+                foreground = JBColor(Color(0x9CA3AF), Color(0x9CA3AF))
+            }, BorderLayout.WEST)
+            add(searchField, BorderLayout.CENTER)
+            preferredSize = Dimension(JBUI.scale(320), JBUI.scale(36))
+            minimumSize = Dimension(JBUI.scale(220), JBUI.scale(36))
+            maximumSize = Dimension(JBUI.scale(420), JBUI.scale(36))
+        }
 
-        val searchWrapper = JPanel(BorderLayout())
-        searchWrapper.border = JBUI.Borders.emptyLeft(6)
-        searchWrapper.add(searchField, BorderLayout.CENTER)
-        val fixedSearchWidth = (searchField.getFontMetrics(searchField.font).stringWidth(searchHint) + JBUI.scale(28)) * 3
-        val fixedSearchSize = Dimension(fixedSearchWidth, searchField.preferredSize.height)
-        val minimumSearchSize = Dimension(JBUI.scale(180), searchField.preferredSize.height)
-        searchWrapper.preferredSize = fixedSearchSize
-        searchWrapper.minimumSize = minimumSearchSize
+        val titleLabel = JBLabel("Pull Requests").apply {
+            font = font.deriveFont(Font.BOLD, globalUiFontSize + 9f)
+            foreground = JBColor(Color(0x1F2937), Color(0xF3F4F6))
+        }
 
-        val rightActions = JPanel().apply {
-            layout = BoxLayout(this, BoxLayout.X_AXIS)
+        val headerBar = JPanel(BorderLayout()).apply {
             isOpaque = false
-            border = JBUI.Borders.emptyLeft(8)
-            add(searchWrapper)
-            add(Box.createHorizontalStrut(JBUI.scale(6)))
-            add(refreshButton)
+            add(titleLabel, BorderLayout.WEST)
+            add(JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.X_AXIS)
+                isOpaque = false
+                add(searchWrapper)
+                add(Box.createHorizontalStrut(JBUI.scale(8)))
+                add(refreshButton)
+            }, BorderLayout.EAST)
+        }
+
+        val filterBar = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(12), 0)).apply {
+            isOpaque = false
+            add(statusFilterPanel)
+            add(roleFilterPanel)
         }
 
         return JPanel().apply {
-            layout = BorderLayout()
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
             isOpaque = false
-            border = JBUI.Borders.emptyBottom(4)
-            add(filterTabsPanel, BorderLayout.CENTER)
-            add(rightActions, BorderLayout.EAST)
+            border = JBUI.Borders.empty(0, 8, 8, 8)
+            add(headerBar)
+            add(Box.createVerticalStrut(JBUI.scale(16)))
+            add(filterBar)
         }
     }
 
     private fun buildTablePanel(): JPanel {
-        prTable.fillsViewportHeight = true
-        prTable.rowHeight = JBUI.scale(28)
-        prTable.setShowGrid(false)
-        prTable.tableHeader.reorderingAllowed = false
-        prTable.emptyText.text = "暂无 PR，点击刷新按钮重试"
-        prTable.selectionModel.addListSelectionListener {
-            if (!it.valueIsAdjusting) {
-                val row = prTable.selectedRow
-                if (row >= 0) {
-                    val item = tableModel.getItemAt(row)
-                    showDetail(item.id)
-                } else {
-                    renderEmptyDetail()
-                }
-            }
+        val pane = JBScrollPane(prListContent).apply {
+            border = JBUI.Borders.emptyTop(6)
+            viewportBorder = null
+            verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_ALWAYS
+            horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+            isWheelScrollingEnabled = false
+            verticalScrollBar.unitIncrement = JBUI.scale(24)
+            verticalScrollBar.blockIncrement = JBUI.scale(96)
         }
+        prListScrollPane = pane
 
-        val pane = JBScrollPane(prTable)
-        pane.border = JBUI.Borders.emptyTop(6)
-        pane.verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_ALWAYS
-        prTableScrollPane = pane
-        if (prTable.columnModel.columnCount > 4) {
-            prTable.columnModel.getColumn(4).cellRenderer = ReviewerCellRenderer()
-            prTable.columnModel.getColumn(4).preferredWidth = JBUI.scale(140)
-        }
-        prTable.addMouseMotionListener(object : MouseMotionAdapter() {
-            override fun mouseMoved(e: MouseEvent) {
-                val row = prTable.rowAtPoint(e.point)
-                val col = prTable.columnAtPoint(e.point)
-                if (row < 0 || col != 4) {
-                    prTable.toolTipText = null
-                    return
-                }
-                val item = tableModel.getItemAt(row)
-                val reviewers = item.reviewers
-                if (reviewers.isEmpty()) {
-                    prTable.toolTipText = null
-                    return
-                }
-                val cellRect = prTable.getCellRect(row, col, false)
-                val iconSize = JBUI.scale(16)
-                val gap = JBUI.scale(4)
-                val startX = cellRect.x + gap
-                val slot = iconSize + gap
-                val idx = (e.x - startX) / slot
-                if (idx in reviewers.indices) {
-                    val reviewer = reviewers[idx]
-                    val status = reviewer.approveStatus.ifBlank { "unknown" }
-                    prTable.toolTipText = "username: ${reviewer.username}, approve_status: $status"
-                } else {
-                    prTable.toolTipText = null
-                }
-            }
-        })
-        prTable.addMouseListener(object : MouseAdapter() {
-            override fun mouseExited(e: MouseEvent) {
-                prTable.toolTipText = null
-            }
-        })
         val markUserScroll = { userTriggeredListScroll = true }
-        pane.addMouseWheelListener { markUserScroll() }
-        prTable.addMouseWheelListener { markUserScroll() }
+        pane.addMouseWheelListener { event ->
+            markUserScroll()
+            scrollPrListByWheel(event)
+        }
+        pane.viewport.addMouseWheelListener { event ->
+            markUserScroll()
+            scrollPrListByWheel(event)
+        }
+        prListContent.addMouseWheelListener { event ->
+            markUserScroll()
+            scrollPrListByWheel(event)
+        }
         pane.verticalScrollBar.addMouseListener(object : MouseAdapter() {
             override fun mousePressed(e: MouseEvent) {
                 markUserScroll()
@@ -835,16 +826,79 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
 
         loadMoreLabel.isVisible = false
-        loadMoreLabel.border = JBUI.Borders.empty()
-        val loadMoreHeight = prTable.rowHeight
+        loadMoreLabel.border = JBUI.Borders.empty(6, 8)
+        val loadMoreHeight = JBUI.scale(28)
         loadMoreLabel.preferredSize = Dimension(0, loadMoreHeight)
         loadMoreLabel.minimumSize = Dimension(0, loadMoreHeight)
         loadMoreLabel.maximumSize = Dimension(Int.MAX_VALUE, loadMoreHeight)
 
         return JPanel(BorderLayout()).apply {
+            isOpaque = false
             add(pane, BorderLayout.CENTER)
             add(loadMoreLabel, BorderLayout.SOUTH)
         }
+    }
+
+    private fun ensureListFilterGroupsInitialized() {
+        if (statusFilterPanel.componentCount == 0) {
+            val group = ButtonGroup()
+            statusFilterButtons.forEachIndexed { index, button ->
+                configureListFilterButton(button)
+                group.add(button)
+                statusFilterPanel.add(button)
+                if (index < statusFilterButtons.lastIndex) {
+                    statusFilterPanel.add(Box.createHorizontalStrut(JBUI.scale(4)))
+                }
+            }
+            statusFilterButtons.first().isSelected = true
+        }
+        if (roleFilterPanel.componentCount == 0) {
+            val group = ButtonGroup()
+            roleFilterButtons.forEachIndexed { index, button ->
+                configureListFilterButton(button)
+                group.add(button)
+                roleFilterPanel.add(button)
+                if (index < roleFilterButtons.lastIndex) {
+                    roleFilterPanel.add(Box.createHorizontalStrut(JBUI.scale(4)))
+                }
+            }
+            roleFilterButtons.first().isSelected = true
+        }
+        updateFilterButtonStyles()
+    }
+
+    private fun configureListFilterButton(button: JToggleButton) {
+        button.isFocusable = false
+        button.isFocusPainted = false
+        button.isBorderPainted = false
+        button.isContentAreaFilled = false
+        button.isOpaque = false
+        button.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+        button.margin = JBUI.insets(6, 14)
+        updateListFilterButtonSize(button)
+    }
+
+    private fun updateListFilterButtonSize(button: JToggleButton) {
+        val plainFont = button.font.deriveFont(Font.PLAIN, globalUiFontSize)
+        val boldFont = button.font.deriveFont(Font.BOLD, globalUiFontSize)
+        val selected = button.isSelected
+
+        button.font = plainFont
+        val plainSize = button.ui.getPreferredSize(button)
+
+        button.font = boldFont
+        val boldSize = button.ui.getPreferredSize(button)
+
+        button.font = if (selected) boldFont else plainFont
+
+        val size = Dimension(
+            maxOf(plainSize.width, boldSize.width) + JBUI.scale(4),
+            maxOf(plainSize.height, boldSize.height, JBUI.scale(32))
+        )
+        button.preferredSize = size
+        button.minimumSize = size
+        button.maximumSize = size
+        button.revalidate()
     }
 
     private fun buildStatusPanel(): JPanel {
@@ -852,6 +906,136 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         panel.border = JBUI.Borders.emptyTop(6)
         panel.add(statusLabel, BorderLayout.WEST)
         return panel
+    }
+
+    private fun rebuildPrListCards() {
+        prListContent.removeAll()
+        prCardMap.clear()
+        val rows = tableModel.getRows()
+        if (rows.isEmpty()) {
+            prListContent.add(JPanel(BorderLayout()).apply {
+                isOpaque = false
+                border = JBUI.Borders.empty(28, 8)
+                add(JBLabel("暂无 PR，点击刷新按钮重试", SwingConstants.CENTER).apply {
+                    foreground = detailMutedColor()
+                    font = font.deriveFont(Font.PLAIN, globalUiFontSize + 1f)
+                }, BorderLayout.CENTER)
+                alignmentX = Component.LEFT_ALIGNMENT
+                maximumSize = Dimension(Int.MAX_VALUE, preferredSize.height)
+            })
+        } else {
+            rows.forEachIndexed { index, item ->
+                val card = PrCardPanel(item).apply {
+                    setLastCard(index == rows.lastIndex)
+                    setSelectedState(item.id == selectedPrId)
+                    prListSupplementCache[item.id]?.let { applySupplement(it) }
+                }
+                prCardMap[item.id] = card
+                prListContent.add(card)
+            }
+        }
+        prListContent.revalidate()
+        prListContent.repaint()
+    }
+
+    private fun selectPrCard(prId: Long?) {
+        if (selectedPrId == prId) {
+            prId?.let { prCardMap[it]?.setSelectedState(true) }
+            return
+        }
+        selectedPrId?.let { prCardMap[it]?.setSelectedState(false) }
+        selectedPrId = prId
+        prId?.let { prCardMap[it]?.setSelectedState(true) }
+    }
+
+    private fun preloadPrListSupplements(items: List<PrItem>) {
+        items.forEach { item -> loadPrListSupplement(item) }
+    }
+
+    private fun loadPrListSupplement(item: PrItem) {
+        if (prListSupplementCache.containsKey(item.id) || !prListSupplementLoading.add(item.id)) return
+        ApplicationManager.getApplication().executeOnPooledThread {
+            try {
+                val reviewStats = runCatching {
+                    if (mockEnabled) {
+                        val mockJson = readMockJson(mockIssuesFile)
+                        if (mockJson.isNullOrBlank()) null else parseNoteList(mockJson).stats
+                    } else {
+                        val response = apiService.fetchNoteList(resolveGitAddress(), item.iid)
+                        if (response.statusCode() !in 200..299) null else parseNoteList(response.body()).stats
+                    }
+                }.getOrNull()
+                val aiState = runCatching {
+                    val overview = if (mockEnabled) {
+                        val mockJson = readMockJson("ai-review-overview.json")
+                        if (mockJson.isNullOrBlank()) null else parseAiReviewOverview(mockJson)
+                    } else {
+                        val response = apiService.fetchAiReviewOverview(item.id)
+                        if (response.statusCode() !in 200..299) null else parseAiReviewOverview(response.body())
+                    }
+                    resolveAiReviewState(overview)
+                }.getOrDefault(AiReviewBadgeState.NO_DATA)
+                SwingUtilities.invokeLater {
+                    prListSupplementLoading.remove(item.id)
+                    val supplement = PrListSupplement(reviewStats = reviewStats, aiState = aiState)
+                    prListSupplementCache[item.id] = supplement
+                    prCardMap[item.id]?.applySupplement(supplement)
+                }
+            } catch (e: Exception) {
+                PrManagerFileLogger.error("Load PR list supplement error: prId=${item.id} iid=${item.iid}", e)
+                SwingUtilities.invokeLater {
+                    prListSupplementLoading.remove(item.id)
+                }
+            }
+        }
+    }
+
+    private fun resolveAiReviewState(overview: AiReviewOverview?): AiReviewBadgeState {
+        return when {
+            overview == null -> AiReviewBadgeState.NO_DATA
+            !overview.validFlag -> AiReviewBadgeState.STALE
+            overview.unhandledCount == 0 -> AiReviewBadgeState.PASS
+            else -> AiReviewBadgeState.FAIL
+        }
+    }
+
+    private fun formatPrListTime(value: String): String {
+        val trimmed = value.trim()
+        if (trimmed.isBlank()) return ""
+        if (trimmed.contains('T')) {
+            return runCatching {
+                val instant = java.time.Instant.parse(trimmed)
+                java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+                    .withZone(java.time.ZoneId.systemDefault())
+                    .format(instant)
+            }.getOrElse { trimmed }
+        }
+        return trimmed.replace('T', ' ').let {
+            if (it.length >= 19) it.substring(0, 19) else it
+        }
+    }
+
+    private fun listAuthorColor(username: String): Color {
+        val palette = listOf(
+            JBColor(Color(0x1A73E8), Color(0x6EA8FF)),
+            JBColor(Color(0x0B8043), Color(0x57D163)),
+            JBColor(Color(0x8E24AA), Color(0xC77DFF)),
+            JBColor(Color(0xD93025), Color(0xF47067)),
+            JBColor(Color(0xF29900), Color(0xF6C26B))
+        )
+        val index = username.hashCode().let { kotlin.math.abs(it % palette.size) }
+        return palette[index]
+    }
+
+    private fun buildListPill(text: String, color: Color, icon: Icon? = null): OutlinedPillLabel {
+        return OutlinedPillLabel().apply {
+            font = font.deriveFont(Font.PLAIN, globalUiFontSize - 1f)
+            iconTextGap = JBUI.scale(6)
+            horizontalTextPosition = SwingConstants.RIGHT
+            verticalTextPosition = SwingConstants.CENTER
+            this.icon = icon
+            setPill(text, color)
+        }
     }
 
     private fun buildDetailPanel() {
@@ -1970,61 +2154,46 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun bindActions() {
-        filterButtons.forEachIndexed { index, button ->
+        statusFilterButtons.forEachIndexed { index, button ->
             button.addActionListener {
                 try {
+                    dismissSearchFieldFocus()
                     activeFilter = when (index) {
                         0 -> PrFilter.OPEN
                         1 -> PrFilter.MERGED
                         else -> PrFilter.CLOSED
                     }
-                    PrManagerFileLogger.info(
-                        "Filter changed: index=$index filter=$activeFilter createdByMe=${createdByMeCheck.isSelected} reviewedByMe=${reviewedByMeCheck.isSelected}"
-                    )
+                    PrManagerFileLogger.info("Status filter changed: index=$index filter=$activeFilter roleFilter=$activeRoleFilter")
                     updateFilterButtonStyles()
                     resetAndLoad()
                 } catch (e: Exception) {
-                    PrManagerFileLogger.error("Failed to handle filter change", e)
+                    PrManagerFileLogger.error("Failed to handle status filter change", e)
                 }
             }
         }
 
-        val onFilterCheckChanged: (Any?) -> Unit = onFilterCheckChanged@{ source ->
-            if (suppressFilterCheckEvent) return@onFilterCheckChanged
-            try {
-                val createdSelected = createdByMeCheck.isSelected
-                val reviewedSelected = reviewedByMeCheck.isSelected
-                if (createdSelected && reviewedSelected) {
-                    suppressFilterCheckEvent = true
-                    when (source) {
-                        createdByMeCheck -> createdByMeCheck.isSelected = false
-                        reviewedByMeCheck -> reviewedByMeCheck.isSelected = false
-                        else -> {
-                            createdByMeCheck.isSelected = false
-                            reviewedByMeCheck.isSelected = false
-                        }
+        roleFilterButtons.forEachIndexed { index, button ->
+            button.addActionListener {
+                try {
+                    dismissSearchFieldFocus()
+                    activeRoleFilter = when (index) {
+                        1 -> PrRoleFilter.CREATED_BY_ME
+                        2 -> PrRoleFilter.REVIEWED_BY_ME
+                        else -> PrRoleFilter.ALL
                     }
-                    suppressFilterCheckEvent = false
-                    Messages.showInfoMessage("评审人与发起人不能相同", "提示")
-                    return@onFilterCheckChanged
+                    PrManagerFileLogger.info("Role filter changed: index=$index filter=$activeFilter roleFilter=$activeRoleFilter")
+                    updateFilterButtonStyles()
+                    resetAndLoad()
+                } catch (e: Exception) {
+                    PrManagerFileLogger.error("Failed to handle role filter change", e)
                 }
-                PrManagerFileLogger.info(
-                    "Filter checkbox changed: createdByMe=$createdSelected reviewedByMe=$reviewedSelected"
-                )
-                resetAndLoad()
-            } catch (e: Exception) {
-                PrManagerFileLogger.error("Failed to handle filter checkbox change", e)
             }
         }
-        createdByMeCheck.addActionListener { event -> onFilterCheckChanged(event.source) }
-        reviewedByMeCheck.addActionListener { event -> onFilterCheckChanged(event.source) }
 
         searchField.addActionListener {
             try {
                 val keyword = searchField.text?.trim().orEmpty()
-                PrManagerFileLogger.info(
-                    "Search triggered by Enter: keyword=$keyword filter=$activeFilter createdByMe=${createdByMeCheck.isSelected} reviewedByMe=${reviewedByMeCheck.isSelected}"
-                )
+                PrManagerFileLogger.info("Search triggered by Enter: keyword=$keyword filter=$activeFilter roleFilter=$activeRoleFilter")
                 resetAndLoad()
             } catch (e: Exception) {
                 PrManagerFileLogger.error("Failed to search PR list", e)
@@ -2033,12 +2202,48 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
         refreshButton.addActionListener {
             try {
+                dismissSearchFieldFocus()
                 PrManagerFileLogger.info("Refresh button clicked")
                 resetAndLoad()
             } catch (e: Exception) {
                 PrManagerFileLogger.error("Failed to refresh PR list", e)
             }
         }
+    }
+
+    private fun dismissSearchFieldFocus() {
+        if (searchField.isFocusOwner) {
+            KeyboardFocusManager.getCurrentKeyboardFocusManager().clearGlobalFocusOwner()
+        }
+    }
+
+    private fun installSearchFieldBlur(component: Component) {
+        if (component is javax.swing.text.JTextComponent) {
+            return
+        }
+        component.addMouseListener(object : MouseAdapter() {
+            override fun mousePressed(e: MouseEvent) {
+                if (SwingUtilities.isLeftMouseButton(e)) {
+                    dismissSearchFieldFocus()
+                }
+            }
+        })
+        if (component is Container) {
+            component.components.forEach { child -> installSearchFieldBlur(child) }
+        }
+    }
+
+    private fun scrollPrListByWheel(event: MouseWheelEvent) {
+        val scrollPane = prListScrollPane ?: return
+        val scrollBar = scrollPane.verticalScrollBar ?: return
+        val maxValue = (scrollBar.maximum - scrollBar.visibleAmount).coerceAtLeast(scrollBar.minimum)
+        if (maxValue <= scrollBar.minimum) return
+        val unitIncrement = scrollBar.unitIncrement.takeIf { it > 0 } ?: JBUI.scale(24)
+        val delta = (event.preciseWheelRotation * unitIncrement * 3).toInt()
+        if (delta == 0) return
+        userTriggeredListScroll = true
+        scrollBar.value = (scrollBar.value + delta).coerceIn(scrollBar.minimum, maxValue)
+        event.consume()
     }
 
     private fun bindCommentActions() {
@@ -2145,10 +2350,14 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         hasMorePrs = false
         updateLoadMoreState(loading = false, hasMore = false)
         tableModel.setRows(emptyList(), append = false)
+        prListSupplementCache.clear()
+        prListSupplementLoading.clear()
+        prCardMap.clear()
+        selectedPrId = null
+        rebuildPrListCards()
         SwingUtilities.invokeLater {
-            prTableScrollPane?.verticalScrollBar?.value = 0
+            prListScrollPane?.verticalScrollBar?.value = 0
         }
-        prTable.clearSelection()
         renderEmptyDetail()
         loadPrs(append = false)
     }
@@ -2187,13 +2396,15 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     totalPage = result.totalPage
                     currentPage = result.page
                     tableModel.setRows(result.items, append = append)
+                    rebuildPrListCards()
                     val loaded = tableModel.rowCount
                     val hasMore = (totalPage > 0 && currentPage < totalPage) || (totalCount > 0 && loaded < totalCount)
                     hasMorePrs = hasMore
                     userTriggeredListScroll = false
-                    lastListScrollValue = prTableScrollPane?.verticalScrollBar?.value ?: 0
+                    lastListScrollValue = prListScrollPane?.verticalScrollBar?.value ?: 0
                     statusLabel.text = if (totalCount > 0) "已加载 $loaded/$totalCount 条 PR" else "暂无 PR"
                     updateLoadMoreState(loading = false, hasMore = hasMore)
+                    preloadPrListSupplements(result.items)
                 }
                 PrManagerFileLogger.info("Finish loading PR list: append=$append page=${result.page} loaded=${result.items.size} total=${result.total}")
             } catch (e: Exception) {
@@ -2201,11 +2412,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 SwingUtilities.invokeLater {
                     if (!append) {
                         tableModel.setRows(emptyList(), append = false)
+                        rebuildPrListCards()
                     }
                     statusLabel.text = "暂无 PR"
                     hasMorePrs = false
                     userTriggeredListScroll = false
-                    lastListScrollValue = prTableScrollPane?.verticalScrollBar?.value ?: 0
+                    lastListScrollValue = prListScrollPane?.verticalScrollBar?.value ?: 0
                     updateLoadMoreState(loading = false, hasMore = false)
                 }
             } finally {
@@ -2228,20 +2440,16 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }
             if (!statusMatched) return@filter false
 
-            val filterCreated = createdByMeCheck.isSelected
-            val filterReviewed = reviewedByMeCheck.isSelected
-            if ((filterCreated || filterReviewed) && currentUser.isNotBlank()) {
-                val createdMatched = item.author == currentUser
-                val reviewedMatched = item.keyReviewers.contains(currentUser) ||
-                    item.generalReviewers.contains(currentUser) ||
-                    item.reviewers.any { it.username == currentUser }
-                val relatedMatched = when {
-                    filterCreated && filterReviewed -> createdMatched || reviewedMatched
-                    filterCreated -> createdMatched
-                    else -> reviewedMatched
-                }
-                if (!relatedMatched) return@filter false
+            val roleMatched = when (activeRoleFilter) {
+                PrRoleFilter.ALL -> true
+                PrRoleFilter.CREATED_BY_ME -> currentUser.isNotBlank() && item.author == currentUser
+                PrRoleFilter.REVIEWED_BY_ME -> currentUser.isNotBlank() && (
+                    item.keyReviewers.contains(currentUser) ||
+                        item.generalReviewers.contains(currentUser) ||
+                        item.reviewers.any { it.username == currentUser }
+                    )
             }
+            if (!roleMatched) return@filter false
 
             if (keyword.isBlank()) return@filter true
             item.title.lowercase().contains(keyword) ||
@@ -2275,8 +2483,6 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
         val pageValue = if (append) currentPage + 1 else 1
         val currentUser = System.getenv("USERID").orEmpty().trim()
-        val filterCreated = createdByMeCheck.isSelected
-        val filterReviewed = reviewedByMeCheck.isSelected
         val payload = linkedMapOf(
             "sshPath" to resolveGitAddress(),
             "page" to pageValue,
@@ -2287,11 +2493,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             "keywords" to (searchField.text?.trim() ?: "")
         )
         if (currentUser.isNotBlank()) {
-            if (filterCreated) {
-                payload["authorName"] = currentUser
-            }
-            if (filterReviewed) {
-                payload["reviewerName"] = currentUser
+            when (activeRoleFilter) {
+                PrRoleFilter.ALL -> Unit
+                PrRoleFilter.CREATED_BY_ME -> payload["authorName"] = currentUser
+                PrRoleFilter.REVIEWED_BY_ME -> payload["reviewerName"] = currentUser
             }
         }
         return objectMapper.writeValueAsString(payload)
@@ -2358,6 +2563,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun showDetail(prId: Long) {
+        selectPrCard(prId)
         currentDetailId = prId
         changeTreeFlatMode = false
         (detailCard.layout as java.awt.CardLayout).show(detailCard, "detail")
@@ -3207,11 +3413,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             val source = node.readText("sourceBranch", "source_branch", "source")
             val target = node.readText("targetBranch", "target_branch", "target")
             val authorNode = node.get("author")
-            val author = authorNode?.readText("name", "username", "login")
+            val author = authorNode?.readText("username", "login", "name")
                 ?.takeIf { it.isNotBlank() }
                 ?: node.readText("author", "creator", "createdBy", "created_by")
             val statusText = node.readText("status", "state")
             val state = parseState(statusText)
+            val createdAt = node.readText("createdAt", "created_at", "createTime", "createdTime")
             val tableReviewers = parseReviewerUsers(node.get("reviewers"))
             val keyReviewers = parseReviewerNames(node.get("primary_reviewers"))
             val overviewReviewers = parseReviewerNames(node.get("general_reviewers"))
@@ -3226,6 +3433,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     sourceBranch = source,
                     targetBranch = target,
                     author = author,
+                    createdAt = createdAt,
                     state = state,
                     keyReviewers = keyReviewers,
                     reviewers = tableReviewers,
@@ -3611,12 +3819,17 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun updateFilterButtonStyles() {
-        val selectedColor = JBColor(Color(0x1A73E8), Color(0x6EA8FF))
-        val normalColor = JBColor.foreground()
-        filterButtons.forEach { button ->
-            button.foreground = if (button.isSelected) selectedColor else normalColor
+        val selectedBackground = Color.WHITE
+        val normalBackground = JBColor(Color(0, 0, 0, 0), Color(0, 0, 0, 0))
+        val selectedForeground = JBColor(Color(0x111827), Color(0x111827))
+        val normalForeground = JBColor(Color(0x6B7280), Color(0xD1D5DB))
+        (statusFilterButtons + roleFilterButtons).forEach { button ->
+            button.background = if (button.isSelected) selectedBackground else normalBackground
+            button.foreground = if (button.isSelected) selectedForeground else normalForeground
             val style = if (button.isSelected) Font.BOLD else Font.PLAIN
             button.font = button.font.deriveFont(style, globalUiFontSize)
+            updateListFilterButtonSize(button)
+            button.repaint()
         }
     }
 
@@ -3939,6 +4152,186 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
     }
 
+    private inner class PrCardPanel(private val item: PrItem) : JPanel() {
+        private val titleLabel = JBLabel().apply {
+            font = font.deriveFont(Font.BOLD, globalUiFontSize + 3f)
+            foreground = JBColor(Color(0x111827), Color(0xF9FAFB))
+        }
+        private val stateBadge = StatusBadgeLabel().apply {
+            font = font.deriveFont(Font.PLAIN, globalUiFontSize - 1f)
+        }
+        private val authorColor = listAuthorColor(item.author.ifBlank { "?" })
+        private val authorPill = buildListPill(
+            item.author.ifBlank { "未知作者" },
+            authorColor,
+            ReviewerAvatarIcon(item.author.ifBlank { "?" }, authorColor)
+        )
+        private val branchPill = buildListPill(
+            "${item.sourceBranch} → ${item.targetBranch}",
+            detailBranchPillColor,
+            BranchMetaIcon(detailBranchPillColor)
+        )
+        private val timePill = buildListPill(
+            formatPrListTime(item.createdAt),
+            detailCreateTimePillColor,
+            ClockMetaIcon(detailCreateTimePillColor)
+        ).apply {
+            isVisible = text.isNotBlank()
+        }
+        private val reviewPill = buildListPill("", detailIssuePillColor).apply { isVisible = false }
+        private val aiPill = buildListPill("", AiReviewBadgeState.NO_DATA.color).apply { isVisible = false }
+        private var hovered = false
+        private var selectedState = false
+        private var isLastCard = false
+
+        init {
+            isOpaque = false
+            layout = BorderLayout()
+            border = JBUI.Borders.empty(0, 8, 0, 8)
+            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+
+            val headerRow = JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.X_AXIS)
+                isOpaque = false
+                titleLabel.text = "#${if (item.iid > 0) item.iid else item.id} ${item.title}"
+                val badge = statusBadge(item.state.name.lowercase())
+                stateBadge.setBadge(badge.text, badge.color)
+                add(titleLabel)
+                add(Box.createHorizontalStrut(JBUI.scale(12)))
+                add(stateBadge)
+                add(Box.createHorizontalGlue())
+            }
+
+            val metaRow = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(8), JBUI.scale(8))).apply {
+                isOpaque = false
+                add(authorPill)
+                add(branchPill)
+                if (timePill.isVisible) add(timePill)
+                add(reviewPill)
+                add(aiPill)
+            }
+
+            add(JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                isOpaque = false
+                border = JBUI.Borders.empty(16, 12, 16, 12)
+                add(headerRow)
+                add(Box.createVerticalStrut(JBUI.scale(10)))
+                add(metaRow)
+            }, BorderLayout.CENTER)
+
+            val listener = object : MouseAdapter() {
+                override fun mouseEntered(e: MouseEvent) {
+                    hovered = true
+                    repaint()
+                }
+
+                override fun mouseExited(e: MouseEvent) {
+                    val pointer = MouseInfo.getPointerInfo()?.location ?: run {
+                        hovered = false
+                        repaint()
+                        return
+                    }
+                    SwingUtilities.convertPointFromScreen(pointer, this@PrCardPanel)
+                    if (!this@PrCardPanel.contains(pointer)) {
+                        hovered = false
+                        repaint()
+                    }
+                }
+
+                override fun mouseClicked(e: MouseEvent) {
+                    if (!SwingUtilities.isLeftMouseButton(e)) return
+                    dismissSearchFieldFocus()
+                    selectPrCard(item.id)
+                    showDetail(item.id)
+                }
+            }
+            bindCardMouseListenerRecursively(this, listener)
+            bindCardMouseWheelRecursively(this)
+        }
+
+        fun setLastCard(value: Boolean) {
+            isLastCard = value
+            repaint()
+        }
+
+        fun setSelectedState(value: Boolean) {
+            selectedState = value
+            repaint()
+        }
+
+        fun applySupplement(supplement: PrListSupplement) {
+            supplement.reviewStats?.let { stats ->
+                val reviewColor = when {
+                    stats.total <= 0 -> JBColor(Color(0x5F6368), Color(0x9AA0A6))
+                    stats.unresolved > 0 -> detailIssuePillColor
+                    else -> JBColor(Color(0x1E8E3E), Color(0x57D163))
+                }
+                reviewPill.toolTipText = "评审未解决问题/总问题=${stats.unresolved}/${stats.total}"
+                reviewPill.setPill("评审问题 ${stats.unresolved}/${stats.total}", reviewColor)
+                reviewPill.isVisible = true
+            }
+            aiPill.toolTipText = when (supplement.aiState) {
+                AiReviewBadgeState.NO_DATA -> "当前未发起AI评审"
+                AiReviewBadgeState.STALE -> "AI评审结果已过期"
+                else -> "查看AI评审总览"
+            }
+            aiPill.setPill(aiReviewBadgeText(supplement.aiState), supplement.aiState.color)
+            aiPill.isVisible = true
+            revalidate()
+            repaint()
+        }
+
+        override fun paintComponent(g: Graphics) {
+            val g2 = g.create() as Graphics2D
+            try {
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                val insetX = JBUI.scale(2)
+                val insetY = JBUI.scale(2)
+                val width = (width - insetX * 2).coerceAtLeast(0)
+                val height = (height - insetY * 2).coerceAtLeast(0)
+                val arc = JBUI.scale(12)
+                if (hovered || selectedState) {
+                    g2.color = withAlpha(Color.BLACK, if (selectedState) 18 else 12)
+                    g2.fillRoundRect(insetX, insetY + JBUI.scale(2), width, height - JBUI.scale(2), arc, arc)
+                    g2.color = JBColor(Color.WHITE, Color(0x2B2D30))
+                    g2.fillRoundRect(insetX, insetY, width, height - JBUI.scale(2), arc, arc)
+                    if (selectedState) {
+                        g2.color = withAlpha(detailAccentColor, 90)
+                        g2.drawRoundRect(insetX, insetY, width - 1, height - JBUI.scale(2) - 1, arc, arc)
+                    }
+                }
+            } finally {
+                g2.dispose()
+            }
+            super.paintComponent(g)
+            if (!hovered && !selectedState && !isLastCard) {
+                val g2 = g.create() as Graphics2D
+                try {
+                    g2.color = JBColor(Color(0xE5E7EB), Color(0x3A3D41))
+                    val y = height - 1
+                    g2.drawLine(JBUI.scale(8), y, width - JBUI.scale(8), y)
+                } finally {
+                    g2.dispose()
+                }
+            }
+        }
+    }
+
+    private fun bindCardMouseListenerRecursively(component: Component, listener: MouseAdapter) {
+        component.addMouseListener(listener)
+        if (component is Container) {
+            component.components.forEach { child -> bindCardMouseListenerRecursively(child, listener) }
+        }
+    }
+
+    private fun bindCardMouseWheelRecursively(component: Component) {
+        component.addMouseWheelListener { event -> scrollPrListByWheel(event) }
+        if (component is Container) {
+            component.components.forEach { child -> bindCardMouseWheelRecursively(child) }
+        }
+    }
+
     private class CircleWarningIcon : Icon {
         private val size = JBUI.scale(14)
 
@@ -4150,6 +4543,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         val sourceBranch: String,
         val targetBranch: String,
         val author: String,
+        val createdAt: String,
         val state: PrState,
         val keyReviewers: List<String>,
         val reviewers: List<ReviewerInfo>,
@@ -4213,6 +4607,17 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         ALL
     }
 
+    private enum class PrRoleFilter {
+        ALL,
+        CREATED_BY_ME,
+        REVIEWED_BY_ME
+    }
+
+    private data class PrListSupplement(
+        val reviewStats: IssueStats?,
+        val aiState: AiReviewBadgeState
+    )
+
     private class PrTableModel : AbstractTableModel() {
         private val columns = arrayOf("标题", "源分支", "目标分支", "创建人", "评审人")
         private var rows: List<PrItem> = emptyList()
@@ -4223,6 +4628,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
 
         fun getItemAt(row: Int): PrItem = rows[row]
+
+        fun getRows(): List<PrItem> = rows
 
         fun findById(id: Long): PrItem? = rows.firstOrNull { it.id == id }
 

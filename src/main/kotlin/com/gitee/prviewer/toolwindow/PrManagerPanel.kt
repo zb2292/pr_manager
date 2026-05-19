@@ -220,11 +220,22 @@ class RoundedOutlinePanel(
 
 private class SegmentedFilterButton(text: String) : JToggleButton(text) {
     private val arc = JBUI.scale(8)
+    private val horizontalPadding = JBUI.scale(12)
+    private val verticalPadding = JBUI.scale(6)
 
     init {
         isOpaque = false
         isContentAreaFilled = false
         border = JBUI.Borders.empty()
+        horizontalAlignment = SwingConstants.CENTER
+    }
+
+    fun preferredSizeFor(font: Font): Dimension {
+        val metrics = getFontMetrics(font)
+        val textWidth = metrics.stringWidth(text.orEmpty())
+        val width = textWidth + horizontalPadding * 2
+        val height = maxOf(metrics.height + verticalPadding * 2, JBUI.scale(30))
+        return Dimension(width, height)
     }
 
     override fun paintComponent(g: Graphics) {
@@ -874,7 +885,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         button.isContentAreaFilled = false
         button.isOpaque = false
         button.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-        button.margin = JBUI.insets(6, 14)
+        button.margin = JBUI.emptyInsets()
         updateListFilterButtonSize(button)
     }
 
@@ -882,19 +893,22 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         val plainFont = button.font.deriveFont(Font.PLAIN, globalUiFontSize)
         val boldFont = button.font.deriveFont(Font.BOLD, globalUiFontSize)
         val selected = button.isSelected
-
-        button.font = plainFont
-        val plainSize = button.ui.getPreferredSize(button)
-
-        button.font = boldFont
-        val boldSize = button.ui.getPreferredSize(button)
+        val size = if (button is SegmentedFilterButton) {
+            val plainSize = button.preferredSizeFor(plainFont)
+            val boldSize = button.preferredSizeFor(boldFont)
+            Dimension(
+                maxOf(plainSize.width, boldSize.width),
+                maxOf(plainSize.height, boldSize.height, JBUI.scale(30))
+            )
+        } else {
+            val width = maxOf(
+                button.getFontMetrics(plainFont).stringWidth(button.text.orEmpty()),
+                button.getFontMetrics(boldFont).stringWidth(button.text.orEmpty())
+            ) + JBUI.scale(24)
+            Dimension(width, JBUI.scale(30))
+        }
 
         button.font = if (selected) boldFont else plainFont
-
-        val size = Dimension(
-            maxOf(plainSize.width, boldSize.width) + JBUI.scale(4),
-            maxOf(plainSize.height, boldSize.height, JBUI.scale(32))
-        )
         button.preferredSize = size
         button.minimumSize = size
         button.maximumSize = size

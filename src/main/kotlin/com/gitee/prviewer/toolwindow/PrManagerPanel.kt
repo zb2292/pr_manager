@@ -69,6 +69,7 @@ import javax.swing.SwingUtilities
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
 import javax.swing.plaf.basic.BasicTabbedPaneUI
+import javax.swing.plaf.basic.BasicTreeUI
 import javax.swing.table.AbstractTableModel
 import javax.swing.table.TableCellRenderer
 import javax.swing.tree.DefaultMutableTreeNode
@@ -631,6 +632,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         setContent(buildMainPanel())
         bindActions()
         bindCommentActions()
+        installHomepageSearchFocusGuard()
         PrManagerFileLogger.info("PR Manager panel initialized, mockEnabled=$mockEnabled")
         resetAndLoad()
     }
@@ -1501,6 +1503,14 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
         changeTree.emptyText.text = "暂无对比结果"
         changeTree.cellRenderer = ChangeTreeCellRenderer()
+//        changeTree.setUI(object : BasicTreeUI() {
+//            override fun installDefaults() {
+//                super.installDefaults()
+//                leftChildIndent = JBUI.scale(4)
+//                rightChildIndent = JBUI.scale(2)
+//            }
+//        })
+        changeTree.rowHeight = 0
         changeTree.isRootVisible = false
         changeTree.showsRootHandles = true
         changeTree.toggleClickCount = 0
@@ -2280,6 +2290,20 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         })
         if (component is Container) {
             component.components.forEach { child -> installSearchFieldBlur(child) }
+        }
+    }
+
+    private fun installHomepageSearchFocusGuard() {
+        addHierarchyListener { event ->
+            if (event.changeFlags and java.awt.event.HierarchyEvent.SHOWING_CHANGED.toLong() == 0L || !isShowing) {
+                return@addHierarchyListener
+            }
+            SwingUtilities.invokeLater {
+                val focusOwner = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
+                if (focusOwner === searchField && !refreshButton.requestFocusInWindow()) {
+                    dismissSearchFieldFocus()
+                }
+            }
         }
     }
 
@@ -3197,6 +3221,74 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
     }
 
+    private fun changeTypeInlineCode(changeType: String): String {
+        val normalized = changeType.trim().uppercase()
+        return when {
+            normalized.startsWith("A") -> "A"
+            normalized.startsWith("D") -> "D"
+            normalized.startsWith("M") -> "M"
+            normalized.startsWith("R") -> "R"
+            normalized.startsWith("C") -> "C"
+            else -> normalized.firstOrNull()?.toString().orEmpty()
+        }
+    }
+
+    private fun escapeHtml(text: String): String {
+        return buildString(text.length) {
+            text.forEach { ch ->
+                when (ch) {
+                    '&' -> append("&amp;")
+                    '<' -> append("&lt;")
+                    '>' -> append("&gt;")
+                    '"' -> append("&quot;")
+                    '\'' -> append("&#39;")
+                    else -> append(ch)
+                }
+            }
+        }
+    }
+
+    private fun formatFileNameWithChangeType(fileName: String, changeType: String): String {
+        val code = changeTypeInlineCode(changeType)
+        val escapedName = escapeHtml(fileName)
+        if (code.isBlank()) return escapedName
+        val suffixColor = toHex(changeTypeColor(changeType))
+        return "<html>$escapedName <span style='color:$suffixColor;font-weight:bold;'>($code)</span></html>"
+    }
+
+    private fun reviewIssuePillText(unresolved: Int, total: Int): String {
+        if (total <= 0) return ""
+        val reviewLabelColor = if (unresolved > 0) "#D93025" else toHex(detailMutedColor())
+        val reviewTotalColor = toHex(UIUtil.getLabelForeground())
+        return "<html><span style='color:${toHex(detailMutedColor())};'>评审问题</span><span style='color:$reviewLabelColor;'>$unresolved</span><span style='color:$reviewTotalColor;'>/$total</span></html>"
+    }
+
+    private fun reviewIssueColumnWidth(font: Font): Int {
+        val metrics = changeTree.getFontMetrics(font)
+        val maxTextWidth = reviewIssueCountByFileMap.values
+            .ifEmpty { listOf(0 to 0) }
+            .maxOf { (unresolved, total) ->
+                metrics.stringWidth("评审问题$unresolved/$total")
+            }
+        return maxTextWidth + JBUI.scale(24)
+    }
+
+    private fun changeTypeTooltip(change: ChangeItem): String {
+        val normalized = change.changeType.trim().uppercase()
+        val targetPath = normalizeFilePath(change.filePath)
+        val sourcePath = change.fromFilePath?.let(::normalizeFilePath).orEmpty()
+        return when {
+            normalized.startsWith("R") && sourcePath.isNotBlank() -> "重命名：$sourcePath → $targetPath"
+            normalized.startsWith("C") && sourcePath.isNotBlank() -> "复制：$sourcePath → $targetPath"
+            normalized.startsWith("A") -> "新增文件：$targetPath"
+            normalized.startsWith("D") -> "删除文件：$targetPath"
+            normalized.startsWith("M") -> "修改文件：$targetPath"
+            normalized.startsWith("R") -> "重命名文件：$targetPath"
+            normalized.startsWith("C") -> "复制文件：$targetPath"
+            else -> "${changeTypeFullText(change.changeType)}：$targetPath"
+        }
+    }
+
     private fun openDiff(change: ChangeItem) {
         val detail = currentDetail ?: return
         val baseRef = detail.baseCommitSha.trim().takeIf { it.isNotBlank() }
@@ -3936,29 +4028,29 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }
         }.apply {
             isOpaque = false
-            border = JBUI.Borders.empty(3, 6, 3, 6)
+            border = JBUI.Borders.empty(3, -2, 3, 6)
         }
-        private val infoPanel = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(20), 0)).apply {
+        private val infoPanel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
             isOpaque = false
         }
-        private val aiStatsPanel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
-            isOpaque = false
-        }
+        private val typeGap = Box.createHorizontalStrut(JBUI.scale(12))
+        private val reviewGap = Box.createHorizontalStrut(JBUI.scale(16))
+        private val aiGap = Box.createHorizontalStrut(JBUI.scale(16))
         private val mainLabel = javax.swing.JLabel()
-        private val reviewIssueLabel = javax.swing.JLabel()
-        private val aiErrorLabel = javax.swing.JLabel()
-        private val aiSlashLabel = javax.swing.JLabel("/")
-        private val aiWarnLabel = javax.swing.JLabel()
+        private val changeTypeLabel = javax.swing.JLabel()
+        private val reviewIssueLabel = OutlinedPillLabel(JBUI.scale(20))
+        private val aiIssueLabel = OutlinedPillLabel(JBUI.scale(20))
         private val additionLabel = javax.swing.JLabel()
         private val deletionLabel = javax.swing.JLabel()
 
         init {
-            aiStatsPanel.add(aiErrorLabel)
-            aiStatsPanel.add(aiSlashLabel)
-            aiStatsPanel.add(aiWarnLabel)
             infoPanel.add(mainLabel)
+            infoPanel.add(typeGap)
+            infoPanel.add(changeTypeLabel)
+            infoPanel.add(reviewGap)
             infoPanel.add(reviewIssueLabel)
-            infoPanel.add(aiStatsPanel)
+            infoPanel.add(aiGap)
+            infoPanel.add(aiIssueLabel)
             rowPanel.add(infoPanel, BorderLayout.CENTER)
             statsPanel.add(additionLabel)
             statsPanel.add(deletionLabel)
@@ -3985,29 +4077,13 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 return tooltip.takeIf { rect.contains(point) }
             }
 
-            val aiTooltip = tooltipFor(aiStatsPanel, aiErrorLabel.toolTipText, JBUI.scale(2))
-                ?: tooltipFor(aiErrorLabel, aiErrorLabel.toolTipText, JBUI.scale(1))
-                ?: tooltipFor(aiSlashLabel, aiSlashLabel.toolTipText, JBUI.scale(1))
-                ?: tooltipFor(aiWarnLabel, aiWarnLabel.toolTipText, JBUI.scale(1))
-            if (aiTooltip != null) return aiTooltip
+            val nameTooltip = tooltipFor(mainLabel, mainLabel.toolTipText, JBUI.scale(4), JBUI.scale(2))
+            if (nameTooltip != null) return nameTooltip
 
-            val reviewTooltip = tooltipFor(reviewIssueLabel, reviewIssueLabel.toolTipText, JBUI.scale(8), JBUI.scale(2))
-                ?: reviewIssueLabel.toolTipText?.takeIf {
-                    if (!reviewIssueLabel.isVisible || reviewIssueLabel.text.isBlank()) {
-                        false
-                    } else {
-                        val left = (reviewIssueLabel.x - JBUI.scale(2)).coerceAtLeast(0)
-                        val right = if (aiStatsPanel.isVisible) {
-                            aiStatsPanel.x - JBUI.scale(2)
-                        } else {
-                            reviewIssueLabel.x + reviewIssueLabel.width + JBUI.scale(10)
-                        }
-                        right > left &&
-                            point.x >= left && point.x <= right &&
-                            point.y >= reviewIssueLabel.y && point.y <= reviewIssueLabel.y + reviewIssueLabel.height
-                    }
-                }
-            return reviewTooltip
+            val reviewTooltip = tooltipFor(reviewIssueLabel, reviewIssueLabel.toolTipText, JBUI.scale(4), JBUI.scale(2))
+            if (reviewTooltip != null) return reviewTooltip
+
+            return tooltipFor(aiIssueLabel, aiIssueLabel.toolTipText, JBUI.scale(4), JBUI.scale(2))
         }
 
         override fun getTreeCellRendererComponent(
@@ -4036,43 +4112,41 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             )
 
             val font = fallbackRenderer.font.deriveFont(Font.PLAIN, globalUiFontSize)
+            val metaFont = font.deriveFont(Font.PLAIN, (globalUiFontSize - 1f).coerceAtLeast(11f))
             val statFont = Font(Font.MONOSPACED, Font.PLAIN, font.size)
-            val reviewPlaceholderWidth = mainLabel.getFontMetrics(statFont).stringWidth("0/0")
-            val statHeight = mainLabel.getFontMetrics(statFont).height
             mainLabel.font = font
             mainLabel.foreground = UIUtil.getLabelForeground()
             mainLabel.verticalAlignment = SwingConstants.CENTER
-            reviewIssueLabel.font = statFont
+            changeTypeLabel.font = metaFont
+            changeTypeLabel.verticalAlignment = SwingConstants.CENTER
+            reviewIssueLabel.font = metaFont
             reviewIssueLabel.verticalAlignment = SwingConstants.CENTER
             reviewIssueLabel.horizontalAlignment = SwingConstants.LEFT
-            aiErrorLabel.font = statFont
-            aiSlashLabel.font = statFont
-            aiWarnLabel.font = statFont
-            aiErrorLabel.verticalAlignment = SwingConstants.CENTER
-            aiSlashLabel.verticalAlignment = SwingConstants.CENTER
-            aiWarnLabel.verticalAlignment = SwingConstants.CENTER
+            aiIssueLabel.font = metaFont
+            aiIssueLabel.verticalAlignment = SwingConstants.CENTER
+            aiIssueLabel.horizontalAlignment = SwingConstants.LEFT
             additionLabel.font = statFont
             deletionLabel.font = statFont
             additionLabel.verticalAlignment = SwingConstants.CENTER
             deletionLabel.verticalAlignment = SwingConstants.CENTER
             additionLabel.foreground = JBColor(Color(0x1E8E3E), Color(0x57D163))
             deletionLabel.foreground = JBColor(Color(0xD93025), Color(0xF47067))
-            aiErrorLabel.foreground = JBColor(Color(0xD93025), Color(0xF47067))
-            aiWarnLabel.foreground = JBColor(Color(0xF29900), Color(0xF6C26B))
-            aiSlashLabel.foreground = detailMutedColor()
 
             if (userObject is String) {
                 mainLabel.icon = AllIcons.Nodes.Folder
                 mainLabel.iconTextGap = JBUI.scale(8)
                 mainLabel.text = userObject
-                reviewIssueLabel.text = ""
+                mainLabel.toolTipText = null
+                changeTypeLabel.text = ""
+                changeTypeLabel.toolTipText = null
+                changeTypeLabel.isVisible = false
+                reviewIssueLabel.setPill("", detailMutedColor())
                 reviewIssueLabel.toolTipText = null
-                reviewIssueLabel.preferredSize = Dimension(reviewPlaceholderWidth, statHeight)
-                reviewIssueLabel.minimumSize = reviewIssueLabel.preferredSize
-                aiStatsPanel.isVisible = false
-                aiErrorLabel.toolTipText = null
-                aiSlashLabel.toolTipText = null
-                aiWarnLabel.toolTipText = null
+                aiIssueLabel.setPill("", detailMutedColor())
+                aiIssueLabel.toolTipText = null
+                typeGap.isVisible = false
+                reviewGap.isVisible = false
+                aiGap.isVisible = false
                 additionLabel.text = ""
                 deletionLabel.text = ""
                 additionLabel.isVisible = false
@@ -4087,38 +4161,50 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             val reviewStats = reviewIssueCountByFileMap[normalizedFilePath]
             val unresolved = reviewStats?.first ?: 0
             val total = reviewStats?.second ?: 0
-            val reviewText = if (total > 0) "$unresolved/$total" else ""
-            val reviewWidth = maxOf(reviewPlaceholderWidth, reviewIssueLabel.getFontMetrics(statFont).stringWidth(reviewText.ifBlank { "0/0" }))
-            reviewIssueLabel.preferredSize = Dimension(reviewWidth, statHeight)
-            reviewIssueLabel.minimumSize = reviewIssueLabel.preferredSize
-            reviewIssueLabel.text = if (total > 0) {
-                val unresolvedColor = if (unresolved > 0) "#D93025" else "#5F6368"
-                "<html><span style='color:$unresolvedColor;'>$unresolved</span><span style='color:#000000;'>/$total</span></html>"
-            } else {
-                ""
-            }
-            reviewIssueLabel.foreground = detailMutedColor()
-            reviewIssueLabel.toolTipText = if (total > 0) "评审未解决问题/总问题=$unresolved/$total" else null
-
             val aiStats = aiIssueCountByFileMap[normalizedFilePath] ?: (0 to 0)
             val showAiStats = aiStats.first > 0 || aiStats.second > 0
-            aiStatsPanel.isVisible = showAiStats
-            aiSlashLabel.isVisible = showAiStats
-            aiErrorLabel.text = if (showAiStats) aiStats.first.toString() else ""
-            aiWarnLabel.text = if (showAiStats) aiStats.second.toString() else ""
-            val aiTooltip = if (showAiStats) "AI错误问题数/警告问题数=${aiStats.first}/${aiStats.second}" else null
-            aiErrorLabel.toolTipText = aiTooltip
-            aiSlashLabel.toolTipText = aiTooltip
-            aiWarnLabel.toolTipText = aiTooltip
+            val reserveReviewSpace = total > 0 || showAiStats
+            val reviewPillColor = if (unresolved > 0) JBColor(Color(0xD93025), Color(0xF47067)) else detailMutedColor()
+            reviewIssueLabel.setPill(reviewIssuePillText(unresolved, total), reviewPillColor)
+            if (reserveReviewSpace) {
+                val reviewSize = Dimension(reviewIssueColumnWidth(metaFont), reviewIssueLabel.preferredSize.height)
+                reviewIssueLabel.preferredSize = reviewSize
+                reviewIssueLabel.minimumSize = reviewSize
+                reviewIssueLabel.maximumSize = reviewSize
+                reviewIssueLabel.isVisible = true
+            }
+            reviewIssueLabel.toolTipText = if (total > 0) "评审未解决问题/总问题=$unresolved/$total" else null
+
+            val aiErrorColor = toHex(JBColor(Color(0xD93025), Color(0xF47067)))
+            val aiWarnColor = toHex(JBColor(Color(0xF29900), Color(0xF6C26B)))
+            val aiSlashColor = toHex(detailMutedColor())
+            val aiPillColor = JBColor(Color(0xF6C26B), Color(0xE0A458))
+            aiIssueLabel.setPill(
+                if (showAiStats) {
+                    "<html><span style='color:${toHex(detailMutedColor())};'>AI评审问题</span><span style='color:$aiErrorColor;'>${aiStats.first}</span><span style='color:$aiSlashColor;'>/</span><span style='color:$aiWarnColor;'>${aiStats.second}</span></html>"
+                } else {
+                    ""
+                },
+                aiPillColor
+            )
+            aiIssueLabel.toolTipText = if (showAiStats) "AI错误问题数/警告问题数=${aiStats.first}/${aiStats.second}" else null
+
+            changeTypeLabel.text = ""
+            changeTypeLabel.toolTipText = null
+            changeTypeLabel.isVisible = false
+            typeGap.isVisible = false
+            reviewGap.isVisible = reserveReviewSpace
+            aiGap.isVisible = aiIssueLabel.isVisible
 
             mainLabel.icon = changeTypeIcon(change.changeType)
             mainLabel.iconTextGap = JBUI.scale(8)
+            mainLabel.toolTipText = changeTypeTooltip(change)
             additionLabel.text = if (change.additions > 0) "+${change.additions}" else ""
             deletionLabel.text = if (change.deletions > 0) "-${change.deletions}" else ""
             additionLabel.isVisible = additionLabel.text.isNotBlank()
             deletionLabel.isVisible = deletionLabel.text.isNotBlank()
             statsPanel.isVisible = additionLabel.isVisible || deletionLabel.isVisible
-            mainLabel.text = fileName
+            mainLabel.text = formatFileNameWithChangeType(fileName, change.changeType)
             return rowPanel
         }
     }

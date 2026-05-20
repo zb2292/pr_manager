@@ -62,6 +62,7 @@ import javax.swing.JMenuItem
 import javax.swing.JPanel
 import javax.swing.JPopupMenu
 import javax.swing.JToggleButton
+import javax.swing.JViewport
 import javax.swing.Scrollable
 import javax.swing.ScrollPaneConstants
 import javax.swing.SwingConstants
@@ -102,12 +103,15 @@ class StatusBadgeLabel : JBLabel() {
         }
         val g2 = g.create() as Graphics2D
         try {
+            val lineWidth = JBUI.scale(1f)
             g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-            val arc = height
+            g2.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE)
+            val shape = createCapsuleShape(width, height, lineWidth)
             g2.color = badgeColor
-            g2.fillRoundRect(0, 0, width - 1, height - 1, arc, arc)
+            g2.fill(shape)
             g2.color = badgeColor
-            g2.drawRoundRect(0, 0, width - 1, height - 1, arc, arc)
+            g2.stroke = BasicStroke(lineWidth)
+            g2.draw(shape)
         } finally {
             g2.dispose()
         }
@@ -117,6 +121,14 @@ class StatusBadgeLabel : JBLabel() {
 
 private fun withAlpha(color: Color, alpha: Int): Color {
     return Color(color.red, color.green, color.blue, alpha.coerceIn(0, 255))
+}
+
+private fun createCapsuleShape(width: Int, height: Int, lineWidth: Float = JBUI.scale(1f)): RoundRectangle2D.Float {
+    val inset = lineWidth / 2f
+    val shapeWidth = (width - lineWidth).coerceAtLeast(0f)
+    val shapeHeight = (height - lineWidth).coerceAtLeast(0f)
+    val arc = shapeHeight.coerceAtLeast(0f)
+    return RoundRectangle2D.Float(inset, inset, shapeWidth, shapeHeight, arc, arc)
 }
 
 class OutlinedPillLabel(
@@ -154,12 +166,15 @@ class OutlinedPillLabel(
         }
         val g2 = g.create() as Graphics2D
         try {
+            val lineWidth = JBUI.scale(1f)
             g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-            val arc = JBUI.scale(16)
+            g2.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE)
+            val shape = createCapsuleShape(width, height, lineWidth)
             g2.color = withAlpha(pillColor, 38)
-            g2.fillRoundRect(0, 0, width - 1, height - 1, arc, arc)
+            g2.fill(shape)
             g2.color = withAlpha(pillColor, 90)
-            g2.drawRoundRect(0, 0, width - 1, height - 1, arc, arc)
+            g2.stroke = BasicStroke(lineWidth)
+            g2.draw(shape)
         } finally {
             g2.dispose()
         }
@@ -314,48 +329,6 @@ private class TimelineMarkerPanel(
     }
 }
 
-private class CommitPointerPanel(
-    fillColor: Color,
-    outlineColor: Color
-) : JComponent() {
-    private var fillColor: Color = fillColor
-    private var outlineColor: Color = outlineColor
-
-    init {
-        isOpaque = false
-        preferredSize = Dimension(JBUI.scale(12), JBUI.scale(36))
-        minimumSize = preferredSize
-    }
-
-    fun updateColors(fillColor: Color, outlineColor: Color) {
-        this.fillColor = fillColor
-        this.outlineColor = outlineColor
-        repaint()
-    }
-
-    override fun paintComponent(g: Graphics) {
-        if (width <= 0 || height <= 0) return
-        val g2 = g.create() as Graphics2D
-        try {
-            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-            val size = JBUI.scale(10)
-            val halfSize = size / 2f
-            val centerX = width / 2f
-            val centerY = JBUI.scale(18).toFloat().coerceIn(halfSize + 1f, height - halfSize - 1f)
-            val polygon = Polygon(
-                intArrayOf((centerX - halfSize).toInt(), centerX.toInt(), (centerX + halfSize).toInt(), centerX.toInt()),
-                intArrayOf(centerY.toInt(), (centerY - halfSize).toInt(), centerY.toInt(), (centerY + halfSize).toInt()),
-                4
-            )
-            g2.color = fillColor
-            g2.fillPolygon(polygon)
-            g2.color = outlineColor
-            g2.drawPolygon(polygon)
-        } finally {
-            g2.dispose()
-        }
-    }
-}
 
 private class ViewportWidthPanel : JPanel(), Scrollable {
     override fun getPreferredScrollableViewportSize(): Dimension = preferredSize
@@ -624,13 +597,13 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private val changeTreeRoot = DefaultMutableTreeNode("ROOT")
     private val changeTreeModel = DefaultTreeModel(changeTreeRoot)
     private val changeTree = Tree(changeTreeModel)
-    private val commitSummaryLabel = JBLabel("0 条提交")
     private val commitTimelineContent = ViewportWidthPanel().apply {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
         isOpaque = false
+        border = JBUI.Borders.empty()
     }
+    private var commitTimelineScrollPane: JBScrollPane? = null
     private val commitTableModel = CommitTableModel()
-    private val commitTable = JBTable(commitTableModel)
 
     private var currentDetail: PrDetail? = null
     private var currentDetailId: Long? = null
@@ -717,7 +690,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         mergeTypeField.font = mergeTypeField.font.deriveFont(Font.PLAIN, globalUiFontSize)
         deleteBranchCheck.font = deleteBranchCheck.font.deriveFont(Font.PLAIN, globalUiFontSize)
         changeSearchField.font = changeSearchField.font.deriveFont(Font.PLAIN, globalUiFontSize)
-        listOf(changeSummaryLabel, changeAdditionsLabel, changeDeletionsLabel, commitSummaryLabel).forEach {
+        listOf(changeSummaryLabel, changeAdditionsLabel, changeDeletionsLabel).forEach {
             it.font = it.font.deriveFont(Font.PLAIN, globalUiFontSize)
         }
         listOf(changeTreeToggleButton, changeFlatToggleButton).forEach {
@@ -726,8 +699,6 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         updateDetailMetaRowIndent()
 
         changeTree.font = changeTree.font.deriveFont(Font.PLAIN, globalUiFontSize)
-        commitTable.font = commitTable.font.deriveFont(Font.PLAIN, globalUiFontSize)
-        commitTable.tableHeader.font = commitTable.tableHeader.font.deriveFont(Font.BOLD, globalUiFontSize)
     }
 
     private fun buildMainPanel(): JPanel {
@@ -817,19 +788,23 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }, BorderLayout.EAST)
         }
 
-        val filterBar = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(12), 0)).apply {
+        val filterBar = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.X_AXIS)
             isOpaque = false
             add(statusFilterPanel)
+            add(Box.createHorizontalStrut(JBUI.scale(12)))
             add(roleFilterPanel)
         }
 
-        return JPanel().apply {
-            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+        return JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.empty(0, 8, 8, 8)
-            add(headerBar)
-            add(Box.createVerticalStrut(JBUI.scale(16)))
-            add(filterBar)
+            add(headerBar, BorderLayout.NORTH)
+            add(JPanel(BorderLayout()).apply {
+                isOpaque = false
+                border = JBUI.Borders.emptyTop(JBUI.scale(16))
+                add(filterBar, BorderLayout.WEST)
+            }, BorderLayout.CENTER)
         }
     }
 
@@ -1121,7 +1096,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             layout = BoxLayout(this, BoxLayout.X_AXIS)
             isOpaque = false
             alignmentX = Component.LEFT_ALIGNMENT
-            val inset = detailHorizontalInset()
+            val inset = detailHeaderRowSideInset()
             border = JBUI.Borders.empty(0, inset, 10, inset)
             add(detailHeaderTitle)
             add(Box.createHorizontalStrut(JBUI.scale(10)))
@@ -1223,12 +1198,36 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private fun detailMutedColor(): Color = JBColor(Color(0x5F6368), Color(0xF3F4F6))
 
+    private fun detailTabHeaderMutedTextColor(): Color = JBColor(Color(0x5F6368), Color(0x9AA0A6))
+
+    private fun detailTabHeaderSelectedTextColor(): Color = if (UIUtil.isUnderDarcula()) Color.WHITE else detailPrimaryTextColor()
+
+    private fun detailTabHeaderSelectedFill(): Color = if (UIUtil.isUnderDarcula()) {
+        withAlpha(detailAccentColor, 88)
+    } else {
+        withAlpha(detailAccentColor, 20)
+    }
+
+    private fun detailTabHeaderSelectedOutline(): Color = if (UIUtil.isUnderDarcula()) {
+        withAlpha(detailAccentColor, 182)
+    } else {
+        withAlpha(detailAccentColor, 88)
+    }
+
     private fun detailSectionTitleFontSize(): Float = globalUiFontSize + 1f
 
     private fun detailHorizontalInset(): Int {
         val metricsOwner = if (detailHeaderTitle.font != null) detailHeaderTitle else detailTabs
         return metricsOwner.getFontMetrics(metricsOwner.font).charWidth('中').coerceAtLeast(JBUI.scale(12))
     }
+
+    private fun detailHeaderInsetDelta(): Int = JBUI.scale(16)
+
+    private fun detailHeaderRowInsetDelta(): Int = JBUI.scale(10)
+
+    private fun detailHeaderSideInset(): Int = detailHorizontalInset() + detailHeaderInsetDelta()
+
+    private fun detailHeaderRowSideInset(): Int = detailHorizontalInset() + detailHeaderRowInsetDelta()
 
     private fun detailContentSideInsets(component: Component?): Pair<Int, Int> {
         fun borderInsets(target: JComponent?): Pair<Int, Int>? {
@@ -1258,6 +1257,22 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             isOpaque = false
             border = JBUI.Borders.empty(topInset, detailHorizontalInset(), bottomInset, detailHorizontalInset())
         }
+    }
+
+    private fun configureCommitTimelineContent() {
+        commitTimelineContent.apply {
+            isOpaque = true
+            background = detailSurfaceFill()
+            border = JBUI.Borders.empty()
+        }
+    }
+
+    private fun repaintCommitTimelineViewport() {
+        commitTimelineContent.background = detailSurfaceFill()
+        val viewport = commitTimelineScrollPane?.viewport ?: return
+        viewport.background = detailSurfaceFill()
+        viewport.repaint()
+        commitTimelineContent.repaint()
     }
 
     private fun stretchDetailTabChild(component: JComponent, stretchVertically: Boolean = false): JComponent {
@@ -1291,7 +1306,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun updateDetailMetaRowIndent() {
-        val inset = detailHorizontalInset()
+        val inset = detailHeaderRowSideInset()
         detailMetaRow.border = JBUI.Borders.empty(0, inset, 0, inset)
         detailMetaRow.revalidate()
         detailMetaRow.repaint()
@@ -1305,6 +1320,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         detailPanel.background = panelFill
         detailTabs.background = tabFill
         overviewDesc.background = detailSurfaceFill()
+        commitTimelineContent.background = detailSurfaceFill()
+        commitTimelineScrollPane?.background = detailSurfaceFill()
+        commitTimelineScrollPane?.viewport?.background = detailSurfaceFill()
         repeat(detailTabs.tabCount) { index ->
             when (val component = detailTabs.getComponentAt(index)) {
                 is JBScrollPane -> {
@@ -1805,17 +1823,31 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun buildCommitPanel(): JComponent {
-        val timelineScroll = createDetailScrollPane(
+        configureCommitTimelineContent()
+        val pane = createDetailScrollPane(
             commitTimelineContent,
-            ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
+            ScrollPaneConstants.VERTICAL_SCROLLBAR_ALWAYS,
             ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER,
-            fillColorProvider = ::detailSurfaceFill
+            ::detailSurfaceFill
         ).apply {
-            verticalScrollBar.unitIncrement = JBUI.scale(16)
+            border = JBUI.Borders.emptyTop(6)
+            viewportBorder = null
+            isWheelScrollingEnabled = false
+            isDoubleBuffered = true
+            viewport.isDoubleBuffered = true
+            viewport.scrollMode = JViewport.SIMPLE_SCROLL_MODE
+            verticalScrollBar.unitIncrement = JBUI.scale(24)
+            verticalScrollBar.blockIncrement = JBUI.scale(96)
         }
+        commitTimelineScrollPane = pane
+
+        pane.addMouseWheelListener { event -> scrollCommitTimelineByWheel(event) }
+        pane.viewport.addMouseWheelListener { event -> scrollCommitTimelineByWheel(event) }
+        commitTimelineContent.addMouseWheelListener { event -> scrollCommitTimelineByWheel(event) }
 
         val body = buildDetailTabBody().apply {
-            add(stretchDetailTabChild(wrapDetailSurface(timelineScroll, padding = JBUI.insets(14)), stretchVertically = true))
+            add(Box.createVerticalStrut(JBUI.scale(10)))
+            add(stretchDetailTabChild(wrapDetailSurface(pane, padding = JBUI.insets(6, 8, 6, 8)), stretchVertically = true))
         }
 
         return JPanel(BorderLayout()).apply {
@@ -1826,35 +1858,34 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun renderCommitTimeline(commits: List<CommitItem>, missingHashes: Set<String> = emptySet()) {
-        commitTimelineContent.removeAll()
-        commitSummaryLabel.text = "${commits.size} 条提交"
         updateDetailTabCounters(commitCount = commits.size)
+        commitTableModel.setRows(commits, missingHashes)
+        commitTimelineContent.removeAll()
 
         if (commits.isEmpty()) {
-            commitTimelineContent.add(JBLabel("暂无提交记录").apply {
-                foreground = detailMutedColor()
-                border = JBUI.Borders.empty(6, 4)
+            commitTimelineContent.add(JPanel(BorderLayout()).apply {
+                isOpaque = false
+                border = JBUI.Borders.empty(28, 8)
+                add(JBLabel("暂无提交记录", SwingConstants.CENTER).apply {
+                    foreground = detailMutedColor()
+                    font = font.deriveFont(Font.PLAIN, globalUiFontSize + 1f)
+                }, BorderLayout.CENTER)
                 alignmentX = Component.LEFT_ALIGNMENT
+                maximumSize = Dimension(Int.MAX_VALUE, preferredSize.height)
             })
-            commitTimelineContent.revalidate()
-            commitTimelineContent.repaint()
-            return
-        }
-
-        commits.forEachIndexed { index, commit ->
-            commitTimelineContent.add(
-                createCommitTimelineItem(
-                    commit = commit,
-                    isLast = index == commits.lastIndex,
-                    missing = missingHashes.contains(commit.hash)
-                )
-            )
-            if (index < commits.lastIndex) {
-                commitTimelineContent.add(Box.createVerticalStrut(JBUI.scale(10)))
+        } else {
+            commits.forEachIndexed { index, commit ->
+                val card = createCommitTimelineItem(commit, index == commits.lastIndex, missingHashes.contains(commit.hash)).apply {
+                    alignmentX = Component.LEFT_ALIGNMENT
+                    maximumSize = Dimension(Int.MAX_VALUE, preferredSize.height)
+                }
+                bindCommitTimelineMouseWheelRecursively(card)
+                commitTimelineContent.add(card)
             }
         }
+
         commitTimelineContent.revalidate()
-        commitTimelineContent.repaint()
+        repaintCommitTimelineViewport()
     }
 
     private fun createCommitTimelineItem(
@@ -1865,8 +1896,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         val lineColor = withAlpha(UIUtil.getBoundsColor(), 140)
         val dangerColor = JBColor(Color(0xD93025), Color(0xF47067))
         val primaryTextColor = detailPrimaryTextColor()
-        val markerColor = primaryTextColor
+        val markerColor = lineColor
         val hashColor = primaryTextColor
+        val cardFillColor = detailSurfaceFill()
+        val cardOutlineColor = detailOutlineColor()
         val title = JBLabel(commit.message.ifBlank { "(无提交信息)" }).apply {
             font = font.deriveFont(Font.BOLD, globalUiFontSize + 0.5f)
             foreground = primaryTextColor
@@ -1874,7 +1907,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         val hashBadge = buildCommitHashBadge(commit.hash, hashColor)
 
         val metaLeft = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(8), 0)).apply {
-            isOpaque = false
+            isOpaque = true
+            background = cardFillColor
             add(JBLabel(commit.author.ifBlank { "未知作者" }, ReviewerAvatarIcon(commit.author.ifBlank { "?" }, detailAccentColor), SwingConstants.LEFT).apply {
                 foreground = detailMutedColor()
                 iconTextGap = JBUI.scale(6)
@@ -1887,7 +1921,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
 
         val statsPanel = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0)).apply {
-            isOpaque = false
+            isOpaque = true
+            background = cardFillColor
             if (commit.additions > 0) {
                 add(JBLabel("+${commit.additions}").apply {
                     foreground = JBColor(Color(0x1E8E3E), Color(0x57D163))
@@ -1903,76 +1938,56 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
 
         val metaRow = JPanel(BorderLayout(JBUI.scale(8), 0)).apply {
-            isOpaque = false
+            isOpaque = true
+            background = cardFillColor
             add(metaLeft, BorderLayout.WEST)
             if (statsPanel.componentCount > 0) {
                 add(statsPanel, BorderLayout.EAST)
             }
         }
 
+        val headerRow = JPanel(BorderLayout(JBUI.scale(8), 0)).apply {
+            isOpaque = true
+            background = cardFillColor
+            add(title, BorderLayout.CENTER)
+            add(hashBadge, BorderLayout.EAST)
+        }
+
         val content = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            isOpaque = false
-            add(JPanel(BorderLayout(JBUI.scale(8), 0)).apply {
-                isOpaque = false
-                add(title, BorderLayout.CENTER)
-                add(hashBadge, BorderLayout.EAST)
-            })
+            isOpaque = true
+            background = cardFillColor
+            add(headerRow)
             add(Box.createVerticalStrut(JBUI.scale(8)))
             add(metaRow)
         }
 
-        val baseFillColor = detailSurfaceFill()
-        val hoverFillColor = withAlpha(UIUtil.getLabelForeground(), 10)
-        val baseOutlineColor = detailOutlineColor()
-        val hoverOutlineColor = withAlpha(UIUtil.getBoundsColor(), 220)
-
-        val card = RoundedOutlinePanel(baseFillColor, baseOutlineColor, arc = JBUI.scale(14)).apply {
-            layout = BorderLayout()
-            border = JBUI.Borders.empty(14)
+        val card = JPanel(BorderLayout()).apply {
+            isOpaque = true
+            background = cardFillColor
+            border = javax.swing.BorderFactory.createCompoundBorder(
+                javax.swing.BorderFactory.createLineBorder(cardOutlineColor, JBUI.scale(1)),
+                JBUI.Borders.empty(14)
+            )
             add(content, BorderLayout.CENTER)
         }
-        val pointer = CommitPointerPanel(baseFillColor, baseOutlineColor)
         val marker = TimelineMarkerPanel(markerColor, lineColor, false, isLast)
-        val cardWrapper = JPanel(BorderLayout()).apply {
-            isOpaque = false
-            add(pointer, BorderLayout.WEST)
+
+        val rowPanel = JPanel(BorderLayout(JBUI.scale(8), 0)).apply {
+            isOpaque = true
+            isDoubleBuffered = true
+            background = detailSurfaceFill()
+            add(marker, BorderLayout.WEST)
             add(card, BorderLayout.CENTER)
         }
 
-        val rowPanel = JPanel(BorderLayout()).apply {
-            isOpaque = false
-            alignmentX = Component.LEFT_ALIGNMENT
-            add(marker, BorderLayout.WEST)
-            add(cardWrapper, BorderLayout.CENTER)
-            maximumSize = Dimension(Int.MAX_VALUE, preferredSize.height)
+        return JPanel(BorderLayout()).apply {
+            isOpaque = true
+            isDoubleBuffered = true
+            background = detailSurfaceFill()
+            border = JBUI.Borders.empty(0, 0, if (isLast) 0 else JBUI.scale(10), 0)
+            add(rowPanel, BorderLayout.CENTER)
         }
-
-        fun applyHoverState(hovered: Boolean) {
-            val fill = if (hovered) hoverFillColor else baseFillColor
-            val outline = if (hovered) hoverOutlineColor else baseOutlineColor
-            card.updateColors(fill, outline)
-            pointer.updateColors(fill, outline)
-        }
-
-        val hoverListener = object : MouseAdapter() {
-            override fun mouseEntered(e: MouseEvent) {
-                applyHoverState(true)
-            }
-
-            override fun mouseExited(e: MouseEvent) {
-                SwingUtilities.invokeLater {
-                    if (!isPointerInside(rowPanel)) {
-                        applyHoverState(false)
-                    }
-                }
-            }
-        }
-        listOf(rowPanel, cardWrapper, card, pointer, content, title, hashBadge, metaRow, metaLeft, statsPanel).forEach {
-            it.addMouseListener(hoverListener)
-        }
-
-        return rowPanel
     }
 
     private fun buildCommitHashBadge(hash: String, color: Color): JComponent {
@@ -2070,28 +2085,32 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         tail: JComponent?,
         private val isFirst: Boolean,
         private val isLast: Boolean
-    ) : JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)) {
+    ) : JPanel(BorderLayout()) {
+        private val contentPanel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
+            isOpaque = false
+        }
         private var selectedState = false
 
         init {
             isOpaque = false
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-            val sideInset = detailHorizontalInset()
+            val sideInset = detailHeaderSideInset()
             border = JBUI.Borders.empty(
                 JBUI.scale(2),
                 if (isFirst) sideInset else JBUI.scale(12),
                 JBUI.scale(12),
                 if (isLast) sideInset else JBUI.scale(12)
             )
-            add(titleLabel)
+            contentPanel.add(titleLabel)
             if (badge != null) {
-                add(Box.createHorizontalStrut(JBUI.scale(6)))
-                add(badge)
+                contentPanel.add(Box.createHorizontalStrut(JBUI.scale(6)))
+                contentPanel.add(badge)
             }
             if (tail != null) {
-                add(Box.createHorizontalStrut(JBUI.scale(6)))
-                add(tail)
+                contentPanel.add(Box.createHorizontalStrut(JBUI.scale(6)))
+                contentPanel.add(tail)
             }
+            add(contentPanel, BorderLayout.WEST)
             bindClickHandlerRecursively(this)
         }
 
@@ -2114,12 +2133,36 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
 
         override fun paintComponent(g: Graphics) {
+            if (selectedState) {
+                val g2 = g.create() as Graphics2D
+                try {
+                    g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                    val bounds = contentPanel.bounds
+                    if (bounds.width > 0 && bounds.height > 0) {
+                        val insetX = JBUI.scale(8)
+                        val insetY = JBUI.scale(4)
+                        val x = (bounds.x - insetX).coerceAtLeast(0)
+                        val y = (bounds.y - insetY).coerceAtLeast(0)
+                        val fillWidth = (bounds.width + insetX * 2).coerceAtMost(width - x)
+                        val fillHeight = (bounds.height + insetY * 2).coerceAtMost(height - y)
+                        if (fillWidth > 0 && fillHeight > 0) {
+                            val arc = JBUI.scale(12)
+                            g2.color = detailTabHeaderSelectedFill()
+                            g2.fillRoundRect(x, y, fillWidth, fillHeight, arc, arc)
+                            g2.color = detailTabHeaderSelectedOutline()
+                            g2.drawRoundRect(x, y, fillWidth - 1, fillHeight - 1, arc, arc)
+                        }
+                    }
+                } finally {
+                    g2.dispose()
+                }
+            }
             super.paintComponent(g)
         }
 
         fun setSelectedState(selected: Boolean) {
             selectedState = selected
-            titleLabel.foreground = if (selected) UIUtil.getLabelForeground() else detailMutedColor()
+            titleLabel.foreground = if (selected) detailTabHeaderSelectedTextColor() else detailTabHeaderMutedTextColor()
             titleLabel.font = titleLabel.font.deriveFont(if (selected) Font.BOLD else Font.PLAIN, detailSectionTitleFontSize())
             revalidate()
             repaint()
@@ -2424,6 +2467,18 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         val delta = (event.preciseWheelRotation * unitIncrement * 3).toInt()
         if (delta == 0) return
         userTriggeredListScroll = true
+        scrollBar.value = (scrollBar.value + delta).coerceIn(scrollBar.minimum, maxValue)
+        event.consume()
+    }
+
+    private fun scrollCommitTimelineByWheel(event: MouseWheelEvent) {
+        val scrollPane = commitTimelineScrollPane ?: return
+        val scrollBar = scrollPane.verticalScrollBar ?: return
+        val maxValue = (scrollBar.maximum - scrollBar.visibleAmount).coerceAtLeast(scrollBar.minimum)
+        if (maxValue <= scrollBar.minimum) return
+        val unitIncrement = scrollBar.unitIncrement.takeIf { it > 0 } ?: JBUI.scale(24)
+        val delta = (event.preciseWheelRotation * unitIncrement * 3).toInt()
+        if (delta == 0) return
         scrollBar.value = (scrollBar.value + delta).coerceIn(scrollBar.minimum, maxValue)
         event.consume()
     }
@@ -2839,11 +2894,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         detailCreateTimeLabel.icon = ClockMetaIcon(detailCreateTimePillColor)
         detailCreateTimeLabel.iconTextGap = JBUI.scale(6)
         detailCreateTimeLabel.setPill(detail.createTime.ifBlank { "时间未知" }, detailCreateTimePillColor)
-        detailBranchLabel.icon = BranchMetaIcon(detailBranchPillColor)
-        detailBranchLabel.iconTextGap = JBUI.scale(6)
+        detailBranchLabel.icon = null
         detailBranchLabel.setPill("${detail.sourceBranch} → ${detail.targetBranch}", detailBranchPillColor)
         issueCountLabel.setPill("评审问题 0/0", detailIssuePillColor)
-        issueCountLabel.toolTipText = "评审未解决问题/总问题=0/0"
+        issueCountLabel.toolTipText = "评审未解决问题/总问题 = 0/0"
 
         overviewDesc.text = detail.overview.desc.ifBlank { "暂无描述" }
         renderReviewStatusCards(detail)
@@ -4308,7 +4362,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 },
                 aiPillColor
             )
-            aiIssueLabel.toolTipText = if (showAiStats) "AI错误问题数/警告问题数=${aiStats.first}/${aiStats.second}" else null
+            aiIssueLabel.toolTipText = if (showAiStats) "AI错误问题数/警告问题数 = ${aiStats.first}/${aiStats.second}" else null
 
             changeTypeLabel.text = ""
             changeTypeLabel.toolTipText = null
@@ -4327,33 +4381,6 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             statsPanel.isVisible = additionLabel.isVisible || deletionLabel.isVisible
             mainLabel.text = formatFileNameWithChangeType(fileName, change.changeType)
             return rowPanel
-        }
-    }
-
-    private inner class CommitHashCellRenderer : TableCellRenderer {
-        private val label = JBLabel()
-
-        override fun getTableCellRendererComponent(
-            table: javax.swing.JTable,
-            value: Any?,
-            isSelected: Boolean,
-            hasFocus: Boolean,
-            row: Int,
-            column: Int
-        ): Component {
-            val text = value?.toString().orEmpty()
-            label.text = text
-            label.font = table.font
-            label.isOpaque = true
-            label.background = if (isSelected) table.selectionBackground else table.background
-
-            val isMissing = commitTableModel.isMissingAt(row)
-            label.foreground = if (isSelected) {
-                table.selectionForeground
-            } else {
-                if (isMissing) JBColor(Color(0xD93025), Color(0xF47067)) else table.foreground
-            }
-            return label
         }
     }
 
@@ -4434,8 +4461,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         )
         private val branchPill = buildListPill(
             "${item.sourceBranch} → ${item.targetBranch}",
-            detailBranchPillColor,
-            BranchMetaIcon(detailBranchPillColor)
+            detailBranchPillColor
         )
         private val timePill = buildListPill(
             formatPrListTime(item.createdAt),
@@ -4595,6 +4621,13 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         component.addMouseWheelListener { event -> scrollPrListByWheel(event) }
         if (component is Container) {
             component.components.forEach { child -> bindCardMouseWheelRecursively(child) }
+        }
+    }
+
+    private fun bindCommitTimelineMouseWheelRecursively(component: Component) {
+        component.addMouseWheelListener { event -> scrollCommitTimelineByWheel(event) }
+        if (component is Container) {
+            component.components.forEach { child -> bindCommitTimelineMouseWheelRecursively(child) }
         }
     }
 
@@ -4919,7 +4952,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private class CommitTableModel : AbstractTableModel() {
-        private val columns = arrayOf("提交人", "提交编号", "提交信息", "提交日期")
+        private val columns = arrayOf("提交信息", "提交人", "提交日期", "提交编号", "变更")
         private var rows: List<CommitItem> = emptyList()
         private var missingHashes: Set<String> = emptySet()
 
@@ -4949,10 +4982,16 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         override fun getValueAt(rowIndex: Int, columnIndex: Int): Any {
             val item = rows[rowIndex]
             return when (columnIndex) {
-                0 -> item.author
-                1 -> if (item.hash.length > 7) item.hash.take(7) else item.hash
-                2 -> item.message
-                3 -> item.time
+                0 -> item.message.ifBlank { "(无提交信息)" }
+                1 -> item.author.ifBlank { "未知作者" }
+                2 -> item.time.ifBlank { "-" }
+                3 -> if (item.hash.length > 7) item.hash.take(7) else item.hash
+                4 -> when {
+                    item.additions > 0 && item.deletions > 0 -> "+${item.additions} / -${item.deletions}"
+                    item.additions > 0 -> "+${item.additions}"
+                    item.deletions > 0 -> "-${item.deletions}"
+                    else -> "-"
+                }
                 else -> ""
             }
         }

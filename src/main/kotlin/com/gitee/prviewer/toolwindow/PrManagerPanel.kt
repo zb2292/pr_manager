@@ -579,16 +579,16 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private val changeSummaryLabel = JBLabel("0 个文件变更")
     private val changeAdditionsLabel = JBLabel("+0")
     private val changeDeletionsLabel = JBLabel("-0")
-    private val changeTreeToggleButton = JToggleButton("树状").apply {
+    private val changeTreeToggleButton = SegmentedFilterButton("树状").apply {
         isFocusable = false
         isFocusPainted = false
         isSelected = true
-        margin = JBUI.insets(0, 10, 0, 10)
+        margin = JBUI.emptyInsets()
     }
-    private val changeFlatToggleButton = JToggleButton("平铺").apply {
+    private val changeFlatToggleButton = SegmentedFilterButton("平铺").apply {
         isFocusable = false
         isFocusPainted = false
-        margin = JBUI.insets(0, 10, 0, 10)
+        margin = JBUI.emptyInsets()
     }
     private val changeViewModeGroup = ButtonGroup().apply {
         add(changeTreeToggleButton)
@@ -1180,6 +1180,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private fun detailSurfaceFill(): Color = JBColor(Color(0xF7F8FA), Color(0x313438))
 
+    private fun commitCardFill(): Color = JBColor(Color(0xFCFCFD), Color(0x363A3F))
+
+    private fun commitCardOutlineColor(): Color = JBColor(Color(0xD7DDE6), Color(0x59606A))
+
+    private fun commitHashBadgeFill(): Color = JBColor(Color(0xFFFFFF), Color(0x3B4047))
+
     private fun searchFieldSurfaceFill(): Color = JBColor(Color.WHITE, Color(0x2B2D30))
 
     private fun searchFieldOutlineColor(): Color = JBColor(Color(0xD1D5DB), Color(0x4B5563))
@@ -1214,7 +1220,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         withAlpha(detailAccentColor, 88)
     }
 
-    private fun detailSectionTitleFontSize(): Float = globalUiFontSize + 1f
+    private fun detailSectionTitleFontSize(): Float = globalUiFontSize + 2f
 
     private fun detailHorizontalInset(): Int {
         val metricsOwner = if (detailHeaderTitle.font != null) detailHeaderTitle else detailTabs
@@ -1344,6 +1350,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             override fun updateUI() {
                 super.updateUI()
                 border = JBUI.Borders.empty()
+                viewportBorder = null
                 isOpaque = false
                 viewport?.isOpaque = true
                 background = fillColorProvider()
@@ -1351,6 +1358,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }
         }.apply {
             border = JBUI.Borders.empty()
+            viewportBorder = null
             isOpaque = false
             viewport.isOpaque = true
             background = fillColorProvider()
@@ -1360,22 +1368,18 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private fun styleSegmentedToggle(button: JToggleButton, selected: Boolean) {
         val darkTheme = UIUtil.isUnderDarcula()
-        val selectedBackground = if (darkTheme) withAlpha(detailAccentColor, 88) else withAlpha(detailAccentColor, 34)
+        val selectedBackground = if (darkTheme) withAlpha(detailAccentColor, 92) else withAlpha(detailAccentColor, 32)
         val selectedForeground = if (darkTheme) Color.WHITE else UIUtil.getLabelForeground()
-        val selectedBorder = if (darkTheme) withAlpha(detailAccentColor, 220) else withAlpha(detailAccentColor, 150)
-        button.background = if (selected) selectedBackground else detailSurfaceFill()
-        button.foreground = if (selected) selectedForeground else detailMutedColor()
+        val normalForeground = detailMutedColor()
+        button.isOpaque = false
+        button.isContentAreaFilled = false
+        button.isBorderPainted = false
+        button.border = JBUI.Borders.empty()
+        button.background = if (selected) selectedBackground else Color(0, 0, 0, 0)
+        button.foreground = if (selected) selectedForeground else normalForeground
         button.font = button.font.deriveFont(if (selected) Font.BOLD else Font.PLAIN, globalUiFontSize - 1f)
-        button.isOpaque = true
-        button.isBorderPainted = true
-        button.border = if (selected) {
-            javax.swing.BorderFactory.createCompoundBorder(
-                javax.swing.BorderFactory.createLineBorder(selectedBorder, JBUI.scale(1)),
-                JBUI.Borders.empty(3, 11)
-            )
-        } else {
-            JBUI.Borders.empty(4, 12)
-        }
+        button.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+        updateListFilterButtonSize(button)
     }
 
     private fun updateChangeModeToggleStyle() {
@@ -1421,6 +1425,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         overviewDesc.isEditable = false
         overviewDesc.isOpaque = false
         overviewDesc.border = JBUI.Borders.empty()
+        overviewDesc.margin = JBUI.emptyInsets()
         overviewDesc.background = detailSurfaceFill()
         overviewDesc.foreground = detailPrimaryTextColor()
         overviewDesc.alignmentX = Component.LEFT_ALIGNMENT
@@ -1441,9 +1446,16 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         reviewStatusCardsPanel.alignmentX = Component.LEFT_ALIGNMENT
         renderReviewStatusCards(null)
 
-        panel.add(buildOverviewSection("PR 描述", wrapDetailSurface(descScroll, padding = JBUI.insets(18))))
+        val overviewDescCard = stretchDetailTabChild(
+            wrapDetailSurface(descScroll, padding = JBUI.insets(12, 8, 12, 8))
+        )
+        val reviewStatusSectionBody = stretchDetailTabChild(reviewStatusCardsPanel, stretchVertically = true)
+
+        panel.add(buildOverviewSectionTitle("PR 描述"))
+        panel.add(overviewDescCard)
         panel.add(Box.createVerticalStrut(JBUI.scale(16)))
-        panel.add(buildOverviewSection("审查状态", reviewStatusCardsPanel))
+        panel.add(buildOverviewSectionTitle("审查状态"))
+        panel.add(reviewStatusSectionBody)
         panel.add(Box.createVerticalGlue())
 
         return createDetailScrollPane(
@@ -1546,20 +1558,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         else -> "等待审查..."
     }
 
-    private fun buildOverviewSection(title: String, body: JComponent): JComponent {
-        return JPanel().apply {
-            layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            isOpaque = false
+    private fun buildOverviewSectionTitle(title: String): JComponent {
+        return JBLabel(title).apply {
+            font = detailHeaderTitle.font.deriveFont(Font.BOLD, detailSectionTitleFontSize())
+            foreground = detailPrimaryTextColor()
+            border = JBUI.Borders.emptyBottom(8)
             alignmentX = Component.LEFT_ALIGNMENT
-            val titleLabel = JBLabel(title).apply {
-                font = font.deriveFont(Font.BOLD, detailSectionTitleFontSize())
-                foreground = detailMutedColor()
-                border = JBUI.Borders.emptyBottom(8)
-                alignmentX = Component.LEFT_ALIGNMENT
-            }
-            body.alignmentX = Component.LEFT_ALIGNMENT
-            add(titleLabel)
-            add(body)
             maximumSize = Dimension(Int.MAX_VALUE, preferredSize.height)
         }
     }
@@ -1630,6 +1634,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             override fun removeUpdate(e: DocumentEvent?) = applyChangeTreeFilter()
             override fun changedUpdate(e: DocumentEvent?) = applyChangeTreeFilter()
         })
+
+        configureListFilterButton(changeTreeToggleButton)
+        configureListFilterButton(changeFlatToggleButton)
 
         changeTreeToggleButton.addActionListener {
             if (changeTreeFlatMode) {
@@ -1707,9 +1714,11 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }
         })
 
-        val togglePanel = JPanel(GridLayout(1, 2, 0, 0)).apply {
+        val togglePanel = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.X_AXIS)
             isOpaque = false
             add(changeTreeToggleButton)
+            add(Box.createHorizontalStrut(JBUI.scale(4)))
             add(changeFlatToggleButton)
         }
 
@@ -1893,13 +1902,14 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         isLast: Boolean,
         missing: Boolean
     ): JComponent {
-        val lineColor = withAlpha(UIUtil.getBoundsColor(), 140)
+        val markerBaseColor = if (UIUtil.isUnderDarcula()) Color.WHITE else Color.BLACK
+        val lineColor = markerBaseColor
         val dangerColor = JBColor(Color(0xD93025), Color(0xF47067))
         val primaryTextColor = detailPrimaryTextColor()
-        val markerColor = lineColor
+        val markerColor = markerBaseColor
         val hashColor = primaryTextColor
-        val cardFillColor = detailSurfaceFill()
-        val cardOutlineColor = detailOutlineColor()
+        val cardFillColor = commitCardFill()
+        val cardOutlineColor = commitCardOutlineColor()
         val title = JBLabel(commit.message.ifBlank { "(无提交信息)" }).apply {
             font = font.deriveFont(Font.BOLD, globalUiFontSize + 0.5f)
             foreground = primaryTextColor
@@ -1908,6 +1918,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
         val metaLeft = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(8), 0)).apply {
             isOpaque = true
+            isDoubleBuffered = true
             background = cardFillColor
             add(JBLabel(commit.author.ifBlank { "未知作者" }, ReviewerAvatarIcon(commit.author.ifBlank { "?" }, detailAccentColor), SwingConstants.LEFT).apply {
                 foreground = detailMutedColor()
@@ -1922,6 +1933,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
         val statsPanel = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0)).apply {
             isOpaque = true
+            isDoubleBuffered = true
             background = cardFillColor
             if (commit.additions > 0) {
                 add(JBLabel("+${commit.additions}").apply {
@@ -1939,6 +1951,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
         val metaRow = JPanel(BorderLayout(JBUI.scale(8), 0)).apply {
             isOpaque = true
+            isDoubleBuffered = true
             background = cardFillColor
             add(metaLeft, BorderLayout.WEST)
             if (statsPanel.componentCount > 0) {
@@ -1948,6 +1961,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
         val headerRow = JPanel(BorderLayout(JBUI.scale(8), 0)).apply {
             isOpaque = true
+            isDoubleBuffered = true
             background = cardFillColor
             add(title, BorderLayout.CENTER)
             add(hashBadge, BorderLayout.EAST)
@@ -1956,18 +1970,20 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         val content = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
             isOpaque = true
+            isDoubleBuffered = true
             background = cardFillColor
+            border = JBUI.Borders.empty(12)
             add(headerRow)
             add(Box.createVerticalStrut(JBUI.scale(8)))
             add(metaRow)
         }
 
         val card = JPanel(BorderLayout()).apply {
-            isOpaque = true
-            background = cardFillColor
+            isOpaque = false
+            isDoubleBuffered = true
             border = javax.swing.BorderFactory.createCompoundBorder(
-                javax.swing.BorderFactory.createLineBorder(cardOutlineColor, JBUI.scale(1)),
-                JBUI.Borders.empty(14)
+                javax.swing.border.LineBorder(cardOutlineColor, JBUI.scale(1), true),
+                JBUI.Borders.empty(3)
             )
             add(content, BorderLayout.CENTER)
         }
@@ -1991,28 +2007,39 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun buildCommitHashBadge(hash: String, color: Color): JComponent {
-        val label = JBLabel(if (hash.length > 7) hash.take(7) else hash).apply {
-            font = Font(Font.MONOSPACED, Font.PLAIN, font.size)
-            foreground = color
+        val shortHash = if (hash.length > 7) hash.take(7) else hash
+        val clickListener = object : MouseAdapter() {
+            override fun mouseClicked(e: MouseEvent) {
+                if (!SwingUtilities.isLeftMouseButton(e) || hash.isBlank()) return
+                copyToClipboard(hash)
+                updateStatus("已复制提交编号: ${hash.take(7)}")
+            }
+        }
+        val badgeFill = commitHashBadgeFill()
+        val badge = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            isDoubleBuffered = true
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
             toolTipText = hash
-            border = JBUI.Borders.empty(2, 8)
-            addMouseListener(object : MouseAdapter() {
-                override fun mouseClicked(e: MouseEvent) {
-                    if (!SwingUtilities.isLeftMouseButton(e) || hash.isBlank()) return
-                    copyToClipboard(hash)
-                    updateStatus("已复制提交编号: ${hash.take(7)}")
-                }
-            })
+            border = javax.swing.BorderFactory.createCompoundBorder(
+                javax.swing.border.LineBorder(withAlpha(color, if (UIUtil.isUnderDarcula()) 118 else 92), JBUI.scale(1), true),
+                JBUI.Borders.empty(2)
+            )
+            addMouseListener(clickListener)
         }
-        return wrapDetailSurface(
-            label,
-            fillColor = detailSurfaceFill(),
-            outlineColor = withAlpha(color, 110),
-            fillColorProvider = ::detailSurfaceFill,
-            outlineColorProvider = { withAlpha(color, 110) },
-            padding = JBUI.insets(0)
-        )
+        badge.add(JBLabel(shortHash).apply {
+            isOpaque = true
+            isDoubleBuffered = true
+            background = badgeFill
+            foreground = color
+            font = Font(Font.MONOSPACED, Font.PLAIN, font.size)
+            horizontalAlignment = SwingConstants.CENTER
+            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            toolTipText = hash
+            border = JBUI.Borders.empty(1, 6)
+            addMouseListener(clickListener)
+        }, BorderLayout.CENTER)
+        return badge
     }
 
     private fun setupDetailTabsHeader() {
@@ -2422,9 +2449,20 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun dismissSearchFieldFocus() {
-        val focusOwner = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
-        if (focusOwner === searchField || focusOwner === changeSearchField) {
-            KeyboardFocusManager.getCurrentKeyboardFocusManager().clearGlobalFocusOwner()
+        val focusManager = KeyboardFocusManager.getCurrentKeyboardFocusManager()
+        val focusOwner = focusManager.focusOwner
+        val shouldDismiss = focusOwner === searchField || focusOwner === changeSearchField
+        if (!shouldDismiss) return
+
+        val focusTransferred = when (focusOwner) {
+            searchField -> refreshButton.requestFocusInWindow() || detailTabs.requestFocusInWindow() || requestFocusInWindow()
+            changeSearchField -> changeTree.requestFocusInWindow() || detailTabs.requestFocusInWindow() || requestFocusInWindow()
+            else -> requestFocusInWindow()
+        }
+        if (!focusTransferred) {
+            SwingUtilities.invokeLater {
+                focusManager.clearGlobalFocusOwner()
+            }
         }
     }
 
@@ -4531,7 +4569,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     }
                 }
 
-                override fun mouseClicked(e: MouseEvent) {
+                override fun mousePressed(e: MouseEvent) {
                     if (!SwingUtilities.isLeftMouseButton(e)) return
                     dismissSearchFieldFocus()
                     selectPrCard(item.id)

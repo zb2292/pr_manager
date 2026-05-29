@@ -503,7 +503,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         toolTipText = "当前未发起AI评审"
         cursor = Cursor.getDefaultCursor()
         addMouseListener(object : MouseAdapter() {
-            override fun mouseClicked(e: MouseEvent) {
+            override fun mousePressed(e: MouseEvent) {
                 if (!SwingUtilities.isLeftMouseButton(e)) return
                 val state = aiReviewBadgeState
                 if (state == AiReviewBadgeState.NO_DATA) return
@@ -1020,13 +1020,21 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun resolveAiReviewState(overview: AiReviewOverview?): AiReviewBadgeState {
-        return when {
-            overview == null -> AiReviewBadgeState.NO_DATA
-            !overview.validFlag -> AiReviewBadgeState.STALE
-            overview.unhandledCount == 0 -> AiReviewBadgeState.PASS
-            else -> AiReviewBadgeState.FAIL
+        return when (overview?.reviewFlag ?: AiReviewProgressFlag.NOT_STARTED) {
+            AiReviewProgressFlag.NOT_STARTED -> AiReviewBadgeState.NO_DATA
+            AiReviewProgressFlag.IN_PROGRESS -> AiReviewBadgeState.IN_PROGRESS
+            AiReviewProgressFlag.COMPLETED -> when {
+                overview == null -> AiReviewBadgeState.NO_DATA
+                !overview.validFlag -> AiReviewBadgeState.STALE
+                overview.unhandledCount == 0 -> AiReviewBadgeState.PASS
+                else -> AiReviewBadgeState.FAIL
+            }
         }
     }
+
+    private fun isAiReviewCompleted(overview: AiReviewOverview?): Boolean = overview?.reviewFlag == AiReviewProgressFlag.COMPLETED
+
+    private fun isAiReviewResultAvailable(overview: AiReviewOverview?): Boolean = isAiReviewCompleted(overview) && overview?.validFlag == true
 
     private fun formatPrListTime(value: String): String {
         val trimmed = value.trim()
@@ -1306,9 +1314,17 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private fun aiReviewBadgeText(state: AiReviewBadgeState): String = when (state) {
         AiReviewBadgeState.NO_DATA -> "AI评审：未发起"
+        AiReviewBadgeState.IN_PROGRESS -> "AI评审：评审中"
         AiReviewBadgeState.STALE -> "AI评审：待更新"
         AiReviewBadgeState.PASS -> "AI评审：通过"
         AiReviewBadgeState.FAIL -> "AI评审：不通过"
+    }
+
+    private fun aiReviewBadgeTooltip(state: AiReviewBadgeState): String = when (state) {
+        AiReviewBadgeState.NO_DATA -> "当前未发起AI评审"
+        AiReviewBadgeState.IN_PROGRESS -> "AI评审进行中，点击查看详情"
+        AiReviewBadgeState.STALE -> "AI评审结果已过期，点击查看详情"
+        else -> "查看AI评审总览"
     }
 
     private fun updateDetailMetaRowIndent() {
@@ -2907,7 +2923,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 PrManagerFileLogger.info("PR detail loaded: prId=$prId iid=${detail.iid}, srBranch=${detail.sourceBranch}, trBranch=${detail.targetBranch}")
                 loadNotes(detail)
                 loadAiReviewOverview(detail)
-                fetchRemoteBranches()
+                ApplicationManager.getApplication().executeOnPooledThread {
+                    fetchRemoteBranches()
+                }
                 updateFileChangeBranchWarning(detail.sourceBranch)
                 loadFileChanges(detail)
                 loadCommitRecords(detail)
@@ -3081,14 +3099,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 }
                 SwingUtilities.invokeLater {
                     currentAiOverview = overview
-                    aiIssueCountByFileMap = overview?.takeIf { it.validFlag }?.let { flattenAiTreeIssueCount(it.fileTreeNodes) }.orEmpty()
-                    val state = when {
-                        overview == null -> AiReviewBadgeState.NO_DATA
-                        !overview.validFlag -> AiReviewBadgeState.STALE
-                        overview.unhandledCount == 0 -> AiReviewBadgeState.PASS
-                        else -> AiReviewBadgeState.FAIL
-                    }
-                    updateAiReviewBadge(state)
+                    aiIssueCountByFileMap = overview?.takeIf { isAiReviewResultAvailable(it) }?.let { flattenAiTreeIssueCount(it.fileTreeNodes) }.orEmpty()
+                    updateAiReviewBadge(resolveAiReviewState(overview))
                     changeTree.repaint()
                 }
             } catch (e: Exception) {
@@ -3107,11 +3119,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         aiReviewBadgeState = state
         aiReviewBadgeLabel.setPill(aiReviewBadgeText(state), state.color)
         aiReviewBadgeLabel.cursor = if (state == AiReviewBadgeState.NO_DATA) Cursor.getDefaultCursor() else Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-        aiReviewBadgeLabel.toolTipText = when (state) {
-            AiReviewBadgeState.NO_DATA -> "当前未发起AI评审"
-            AiReviewBadgeState.STALE -> "AI评审结果已过期，点击查看详情"
-            else -> "查看AI评审总览"
-        }
+        aiReviewBadgeLabel.toolTipText = aiReviewBadgeTooltip(state)
         aiReviewBadgeLabel.repaint()
     }
 
@@ -3119,109 +3127,196 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         val overview = currentAiOverview ?: return
         val panel = JPanel()
         panel.layout = BoxLayout(panel, BoxLayout.Y_AXIS)
-        panel.border = JBUI.Borders.empty(10)
-        val tableOuterInset = JBUI.scale(0)
-        val contentLeftInset = tableOuterInset
+        panel.border = JBUI.Borders.empty(16, 16, 12, 16)
+        panel.isOpaque = true
+        panel.background = JBColor(Color(0xECEFF3), Color(0x24272B))
 
-        val title = JBLabel("智能代码评审-总览")
-        title.font = title.font.deriveFont(Font.BOLD, globalUiFontSize + 1f)
-        title.border = JBUI.Borders.emptyLeft(contentLeftInset)
-        panel.add(title)
+        val accentRed = JBColor(Color(0xD93025), Color(0xF47067))
+        val accentOrange = JBColor(Color(0xF29900), Color(0xF6C26B))
+        val accentGreen = JBColor(Color(0x1E8E3E), Color(0x57D163))
+        val accentBlue = JBColor(Color(0x1A73E8), Color(0x6EA8FF))
+        val textMain = JBColor(Color(0x202124), Color(0xDFE1E5))
+        val textMuted = JBColor(Color(0x5F6368), Color(0x9AA0A6))
+        val textHint = JBColor(Color(0x80868B), Color(0x7F8790))
+        val borderColor = JBColor(Color(0xD0D7DE), Color(0x4B5563))
 
-        if (aiReviewBadgeState == AiReviewBadgeState.STALE) {
-            panel.add(Box.createVerticalStrut(8))
-            val warn = JBLabel("PR涉及分支有代码变动，当前智能代码评审数据已过期，请重新触发")
-            warn.foreground = JBColor(Color(0xD93025), Color(0xF47067))
-            panel.add(warn)
-        }
+        val titleLabel = JBLabel("智能代码评审 - 总览")
+        titleLabel.font = titleLabel.font.deriveFont(Font.BOLD, globalUiFontSize + 2f)
+        titleLabel.foreground = textMain
 
-        panel.add(Box.createVerticalStrut(10))
-        val rows = listOf(
-            arrayOf("错误问题数", overview.errorCount.toString()),
-            arrayOf("警告问题数", overview.warnCount.toString()),
-            arrayOf("待处理问题数", overview.unhandledCount.toString()),
-            arrayOf("采纳问题数", overview.adoptedCount.toString()),
-            arrayOf("忽略问题数", overview.ignoredCount.toString()),
-            arrayOf("误报问题数", overview.misreportedCount.toString())
-        )
-        val table = JBTable(object : AbstractTableModel() {
-            override fun getRowCount(): Int = rows.size
-            override fun getColumnCount(): Int = 2
-            override fun getColumnName(column: Int): String = if (column == 0) "  问题类型" else "  问题个数"
-            override fun getValueAt(rowIndex: Int, columnIndex: Int): Any = rows[rowIndex][columnIndex]
-            override fun isCellEditable(rowIndex: Int, columnIndex: Int): Boolean = false
-        })
-        table.rowHeight = JBUI.scale(24)
-        table.setShowGrid(true)
-        table.fillsViewportHeight = true
-        if (table.columnModel.columnCount > 1) {
-            val halfWidth = JBUI.scale(48)
-            table.columnModel.getColumn(0).preferredWidth = halfWidth
-            table.columnModel.getColumn(1).preferredWidth = halfWidth
-        }
-        val leftHeaderRenderer = (table.tableHeader.defaultRenderer as? javax.swing.table.DefaultTableCellRenderer)
-            ?: javax.swing.table.DefaultTableCellRenderer()
-        leftHeaderRenderer.horizontalAlignment = SwingConstants.LEFT
-        table.tableHeader.defaultRenderer = leftHeaderRenderer
-        val highlightedDividerRenderer = object : javax.swing.table.DefaultTableCellRenderer() {
-            override fun getTableCellRendererComponent(
-                table: javax.swing.JTable,
-                value: Any?,
-                isSelected: Boolean,
-                hasFocus: Boolean,
-                row: Int,
-                column: Int
-            ): Component {
-                val component = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column)
-                horizontalAlignment = SwingConstants.LEFT
-                val padding = JBUI.Borders.empty(0, JBUI.scale(8), 0, JBUI.scale(8))
-                border = if (row == 1) {
-                    javax.swing.BorderFactory.createCompoundBorder(
-                        javax.swing.BorderFactory.createMatteBorder(
-                            0,
-                            0,
-                            JBUI.scale(2),
-                            0,
-                            JBColor(Color(0x8A8A8A), Color(0x6B7280))
-                        ),
-                        padding
-                    )
+        val headerPanel = JPanel(BorderLayout())
+        headerPanel.isOpaque = false
+        headerPanel.add(titleLabel, BorderLayout.WEST)
+        panel.add(headerPanel)
+        panel.add(Box.createVerticalStrut(12))
+
+        val pass = overview.unhandledCount == 0
+        val (bannerColor, bannerTitle, bannerDesc) = when (aiReviewBadgeState) {
+            AiReviewBadgeState.IN_PROGRESS -> Triple(
+                accentBlue,
+                "评审计算中",
+                "AI正在对变更代码进行智能化安全与质量审查..."
+            )
+            AiReviewBadgeState.STALE -> Triple(
+                accentOrange,
+                "数据已过期",
+                "PR涉及分支有新代码提交，评审结论可能已经不准确"
+            )
+            AiReviewBadgeState.PASS, AiReviewBadgeState.FAIL -> {
+                if (pass) {
+                    Triple(accentGreen, "评审已通过", "恭喜！所有发现的 AI 评审问题均已处理完毕")
                 } else {
-                    padding
+                    Triple(accentRed, "评审未通过", "共发现 ${overview.unhandledCount} 个未处理问题，请及时处理")
                 }
-                return component
+            }
+            AiReviewBadgeState.NO_DATA -> Triple(
+                textMuted,
+                "未发起评审",
+                "当前PR尚无智能评审数据"
+            )
+        }
+
+        val statusBanner = object : JPanel() {
+            override fun paintComponent(g: Graphics) {
+                val g2 = g.create() as Graphics2D
+                try {
+                    g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                    g2.color = Color(bannerColor.red, bannerColor.green, bannerColor.blue, 25)
+                    g2.fillRoundRect(0, 0, width, height, JBUI.scale(8), JBUI.scale(8))
+                    g2.color = Color(bannerColor.red, bannerColor.green, bannerColor.blue, 80)
+                    g2.stroke = BasicStroke(JBUI.scale(1f))
+                    g2.drawRoundRect(0, 0, width - 1, height - 1, JBUI.scale(8), JBUI.scale(8))
+                } finally {
+                    g2.dispose()
+                }
             }
         }
-        table.setDefaultRenderer(Any::class.java, highlightedDividerRenderer)
-        val tableScrollPane = JBScrollPane(table).apply {
-            border = JBUI.Borders.empty(0)
-            preferredSize = Dimension(JBUI.scale(150), JBUI.scale(170))
+        statusBanner.isOpaque = false
+        statusBanner.layout = BorderLayout()
+        statusBanner.border = JBUI.Borders.empty(8, 12)
+
+        val statusTitleLabel = JBLabel(bannerTitle).apply {
+            foreground = bannerColor
+            font = font.deriveFont(Font.BOLD, globalUiFontSize + 1f)
+        }
+        val statusDescLabel = JBLabel(bannerDesc).apply {
+            foreground = textMuted
+            font = font.deriveFont(Font.PLAIN, globalUiFontSize - 1f)
         }
 
-        val tableContainer = JPanel(BorderLayout()).apply {
+        val textContainer = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
             isOpaque = false
-            border = JBUI.Borders.empty(0, 6, 0, 6)
-            add(tableScrollPane, BorderLayout.CENTER)
+            add(statusTitleLabel)
+            add(Box.createVerticalStrut(2))
+            add(statusDescLabel)
         }
-        panel.add(tableContainer)
+        statusBanner.add(textContainer, BorderLayout.CENTER)
+        panel.add(statusBanner)
+        panel.add(Box.createVerticalStrut(16))
 
-        panel.add(Box.createVerticalStrut(6))
-        val relation = JBLabel("关系：错误问题数 + 警告问题数 = 待处理问题数 + 采纳问题数 + 忽略问题数 + 误报问题数")
-        relation.foreground = UIUtil.getInactiveTextColor()
-        relation.border = JBUI.Borders.emptyLeft(contentLeftInset)
-        panel.add(relation)
+        fun createMetricCard(title: String, count: Int, baseColor: Color, bgAlpha: Int = 18): JComponent {
+            val card = object : JPanel() {
+                override fun paintComponent(g: Graphics) {
+                    val g2 = g.create() as Graphics2D
+                    try {
+                        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                        g2.color = Color(baseColor.red, baseColor.green, baseColor.blue, bgAlpha)
+                        g2.fillRoundRect(0, 0, width, height, JBUI.scale(8), JBUI.scale(8))
+                        g2.color = Color(baseColor.red, baseColor.green, baseColor.blue, 60)
+                        g2.stroke = BasicStroke(JBUI.scale(1f))
+                        g2.drawRoundRect(0, 0, width - 1, height - 1, JBUI.scale(8), JBUI.scale(8))
+                    } finally {
+                        g2.dispose()
+                    }
+                }
+            }
+            card.isOpaque = false
+            card.layout = BorderLayout(0, JBUI.scale(2))
+            card.border = JBUI.Borders.empty(12, 10)
 
-        panel.add(Box.createVerticalStrut(6))
-        val pass = overview.unhandledCount == 0
-        val result = JBLabel("评审结果：${if (pass) "通过" else "不通过"}")
-        result.foreground = if (pass) JBColor(Color(0x1E8E3E), Color(0x57D163)) else JBColor(Color(0xD93025), Color(0xF47067))
-        result.border = JBUI.Borders.emptyLeft(contentLeftInset)
-        panel.add(result)
+            val countLabel = JBLabel(count.toString(), SwingConstants.CENTER).apply {
+                foreground = baseColor
+                font = font.deriveFont(Font.BOLD, globalUiFontSize + 7f)
+            }
+            val cardTitleLabel = JBLabel(title, SwingConstants.CENTER).apply {
+                foreground = textMuted
+                font = font.deriveFont(Font.PLAIN, globalUiFontSize - 1f)
+            }
+
+            card.add(countLabel, BorderLayout.CENTER)
+            card.add(cardTitleLabel, BorderLayout.SOUTH)
+            return card
+        }
+
+        val severitySectionTitle = JBLabel("发现的安全与质量隐患", SwingConstants.CENTER).apply {
+            foreground = textMuted
+            font = font.deriveFont(Font.BOLD, globalUiFontSize)
+            border = JBUI.Borders.emptyBottom(6)
+            alignmentX = Component.CENTER_ALIGNMENT
+        }
+        panel.add(severitySectionTitle)
+
+        val severityGrid = JPanel(GridLayout(1, 2, JBUI.scale(12), 0)).apply {
+            isOpaque = false
+            add(createMetricCard("错误级问题数", overview.errorCount, accentRed))
+            add(createMetricCard("警告级问题数", overview.warnCount, accentOrange))
+        }
+        panel.add(severityGrid)
+        panel.add(Box.createVerticalStrut(16))
+
+        val resolutionSectionTitle = JBLabel("分类处理进度状态", SwingConstants.CENTER).apply {
+            foreground = textMuted
+            font = font.deriveFont(Font.BOLD, globalUiFontSize)
+            border = JBUI.Borders.emptyBottom(6)
+            alignmentX = Component.CENTER_ALIGNMENT
+        }
+        panel.add(resolutionSectionTitle)
+
+        val resolutionGrid = JPanel(GridLayout(1, 4, JBUI.scale(8), 0)).apply {
+            isOpaque = false
+            add(createMetricCard("待处理", overview.unhandledCount, if (overview.unhandledCount > 0) accentRed else textMuted, if (overview.unhandledCount > 0) 18 else 10))
+            add(createMetricCard("已采纳", overview.adoptedCount, accentGreen))
+            add(createMetricCard("已忽略", overview.ignoredCount, textMuted, 10))
+            add(createMetricCard("已误报", overview.misreportedCount, accentBlue))
+        }
+        panel.add(resolutionGrid)
+        panel.add(Box.createVerticalStrut(16))
+
+        val formulaPanel = object : JPanel() {
+            override fun paintComponent(g: Graphics) {
+                val g2 = g.create() as Graphics2D
+                try {
+                    g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                    g2.color = Color(borderColor.red, borderColor.green, borderColor.blue, 30)
+                    g2.fillRoundRect(0, 0, width, height, JBUI.scale(6), JBUI.scale(6))
+                } finally {
+                    g2.dispose()
+                }
+            }
+        }
+        formulaPanel.isOpaque = false
+        formulaPanel.layout = BorderLayout()
+        formulaPanel.border = JBUI.Borders.empty(6, 10)
+
+        val formulaLabel = JBLabel("数据平衡关系：错误数 + 警告数 = 待处理 + 采纳 + 忽略 + 误报", SwingConstants.CENTER).apply {
+            foreground = textHint
+            font = font.deriveFont(Font.ITALIC, globalUiFontSize - 1.5f)
+        }
+        formulaPanel.add(formulaLabel, BorderLayout.CENTER)
+        panel.add(formulaPanel)
+
+        val preferredWidth = JBUI.scale(420)
+        val preferredHeight = JBUI.scale(365)
+        panel.preferredSize = Dimension(preferredWidth, preferredHeight)
+        panel.minimumSize = panel.preferredSize
+        panel.maximumSize = panel.preferredSize
 
         JBPopupFactory.getInstance()
             .createComponentPopupBuilder(panel, null)
-            .setTitle("AI评审结果")
-            .setResizable(true)
+            .setShowBorder(false)
+            .setShowShadow(true)
+            .setResizable(false)
             .setMovable(true)
             .setRequestFocus(true)
             .createPopup()
@@ -3229,7 +3324,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun loadAiReviewFileIssues(detail: PrDetail, filePath: String): List<AiReviewIssue> {
-        if (!currentAiOverview?.validFlag.orFalse()) return emptyList()
+        if (!isAiReviewResultAvailable(currentAiOverview)) return emptyList()
         return if (mockEnabled) {
             val mockJson = readMockJson("ai-review-detail.json")
             if (mockJson.isNullOrBlank()) emptyList() else parseAiReviewDetail(mockJson)
@@ -3391,7 +3486,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun aiIssueCountByFile(filePath: String): Pair<Int, Int> {
-        if (!currentAiOverview?.validFlag.orFalse()) return 0 to 0
+        if (!isAiReviewResultAvailable(currentAiOverview)) return 0 to 0
         val normalized = normalizeFilePath(filePath)
         return aiIssueCountByFileMap.entries.firstOrNull { (path, _) ->
             val mapped = normalizeFilePath(path)
@@ -3557,8 +3652,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                                 issueCodeSnippetEndLine = issue.issueCodeSnippetEndLine
                             )
                         })
-                        commentManager.setAiIssueHandler { issueId, status, onDone ->
-                            handleAiIssue(detail, change.filePath, issueId, status, onDone)
+                        commentManager.setAiIssueHandler { issueId, status, issueRemark, onDone ->
+                            handleAiIssue(detail, change.filePath, issueId, status, issueRemark, onDone)
                         }
                         diffBinder.bindNextDiff(change.filePath)
                         DiffManager.getInstance().showDiff(project, request)
@@ -3578,6 +3673,11 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
                 val fallbackCommits = detail.commits.sortedByDescending { it.time }
+                SwingUtilities.invokeLater {
+                    commitTableModel.setRows(fallbackCommits)
+                    renderCommitTimeline(fallbackCommits)
+                    updateCommitWarning(false)
+                }
 
                 val repo = GitRepositoryManager.getInstance(project).repositories.firstOrNull()
                 if (repo == null) {
@@ -3993,10 +4093,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         if (result.isMissingNode || result.isNull) return null
         if (result.isArray) return null
         val prId = result.get("prId")?.asLong() ?: return null
+        val reviewFlag = AiReviewProgressFlag.fromCode(result.get("reviewFlag")?.asInt() ?: AiReviewProgressFlag.COMPLETED.code)
         val validFlag = result.get("validFlag")?.asBoolean() == true
         val fileTree = result.get("fileTreeNode")
         return AiReviewOverview(
             prId = prId,
+            reviewFlag = reviewFlag,
             validFlag = validFlag,
             errorCount = result.get("aiCodeReviewIssueErrorCount")?.asInt() ?: 0,
             warnCount = result.get("aiCodeReviewIssueWarnCount")?.asInt() ?: 0,
@@ -4066,7 +4168,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
     }
 
-    private fun handleAiIssue(detail: PrDetail, filePath: String, issueId: Long, issueStatus: Int, onDone: (Boolean) -> Unit) {
+    private fun handleAiIssue(detail: PrDetail, filePath: String, issueId: Long, issueStatus: Int, issueRemark: String?, onDone: (Boolean) -> Unit) {
         ApplicationManager.getApplication().executeOnPooledThread {
             var handled = true
             try {
@@ -4079,7 +4181,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                         handled = false
                         updateStatus("处理失败: 未获取到当前用户")
                     } else {
-                        val response = apiService.handleAiReviewIssue(issueId, issueStatus, currentUser)
+                        val response = apiService.handleAiReviewIssue(issueId, issueStatus, currentUser, issueRemark)
                         if (response.statusCode() !in 200..299) {
                             handled = false
                             updateStatus("处理失败: ${response.statusCode()}")
@@ -4603,6 +4705,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }
             aiPill.toolTipText = when (supplement.aiState) {
                 AiReviewBadgeState.NO_DATA -> "当前未发起AI评审"
+                AiReviewBadgeState.IN_PROGRESS -> "AI评审进行中"
                 AiReviewBadgeState.STALE -> "AI评审结果已过期"
                 else -> "查看AI评审总览"
             }
@@ -4821,8 +4924,19 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         override fun getIconHeight(): Int = size
     }
 
+    private enum class AiReviewProgressFlag(val code: Int) {
+        NOT_STARTED(0),
+        IN_PROGRESS(1),
+        COMPLETED(2);
+
+        companion object {
+            fun fromCode(code: Int): AiReviewProgressFlag = values().firstOrNull { it.code == code } ?: COMPLETED
+        }
+    }
+
     private enum class AiReviewBadgeState(val color: Color) {
         NO_DATA(JBColor(Color(0x9AA0A6), Color(0x6B7280))),
+        IN_PROGRESS(JBColor(Color(0x1A73E8), Color(0x6CB6FF))),
         STALE(JBColor(Color(0xF29900), Color(0xF6C26B))),
         PASS(JBColor(Color(0x1E8E3E), Color(0x57D163))),
         FAIL(JBColor(Color(0xD93025), Color(0xF47067)))
@@ -4830,6 +4944,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private data class AiReviewOverview(
         val prId: Long,
+        val reviewFlag: AiReviewProgressFlag,
         val validFlag: Boolean,
         val errorCount: Int,
         val warnCount: Int,

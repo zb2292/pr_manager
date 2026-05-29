@@ -108,12 +108,15 @@ class PrApiService(
         return executeApi("fetchAiReviewDetail", aiReviewFileDetailUrl, objectMapper.writeValueAsString(payload))
     }
 
-    fun handleAiReviewIssue(issueId: Long, issueStatus: Int, issueHandleEmpOa: String): HttpResponse<String> {
-        val payload = mapOf(
+    fun handleAiReviewIssue(issueId: Long, issueStatus: Int, issueHandleEmpOa: String, issueRemark: String? = null): HttpResponse<String> {
+        val payload = linkedMapOf<String, Any>(
             "issueId" to issueId,
             "issueStatus" to issueStatus,
             "issueHandleEmpOa" to issueHandleEmpOa
         )
+        issueRemark?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            payload["issueIgnoreReason"] = it
+        }
         return executeApi("handleAiReviewIssue", aiHandleIssueUrl, objectMapper.writeValueAsString(payload))
     }
 

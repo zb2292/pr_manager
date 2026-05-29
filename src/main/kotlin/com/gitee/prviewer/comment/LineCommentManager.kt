@@ -7,6 +7,7 @@ import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.event.EditorMouseEvent
+import com.intellij.openapi.editor.ex.EditorEx
 import com.intellij.openapi.editor.event.EditorMouseEventArea
 import com.intellij.openapi.editor.event.EditorMouseListener
 import com.intellij.openapi.editor.event.EditorMouseMotionListener
@@ -21,6 +22,7 @@ import com.intellij.openapi.ui.popup.LightweightWindowEvent
 import com.intellij.openapi.util.TextRange
 import com.intellij.ui.EditorTextField
 import com.intellij.ui.JBColor
+import com.intellij.ui.awt.RelativePoint
 import kotlin.math.absoluteValue
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
@@ -84,13 +86,13 @@ class LineCommentManager(private val project: Project) {
     }
 
     private var remoteHandler: CommentRemoteHandler? = null
-    private var aiIssueHandler: ((issueId: Long, issueStatus: Int, onDone: (Boolean) -> Unit) -> Unit)? = null
+    private var aiIssueHandler: ((issueId: Long, issueStatus: Int, issueRemark: String?, onDone: (Boolean) -> Unit) -> Unit)? = null
 
     fun setRemoteHandler(handler: CommentRemoteHandler?) {
         remoteHandler = handler
     }
 
-    fun setAiIssueHandler(handler: ((issueId: Long, issueStatus: Int, onDone: (Boolean) -> Unit) -> Unit)?) {
+    fun setAiIssueHandler(handler: ((issueId: Long, issueStatus: Int, issueRemark: String?, onDone: (Boolean) -> Unit) -> Unit)?) {
         aiIssueHandler = handler
     }
 
@@ -184,9 +186,13 @@ class LineCommentManager(private val project: Project) {
                 val totalCount = roots.size
                 val unresolvedCount = roots.count { !it.resolved }
                 val allResolved = unresolvedCount == 0
-                applyNormalLineRenderers(context, line, highlighter, unresolvedCount, totalCount, allResolved)
+                applyNormalLineRenderers(context, line, highlighter, unresolvedCount, totalCount, allResolved, aiIssue)
             } else if (context.side == Side.RIGHT && aiIssue != null) {
-                highlighter.gutterIconRenderer = AiIssueGutterRenderer(context, line, aiIssue)
+                highlighter.gutterIconRenderer = if (hasRemoteIssue) {
+                    ExistingIssueGutterRenderer(context, line, aiIssue)
+                } else {
+                    AiIssueGutterRenderer(context, line, aiIssue)
+                }
             } else if (context.side == Side.RIGHT) {
                 highlighter.gutterIconRenderer = ExistingIssueGutterRenderer(context, line)
             }
@@ -203,7 +209,7 @@ class LineCommentManager(private val project: Project) {
     }
 
     private inner class CommentMouseListener(private val context: EditorContext) : EditorMouseListener {
-        override fun mouseClicked(event: EditorMouseEvent) {
+        override fun mousePressed(event: EditorMouseEvent) {
             if (context.side != Side.RIGHT) return
             if (event.area != EditorMouseEventArea.LINE_MARKERS_AREA && event.area != EditorMouseEventArea.LINE_NUMBERS_AREA) {
                 return
@@ -211,13 +217,66 @@ class LineCommentManager(private val project: Project) {
             val editor = event.editor
             val logical = editor.xyToLogicalPosition(event.mouseEvent.point)
             val line = logical.line
-            val aiIssue = aiIssuesByFileLine[normalizeFilePath(context.filePath)]?.get(line)
+            val normalizedPath = normalizeFilePath(context.filePath)
+            val aiIssue = aiIssuesByFileLine[normalizedPath]?.get(line)
+            val hasReviewContent = LineCommentStore.getComments(context.filePath, line, context.side)
+                .any { it.parentId == null } || remoteIssueLinesByFile[normalizedPath]?.contains(line) == true
+            if (aiIssue != null && hasReviewContent) {
+                if (event.area == EditorMouseEventArea.LINE_MARKERS_AREA &&
+                    handleCombinedGutterClick(editor, context, line, aiIssue, event.mouseEvent)
+                ) {
+                    return
+                }
+                showPopup(editor, context.filePath, line, context.side)
+                return
+            }
             if (aiIssue != null) {
-                showAiIssuePopup(editor, aiIssue)
+                showAiIssuePopup(editor, aiIssue, RelativePoint(event.mouseEvent.component, event.mouseEvent.point))
                 return
             }
             showPopup(editor, context.filePath, line, context.side)
         }
+    }
+
+    private fun handleCombinedGutterClick(
+        editor: Editor,
+        context: EditorContext,
+        line: Int,
+        aiIssue: AiIssue,
+        mouseEvent: MouseEvent
+    ): Boolean {
+        return when (resolveCombinedClickTarget(editor, mouseEvent, aiIssue)) {
+            CombinedGutterClickTarget.AI -> {
+                showAiIssuePopup(editor, aiIssue, RelativePoint(mouseEvent.component, mouseEvent.point))
+                true
+            }
+            CombinedGutterClickTarget.REVIEW -> {
+                showPopup(editor, context.filePath, line, context.side)
+                true
+            }
+            null -> false
+        }
+    }
+
+    private fun resolveCombinedClickTarget(
+        editor: Editor,
+        mouseEvent: MouseEvent,
+        aiIssue: AiIssue
+    ): CombinedGutterClickTarget? {
+        val editorEx = editor as? EditorEx ?: return null
+        val gutter = editorEx.gutterComponentEx
+        val renderer = gutter.getGutterRenderer(mouseEvent.point) ?: return null
+        if (renderer !is ExistingIssueGutterRenderer && renderer !is LineCommentGutterRenderer) {
+            return null
+        }
+        val icon = CombinedGutterIcon(CommentBubbleIcon(), AiIssueIcon(aiIssue.issueStatus == 0))
+        val iconStartX = gutter.iconAreaOffset + ((gutter.iconsAreaWidth - icon.iconWidth) / 2).coerceAtLeast(0)
+        return icon.targetAt(mouseEvent.x - iconStartX)
+    }
+
+    private enum class CombinedGutterClickTarget {
+        REVIEW,
+        AI
     }
 
     private inner class CommentMouseMotionListener(private val context: EditorContext) : EditorMouseMotionListener {
@@ -265,12 +324,19 @@ class LineCommentManager(private val project: Project) {
                 val totalCount = roots.size
                 val unresolvedCount = roots.count { !it.resolved }
                 val allResolved = totalCount > 0 && unresolvedCount == 0
-                applyNormalLineRenderers(context, line, commentHighlighter, unresolvedCount, totalCount, allResolved)
+                val normalized = normalizeFilePath(context.filePath)
+                val aiIssue = aiIssuesByFileLine[normalized]?.get(line)
+                applyNormalLineRenderers(context, line, commentHighlighter, unresolvedCount, totalCount, allResolved, aiIssue)
             } else if (context.side == Side.RIGHT) {
                 val normalized = normalizeFilePath(context.filePath)
                 val aiIssue = aiIssuesByFileLine[normalized]?.get(line)
                 if (aiIssue != null) {
-                    commentHighlighter.gutterIconRenderer = AiIssueGutterRenderer(context, line, aiIssue)
+                    val hasRemoteIssue = remoteIssueLinesByFile[normalized]?.contains(line) == true
+                    commentHighlighter.gutterIconRenderer = if (hasRemoteIssue) {
+                        ExistingIssueGutterRenderer(context, line, aiIssue)
+                    } else {
+                        AiIssueGutterRenderer(context, line, aiIssue)
+                    }
                     commentHighlighter.lineMarkerRenderer = null
                 } else {
                     val hasRemoteIssue = remoteIssueLinesByFile[normalized]?.contains(line) == true
@@ -322,10 +388,24 @@ class LineCommentManager(private val project: Project) {
         highlighter: RangeHighlighter,
         unresolvedCount: Int,
         totalCount: Int,
-        allResolved: Boolean
+        allResolved: Boolean,
+        aiIssue: AiIssue? = null
     ) {
-        val icon = CommentBubbleIcon()
-        highlighter.gutterIconRenderer = LineCommentGutterRenderer(context, line, icon, unresolvedCount, totalCount, allResolved)
+        val baseIcon = CommentBubbleIcon()
+        val icon = if (context.side == Side.RIGHT && aiIssue != null) {
+            CombinedGutterIcon(baseIcon, AiIssueIcon(aiIssue.issueStatus == 0))
+        } else {
+            baseIcon
+        }
+        highlighter.gutterIconRenderer = LineCommentGutterRenderer(
+            context,
+            line,
+            icon,
+            unresolvedCount,
+            totalCount,
+            allResolved,
+            hasAiIssue = context.side == Side.RIGHT && aiIssue != null
+        )
         highlighter.lineMarkerRenderer = CommentCountLineMarkerRenderer(icon, unresolvedCount, totalCount, allResolved)
     }
 
@@ -338,12 +418,7 @@ class LineCommentManager(private val project: Project) {
 
         override fun getTooltipText(): String = "AI评审问题"
 
-        override fun getClickAction() = object : com.intellij.openapi.actionSystem.AnAction() {
-            override fun actionPerformed(e: AnActionEvent) {
-                val editor = CommonDataKeys.EDITOR.getData(e.dataContext) ?: return
-                showAiIssuePopup(editor, issue)
-            }
-        }
+        override fun getClickAction(): com.intellij.openapi.actionSystem.AnAction? = null
 
         override fun equals(other: Any?): Boolean {
             if (this === other) return true
@@ -365,16 +440,23 @@ class LineCommentManager(private val project: Project) {
 
     private inner class ExistingIssueGutterRenderer(
         private val context: EditorContext,
-        private val line: Int
+        private val line: Int,
+        private val aiIssue: AiIssue? = null
     ) : GutterIconRenderer() {
-        override fun getIcon(): Icon = CommentBubbleIcon()
+        override fun getIcon(): Icon {
+            val baseIcon = CommentBubbleIcon()
+            return if (aiIssue != null) CombinedGutterIcon(baseIcon, AiIssueIcon(aiIssue.issueStatus == 0)) else baseIcon
+        }
 
-        override fun getTooltipText(): String = "该行有评论"
+        override fun getTooltipText(): String = if (aiIssue != null) "该行有评论 / AI评审问题" else "该行有评论"
 
-        override fun getClickAction() = object : com.intellij.openapi.actionSystem.AnAction() {
-            override fun actionPerformed(e: AnActionEvent) {
-                val editor = CommonDataKeys.EDITOR.getData(e.dataContext) ?: return
-                showPopup(editor, context.filePath, line, context.side)
+        override fun getClickAction(): com.intellij.openapi.actionSystem.AnAction? {
+            if (aiIssue != null) return null
+            return object : com.intellij.openapi.actionSystem.AnAction() {
+                override fun actionPerformed(e: AnActionEvent) {
+                    val editor = CommonDataKeys.EDITOR.getData(e.dataContext) ?: return
+                    showPopup(editor, context.filePath, line, context.side)
+                }
             }
         }
 
@@ -383,13 +465,15 @@ class LineCommentManager(private val project: Project) {
             if (other !is ExistingIssueGutterRenderer) return false
             return context.filePath == other.context.filePath &&
                 context.side == other.context.side &&
-                line == other.line
+                line == other.line &&
+                aiIssue?.id == other.aiIssue?.id
         }
 
         override fun hashCode(): Int {
             var result = context.filePath.hashCode()
             result = 31 * result + context.side.hashCode()
             result = 31 * result + line
+            result = 31 * result + (aiIssue?.id?.hashCode() ?: 0)
             return result
         }
     }
@@ -400,19 +484,24 @@ class LineCommentManager(private val project: Project) {
         private val icon: Icon,
         private val unresolvedCount: Int,
         private val totalCount: Int,
-        private val allResolved: Boolean
+        private val allResolved: Boolean,
+        private val hasAiIssue: Boolean = false
     ) : GutterIconRenderer() {
         override fun getIcon() = icon
 
         override fun getTooltipText(): String {
             val stateText = if (allResolved) "已解决" else "未解决"
-            return "评论 $unresolvedCount/$totalCount - $stateText"
+            val commentText = "评论 $unresolvedCount/$totalCount - $stateText"
+            return if (hasAiIssue) "$commentText / AI评审问题" else commentText
         }
 
-        override fun getClickAction() = object : com.intellij.openapi.actionSystem.AnAction() {
-            override fun actionPerformed(e: AnActionEvent) {
-                val editor = CommonDataKeys.EDITOR.getData(e.dataContext) ?: return
-                showPopup(editor, context.filePath, line, context.side)
+        override fun getClickAction(): com.intellij.openapi.actionSystem.AnAction? {
+            if (hasAiIssue) return null
+            return object : com.intellij.openapi.actionSystem.AnAction() {
+                override fun actionPerformed(e: AnActionEvent) {
+                    val editor = CommonDataKeys.EDITOR.getData(e.dataContext) ?: return
+                    showPopup(editor, context.filePath, line, context.side)
+                }
             }
         }
 
@@ -424,7 +513,8 @@ class LineCommentManager(private val project: Project) {
                 line == other.line &&
                 unresolvedCount == other.unresolvedCount &&
                 totalCount == other.totalCount &&
-                allResolved == other.allResolved
+                allResolved == other.allResolved &&
+                hasAiIssue == other.hasAiIssue
         }
 
         override fun hashCode(): Int {
@@ -434,6 +524,7 @@ class LineCommentManager(private val project: Project) {
             result = 31 * result + unresolvedCount
             result = 31 * result + totalCount
             result = 31 * result + allResolved.hashCode()
+            result = 31 * result + hasAiIssue.hashCode()
             return result
         }
     }
@@ -526,6 +617,29 @@ class LineCommentManager(private val project: Project) {
         override fun getIconHeight(): Int = height
     }
 
+    private class CombinedGutterIcon(
+        private val leftIcon: Icon,
+        private val rightIcon: Icon,
+        private val gap: Int = JBUI.scale(4)
+    ) : Icon {
+        fun targetAt(relativeX: Int): CombinedGutterClickTarget? {
+            if (relativeX < 0 || relativeX >= iconWidth) return null
+            val splitX = leftIcon.iconWidth + gap / 2
+            return if (relativeX < splitX) CombinedGutterClickTarget.REVIEW else CombinedGutterClickTarget.AI
+        }
+
+        override fun paintIcon(c: Component?, g: Graphics, x: Int, y: Int) {
+            val leftY = y + (iconHeight - leftIcon.iconHeight) / 2
+            val rightY = y + (iconHeight - rightIcon.iconHeight) / 2
+            leftIcon.paintIcon(c, g, x, leftY)
+            rightIcon.paintIcon(c, g, x + leftIcon.iconWidth + gap, rightY)
+        }
+
+        override fun getIconWidth(): Int = leftIcon.iconWidth + gap + rightIcon.iconWidth
+
+        override fun getIconHeight(): Int = max(leftIcon.iconHeight, rightIcon.iconHeight)
+    }
+
     private class AiIssueIcon(private val unresolved: Boolean) : Icon {
         private val size = JBUI.scale(14)
 
@@ -556,13 +670,26 @@ class LineCommentManager(private val project: Project) {
         override fun getIconHeight(): Int = size
     }
 
-    private fun showAiIssuePopup(editor: Editor, issue: AiIssue) {
+    private fun resolveAiIssuePopupAnchor(editor: Editor, issue: AiIssue, clickPoint: RelativePoint? = null): RelativePoint? {
+        if (clickPoint != null) return clickPoint
+        val editorEx = editor as? EditorEx ?: return null
+        val gutter = editorEx.gutterComponentEx
+        val line = (issue.issueCodeLine - 1).coerceAtLeast(0)
+        if (line >= editor.document.lineCount) return null
+        val linePoint = editor.logicalPositionToXY(com.intellij.openapi.editor.LogicalPosition(line, 0))
+        val anchorX = (gutter.iconAreaOffset + gutter.iconsAreaWidth).coerceAtLeast(0)
+        val anchorY = (linePoint.y + editor.lineHeight / 2).coerceIn(0, max(gutter.height - 1, 0))
+        return RelativePoint(gutter, Point(anchorX, anchorY))
+    }
+
+    private fun showAiIssuePopup(editor: Editor, issue: AiIssue, clickPoint: RelativePoint? = null) {
         highlightAiIssueRange(editor, issue)
 
         val bgMain = JBColor(Color(0xF7F8FA), Color(0x2B2D30))
         val bgHeader = JBColor(Color(0xF3F4F6), Color(0x313438))
         val bgCard = JBColor(Color(0xFFFFFF), Color(0x3C3F41))
         val bgCode = JBColor(Color(0xF7F8FA), Color(0x35383C))
+        val bgComposer = JBColor(Color(0xFFFFFF), Color(0x2F3337))
         val textMain = JBColor(Color(0x5F6368), Color(0x9AA0A6))
         val textContent = JBColor(Color(0x202124), Color(0xDFE1E5))
         val textDim = JBColor(Color(0x80868B), Color(0x7F8790))
@@ -581,7 +708,9 @@ class LineCommentManager(private val project: Project) {
             private val fill: Color,
             private val arc: Int,
             private val leftStripe: Color? = null,
-            private val leftStripeWidth: Int = JBUI.scale(4)
+            private val leftStripeWidth: Int = JBUI.scale(4),
+            private val outlineColor: Color? = null,
+            private val outlineWidth: Float = JBUI.scale(1f)
         ) : JPanel() {
             init {
                 isOpaque = false
@@ -591,6 +720,7 @@ class LineCommentManager(private val project: Project) {
                 val g2 = g.create() as Graphics2D
                 try {
                     g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                    g2.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE)
                     val clip = g2.clip
                     g2.color = fill
                     g2.fillRoundRect(0, 0, width - 1, height - 1, arc, arc)
@@ -600,10 +730,40 @@ class LineCommentManager(private val project: Project) {
                         g2.fillRoundRect(0, 0, width - 1, height - 1, arc, arc)
                         g2.clip = clip
                     }
+                    if (outlineColor != null) {
+                        g2.color = outlineColor
+                        g2.stroke = BasicStroke(outlineWidth)
+                        val inset = outlineWidth / 2f
+                        g2.drawRoundRect(
+                            inset.toInt(),
+                            inset.toInt(),
+                            (width - 1 - outlineWidth).coerceAtLeast(0f).toInt(),
+                            (height - 1 - outlineWidth).coerceAtLeast(0f).toInt(),
+                            arc,
+                            arc
+                        )
+                    }
                 } finally {
                     g2.dispose()
                 }
                 super.paintComponent(g)
+            }
+        }
+
+        class PlaceholderTextArea(private val placeholder: String) : JBTextArea() {
+            override fun paintComponent(g: Graphics) {
+                super.paintComponent(g)
+                if (text.isNotEmpty()) return
+                val g2 = g.create() as Graphics2D
+                try {
+                    g2.color = textDim
+                    g2.font = font
+                    val x = insets.left + JBUI.scale(2)
+                    val y = insets.top + g2.fontMetrics.ascent
+                    g2.drawString(placeholder, x, y)
+                } finally {
+                    g2.dispose()
+                }
             }
         }
 
@@ -786,7 +946,8 @@ class LineCommentManager(private val project: Project) {
             })
 
             if (codeBlock) {
-                val codeArea = JBTextArea(value.ifBlank { "-" }).apply {
+                val codeText = value.ifBlank { "-" }
+                val codeArea = JBTextArea(codeText).apply {
                     isEditable = false
                     lineWrap = false
                     wrapStyleWord = false
@@ -796,12 +957,15 @@ class LineCommentManager(private val project: Project) {
                     caretColor = textContent
                     border = JBUI.Borders.empty(8)
                 }
+                val codeLineCount = codeText.lineSequence().count().coerceAtLeast(1)
+                val codeLineHeight = codeArea.getFontMetrics(codeArea.font).height
+                val codeBlockHeight = (codeLineCount * codeLineHeight + JBUI.scale(18)).coerceIn(JBUI.scale(44), JBUI.scale(220))
                 val codeScroll = JBScrollPane(codeArea).apply {
                     border = JBUI.Borders.customLine(alpha(borderColor, 140))
                     viewport.background = bgCode
                     background = bgCode
-                    preferredSize = Dimension(0, JBUI.scale(140))
-                    minimumSize = Dimension(0, JBUI.scale(120))
+                    preferredSize = Dimension(0, codeBlockHeight)
+                    minimumSize = Dimension(0, codeBlockHeight)
                     horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED
                     verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED
                 }
@@ -895,7 +1059,17 @@ class LineCommentManager(private val project: Project) {
         }
         footerBar.add(footerActions, BorderLayout.EAST)
 
+        val footerExtraPanel = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            isOpaque = false
+            border = JBUI.Borders.empty()
+        }
+
         var popup: com.intellij.openapi.ui.popup.JBPopup? = null
+        var falsePositiveFormVisible = false
+        var falsePositiveReasonDraft = ""
+        var falsePositiveError: String? = null
+        lateinit var renderIssueState: () -> Unit
 
         fun refreshPopupSize() {
             SwingUtilities.invokeLater {
@@ -924,7 +1098,119 @@ class LineCommentManager(private val project: Project) {
             }
         }
 
-        fun renderIssueState() {
+        fun submitAiIssue(status: Int, issueRemark: String?, controls: List<JButton>) {
+            val handler = aiIssueHandler ?: return
+            controls.forEach { it.isEnabled = false }
+            handler.invoke(currentIssue.id, status, issueRemark) { success ->
+                SwingUtilities.invokeLater {
+                    controls.forEach { it.isEnabled = true }
+                    if (success) {
+                        currentIssue = currentIssue.copy(issueStatus = status)
+                        falsePositiveFormVisible = false
+                        falsePositiveReasonDraft = ""
+                        falsePositiveError = null
+                        renderIssueState()
+                    }
+                }
+            }
+        }
+
+        fun buildFalsePositiveComposerPanel(actionButtons: List<JButton>): JComponent {
+            val panel = RoundedBlockPanel(
+                fill = bgComposer,
+                arc = JBUI.scale(10),
+                outlineColor = accentBlue,
+                outlineWidth = JBUI.scale(1f)
+            )
+            panel.layout = BorderLayout(0, JBUI.scale(5))
+            panel.border = JBUI.Borders.empty(8)
+            panel.alignmentX = Component.LEFT_ALIGNMENT
+
+            val reasonArea = PlaceholderTextArea("请输入误报说明（必填）").apply {
+                text = falsePositiveReasonDraft
+                lineWrap = true
+                wrapStyleWord = true
+                rows = 3
+                isOpaque = false
+                background = bgComposer
+                foreground = textContent
+                caretColor = textContent
+                font = font.deriveFont(13f)
+                border = JBUI.Borders.empty()
+                margin = JBUI.insets(0)
+            }
+            reasonArea.document.addDocumentListener(object : javax.swing.event.DocumentListener {
+                override fun insertUpdate(e: javax.swing.event.DocumentEvent?) = update()
+                override fun removeUpdate(e: javax.swing.event.DocumentEvent?) = update()
+                override fun changedUpdate(e: javax.swing.event.DocumentEvent?) = update()
+                private fun update() {
+                    falsePositiveReasonDraft = reasonArea.text
+                    if (falsePositiveError != null && falsePositiveReasonDraft.trim().isNotEmpty()) {
+                        falsePositiveError = null
+                        footerHintLabel.foreground = textDim
+                        footerHintLabel.text = ""
+                        footerHintLabel.repaint()
+                    }
+                }
+            })
+
+            val scroll = JBScrollPane(reasonArea).apply {
+                isOpaque = false
+                border = JBUI.Borders.empty()
+                viewport.isOpaque = false
+                viewport.background = bgComposer
+                horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+                preferredSize = Dimension(0, JBUI.scale(60))
+                minimumSize = Dimension(0, JBUI.scale(60))
+            }
+
+            val cancelButton = JButton("取消").apply {
+                font = font.deriveFont(11f)
+                foreground = textMain
+                isOpaque = false
+                isContentAreaFilled = false
+                isBorderPainted = false
+                isFocusPainted = false
+                cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                addActionListener {
+                    falsePositiveFormVisible = false
+                    falsePositiveReasonDraft = ""
+                    falsePositiveError = null
+                    renderIssueState()
+                }
+            }
+            val submitButton = createPrimaryButton("提交", accentBlue)
+            val submitControls = actionButtons + listOf(cancelButton, submitButton)
+            submitButton.addActionListener {
+                val remark = falsePositiveReasonDraft.trim()
+                if (remark.isBlank()) {
+                    falsePositiveError = "请输入误报说明"
+                    renderIssueState()
+                    return@addActionListener
+                }
+                falsePositiveError = null
+                submitAiIssue(2, remark, submitControls)
+            }
+
+            val actionRow = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0)).apply {
+                isOpaque = false
+                alignmentX = Component.LEFT_ALIGNMENT
+                add(cancelButton)
+                add(submitButton)
+            }
+
+            panel.add(scroll, BorderLayout.CENTER)
+            panel.add(actionRow, BorderLayout.SOUTH)
+            panel.maximumSize = Dimension(Int.MAX_VALUE, panel.preferredSize.height)
+
+            SwingUtilities.invokeLater {
+                reasonArea.requestFocusInWindow()
+                reasonArea.caretPosition = reasonArea.document.length
+            }
+            return panel
+        }
+
+        renderIssueState = {
             val statusTextValue = statusText(currentIssue.issueStatus)
             val statusColorValue = statusColor(currentIssue.issueStatus)
             headerIcon.icon = AiIssueIcon(currentIssue.issueStatus == 0)
@@ -934,31 +1220,13 @@ class LineCommentManager(private val project: Project) {
             headerMetaPanel.add(Box.createHorizontalStrut(JBUI.scale(8)))
             headerMetaPanel.add(createStatusPill(statusTextValue, statusColorValue))
 
-            footerHintLabel.text = if (currentIssue.issueStatus == 0) {
-                ""
-            } else {
-                "当前状态：$statusTextValue"
-            }
+            footerHintLabel.foreground = if (falsePositiveError != null) accentRed else textDim
+            footerHintLabel.text = falsePositiveError ?: ""
 
             footerActions.removeAll()
+            footerExtraPanel.removeAll()
             if (currentIssue.issueStatus == 0) {
                 val actionButtons = mutableListOf<JButton>()
-                fun bindHandle(button: JButton, status: Int) {
-                    actionButtons += button
-                    button.addActionListener {
-                        val handler = aiIssueHandler ?: return@addActionListener
-                        actionButtons.forEach { it.isEnabled = false }
-                        handler.invoke(currentIssue.id, status) { success ->
-                            SwingUtilities.invokeLater {
-                                actionButtons.forEach { it.isEnabled = true }
-                                if (success) {
-                                    currentIssue = currentIssue.copy(issueStatus = status)
-                                    renderIssueState()
-                                }
-                            }
-                        }
-                    }
-                }
 
                 val falsePositiveButton = createActionButton(
                     "误报",
@@ -969,20 +1237,46 @@ class LineCommentManager(private val project: Project) {
                 )
                 val ignoreButton = createActionButton("忽略")
                 val acceptButton = createPrimaryButton("采纳", accentGreen)
-                bindHandle(falsePositiveButton, 2)
-                bindHandle(ignoreButton, 3)
-                bindHandle(acceptButton, 1)
+
+                actionButtons += falsePositiveButton
+                actionButtons += ignoreButton
+                actionButtons += acceptButton
+
+                falsePositiveButton.addActionListener {
+                    falsePositiveFormVisible = true
+                    falsePositiveError = null
+                    renderIssueState()
+                }
+                ignoreButton.addActionListener {
+                    submitAiIssue(3, null, actionButtons)
+                }
+                acceptButton.addActionListener {
+                    submitAiIssue(1, null, actionButtons)
+                }
+
                 footerActions.add(falsePositiveButton)
                 footerActions.add(Box.createHorizontalStrut(JBUI.scale(8)))
                 footerActions.add(ignoreButton)
                 footerActions.add(Box.createHorizontalStrut(JBUI.scale(8)))
                 footerActions.add(acceptButton)
+
+                if (falsePositiveFormVisible) {
+                    val composerHost = JPanel(BorderLayout()).apply {
+                        isOpaque = true
+                        background = bgHeader
+                        border = JBUI.Borders.empty(6, 12, 12, 12)
+                    }
+                    composerHost.add(buildFalsePositiveComposerPanel(actionButtons), BorderLayout.CENTER)
+                    footerExtraPanel.add(composerHost)
+                }
             }
 
             headerMetaPanel.revalidate()
             headerMetaPanel.repaint()
             footerActions.revalidate()
             footerActions.repaint()
+            footerExtraPanel.revalidate()
+            footerExtraPanel.repaint()
             footerBar.revalidate()
             footerBar.repaint()
             footerPanel.revalidate()
@@ -990,7 +1284,8 @@ class LineCommentManager(private val project: Project) {
             refreshPopupSize()
         }
 
-        footerPanel.add(footerBar, BorderLayout.CENTER)
+        footerPanel.add(footerBar, BorderLayout.NORTH)
+        footerPanel.add(footerExtraPanel, BorderLayout.CENTER)
 
         container.add(headerPanel, BorderLayout.NORTH)
         container.add(scrollPane, BorderLayout.CENTER)
@@ -1005,7 +1300,12 @@ class LineCommentManager(private val project: Project) {
             .createPopup()
 
         renderIssueState()
-        popup.showInBestPositionFor(editor)
+        val popupAnchor = resolveAiIssuePopupAnchor(editor, issue, clickPoint)
+        if (popupAnchor != null) {
+            popup.show(popupAnchor)
+        } else {
+            popup.showInBestPositionFor(editor)
+        }
         SwingUtilities.invokeLater {
             refreshPopupSize()
             val window = SwingUtilities.getWindowAncestor(container) ?: return@invokeLater

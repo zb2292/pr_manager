@@ -1,0 +1,17 @@
+{
+  "result": [
+    {
+      "id": 197317,
+      "issueSeverity": 1,
+      "issueDescription": "空指针风险，调用对象可能为空。空指针风险，调用对象可能为空。空指针风险，调用对象可能为空。空指针风险，调用对象可能为空。空指针风险，调用对象可能为空。空指针风险，调用对象可能为空。空指针风险，调用对象可能为空。空指针风险，调用对象可能为空。",
+      "issueFixSuggestion": "增加非空判断后再调用方法。增加非空判断后再调用方法。增加非空判断后再调用方法。增加非空判断后再调用方法。增加非空判断后再调用方法。增加非空判断后再调用方法。增加非空判断后再调用方法。增加非空判断后再调用方法。增加非空判断后再调用方法。增加非空判断后再调用方法。",
+      "issueFixCode": "if (obj != null) { \n obj.run(); \n}",
+      "issueStatus": 0,
+      "issueCodeSnippetStartLine": 10,
+      "issueCodeSnippetEndLine": 14,
+      "issueCodeLine": 12,
+      "filePath": "merge-request-integration-core/src/main/kotlin/net/ntworld/mergeRequestIntegrationIde/compatibility/Version203Adapter.kt"
+    }
+  ],
+  "type": "S"
+}

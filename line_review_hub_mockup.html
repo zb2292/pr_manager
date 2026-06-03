@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Line Review Hub Mockup</title>
+    <style>
+        :root {
+            --bg-main: #2B2B2B;
+            --bg-header: #3C3F41;
+            --bg-card: #323232;
+            --bg-reply: #393939;
+            --text-main: #BBBBBB;
+            --text-dim: #888888;
+            --accent-blue: #1A73E8;
+            --accent-green: #57D163;
+            --accent-orange: #F29900;
+            --border: #515151;
+            --font-ui: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            --font-code: "JetBrains Mono", monospace;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-main);
+            color: var(--text-main);
+            font-family: var(--font-ui);
+            font-size: 13px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+
+        .window-container {
+            width: 450px;
+            height: 600px;
+            background: var(--bg-main);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            overflow: hidden;
+        }
+
+        /* 区域 A: 顶部标题行 */
+        .header {
+            height: 40px;
+            background: var(--bg-header);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            padding: 0 12px;
+            flex-shrink: 0;
+        }
+        .header .icon { margin-right: 8px; font-size: 16px; }
+        .header .title { font-weight: 600; flex-grow: 1; }
+        .header .status-tag {
+            background: rgba(242, 153, 0, 0.2);
+            color: var(--accent-orange);
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 11px;
+            margin-right: 10px;
+        }
+        .header .count { color: var(--text-dim); font-size: 11px; }
+
+        /* 区域 B: 滑动窗口 */
+        .content {
+            flex-grow: 1;
+            overflow-y: auto;
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .comment-unit {
+            background: var(--bg-card);
+            border-radius: 6px;
+            border-left: 4px solid var(--accent-orange);
+            padding: 10px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .comment-unit.resolved {
+            border-left-color: var(--accent-green);
+            opacity: 0.8;
+        }
+
+        .unit-header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        .avatar {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            background: #555;
+            margin-right: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .user-name { font-weight: 600; margin-right: 6px; }
+        .index { color: var(--text-dim); margin-right: 6px; }
+        .time { color: var(--text-dim); font-size: 11px; flex-grow: 1; }
+        .unit-status { font-size: 11px; color: var(--accent-orange); margin-right: 8px; }
+        .btn-toggle {
+            background: none;
+            border: none;
+            color: var(--accent-blue);
+            cursor: pointer;
+            font-size: 11px;
+            padding: 2px 4px;
+        }
+
+        .comment-text {
+            line-height: 1.5;
+            margin-bottom: 10px;
+            white-space: pre-wrap;
+            color: #D1D1D1;
+        }
+
+        .action-bar {
+            display: flex;
+            gap: 10px;
+        }
+        .btn-action {
+            background: rgba(255,255,255,0.05);
+            border: 1px solid var(--border);
+            color: var(--text-main);
+            padding: 4px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 11px;
+            transition: all 0.2s;
+        }
+        .btn-action:hover { background: rgba(255,255,255,0.1); border-color: #777; }
+        .btn-resolve { color: var(--accent-green); border-color: rgba(87, 209, 99, 0.3); }
+
+        /* 回复数据展示区 */
+        .reply-section {
+            margin-top: 10px;
+            border-top: 1px solid var(--border);
+            padding-top: 10px;
+            padding-left: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .reply-card {
+            background: var(--bg-reply);
+            padding: 8px;
+            border-radius: 4px;
+        }
+
+        /* 区域 C: 底部预评论 */
+        .footer {
+            height: 48px;
+            background: var(--bg-header);
+            border-top: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            padding: 0 12px;
+            flex-shrink: 0;
+        }
+        .footer .current-user { display: flex; align-items: center; flex-grow: 1; }
+        .btn-primary {
+            background: var(--accent-blue);
+            color: white;
+            border: none;
+            padding: 6px 14px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        /* 统一回复服务样式 (模拟展开) */
+        .reply-editor {
+            margin-top: 8px;
+            background: #252525;
+            border: 1px solid var(--accent-blue);
+            border-radius: 4px;
+            padding: 8px;
+        }
+        .reply-editor textarea {
+            width: 100%;
+            background: transparent;
+            border: none;
+            color: white;
+            resize: none;
+            font-family: var(--font-ui);
+            outline: none;
+            height: 60px;
+        }
+        .editor-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+            margin-top: 5px;
+        }
+
+        /* 滚动条美化 */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #444; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #555; }
+    </style>
+</head>
+<body>
+
+<div class="window-container">
+    <!-- 区域 A -->
+    <div class="header">
+        <span class="icon">💬</span>
+        <span class="title">行评论 · L120</span>
+        <span class="status-tag">待解决</span>
+        <span class="count">2个评论单元</span>
+    </div>
+
+    <!-- 区域 B -->
+    <div class="content">
+        <!-- 评论单元 1 (展开态) -->
+        <div class="comment-unit">
+            <div class="unit-header">
+                <div class="avatar" style="background: #E57373;">张</div>
+                <span class="user-name">张三</span>
+                <span class="index">#1</span>
+                <span class="time">2026-05-09 10:21</span>
+                <span class="unit-status">待解决</span>
+                <button class="btn-toggle">🔼 收起回复</button>
+            </div>
+            <div class="comment-text">这里的判空逻辑可以提前返回，避免嵌套过深。目前的写法在多线程高并发下可能有竞态风险，建议参考 Util.safeCheck()。</div>
+            <div class="action-bar">
+                <button class="btn-action">↩ 回复</button>
+                <button class="btn-action btn-resolve">✓ 标记已解决</button>
+            </div>
+
+            <!-- 回复数据嵌入窗口 -->
+            <div class="reply-section">
+                <div class="reply-card">
+                    <div class="unit-header">
+                        <div class="avatar" style="background: #64B5F6;">李</div>
+                        <span class="user-name">李四</span>
+                        <span class="index">#2</span>
+                        <span class="time">10:25</span>
+                    </div>
+                    <div class="comment-text">同意，我将在下一版提交中重构这部分逻辑。</div>
+                    <div class="action-bar">
+                        <button class="btn-action">↩ 回复</button>
+                    </div>
+                </div>
+                
+                <div class="reply-card">
+                    <div class="unit-header">
+                        <div class="avatar" style="background: #81C784;">王</div>
+                        <span class="user-name">王五</span>
+                        <span class="index">#3</span>
+                        <span class="time">10:30</span>
+                    </div>
+                    <div class="comment-text">@李四 记得把单测也补一下。</div>
+                    <div class="action-bar">
+                        <button class="btn-action">↩ 回复</button>
+                    </div>
+                </div>
+
+                <!-- 模拟点击回复后的编辑器 -->
+                <div class="reply-editor">
+                    <textarea placeholder="输入回复内容..."></textarea>
+                    <div class="editor-actions">
+                        <button class="btn-action" style="border:none">取消</button>
+                        <button class="btn-primary" style="padding: 4px 10px; font-size: 11px;">发送 ⌘Enter</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 评论单元 2 (已解决态/合并态) -->
+        <div class="comment-unit resolved">
+            <div class="unit-header">
+                <div class="avatar" style="background: #BA68C8;">赵</div>
+                <span class="user-name">赵六</span>
+                <span class="index">#4</span>
+                <span class="time">昨天 15:40</span>
+                <span class="unit-status" style="color: var(--accent-green)">已解决</span>
+                <button class="btn-toggle">🔽 展开 1 条回复</button>
+            </div>
+            <div class="comment-text">拼写错误：'recieve' 应为 'receive'。</div>
+            <div class="action-bar">
+                <button class="btn-action">↩ 回复</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 区域 C -->
+    <div class="footer">
+        <div class="current-user">
+            <div class="avatar" style="background: var(--accent-blue); font-size: 10px;">ME</div>
+            <span style="margin-left:8px; font-weight:500;">张某某 (当前用户)</span>
+        </div>
+        <button class="btn-primary">➕ 新建评论</button>
+    </div>
+</div>
+
+</body>
+</html>

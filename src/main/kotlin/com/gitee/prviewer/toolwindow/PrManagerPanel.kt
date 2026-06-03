@@ -27,6 +27,8 @@ import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.SimpleToolWindowPanel
 import com.intellij.openapi.ui.popup.Balloon
 import com.intellij.openapi.ui.popup.JBPopupFactory
+import com.intellij.openapi.ui.popup.JBPopupListener
+import com.intellij.openapi.ui.popup.LightweightWindowEvent
 import com.intellij.ui.IconManager
 import com.intellij.ui.awt.RelativePoint
 import com.intellij.ui.JBColor
@@ -330,7 +332,9 @@ private class TimelineMarkerPanel(
 }
 
 
-private class ViewportWidthPanel : JPanel(), Scrollable {
+private class ViewportWidthPanel(
+    private val tracksViewportWidth: Boolean = true
+) : JPanel(), Scrollable {
     override fun getPreferredScrollableViewportSize(): Dimension = preferredSize
 
     override fun getScrollableUnitIncrement(visibleRect: Rectangle, orientation: Int, direction: Int): Int = JBUI.scale(16)
@@ -343,9 +347,55 @@ private class ViewportWidthPanel : JPanel(), Scrollable {
         }
     }
 
-    override fun getScrollableTracksViewportWidth(): Boolean = true
+    override fun getScrollableTracksViewportWidth(): Boolean = tracksViewportWidth
 
     override fun getScrollableTracksViewportHeight(): Boolean = false
+}
+
+private class ResponsiveGridPanel(
+    private val expandedColumns: Int,
+    private val collapseWidth: Int,
+    private val expandedHorizontalGap: Int = JBUI.scale(12),
+    private val collapsedVerticalGap: Int = JBUI.scale(12)
+) : JPanel() {
+    private var collapsed = false
+
+    init {
+        isOpaque = false
+        refreshLayout(Int.MAX_VALUE)
+        addComponentListener(object : java.awt.event.ComponentAdapter() {
+            override fun componentResized(e: java.awt.event.ComponentEvent?) {
+                refreshLayout(width, revalidateAfterChange = true)
+            }
+        })
+    }
+
+    override fun doLayout() {
+        refreshLayout(width.takeIf { it > 0 } ?: parent?.width ?: Int.MAX_VALUE)
+        super.doLayout()
+    }
+
+    override fun getPreferredSize(): Dimension {
+        refreshLayout(width.takeIf { it > 0 } ?: parent?.width ?: Int.MAX_VALUE)
+        return super.getPreferredSize()
+    }
+
+    private fun refreshLayout(availableWidth: Int, revalidateAfterChange: Boolean = false) {
+        val shouldCollapse = availableWidth in 1 until collapseWidth
+        if (shouldCollapse == collapsed && layout is GridLayout) {
+            return
+        }
+        collapsed = shouldCollapse
+        layout = if (collapsed) {
+            GridLayout(0, 1, 0, collapsedVerticalGap)
+        } else {
+            GridLayout(1, expandedColumns.coerceAtLeast(1), expandedHorizontalGap, 0)
+        }
+        if (revalidateAfterChange) {
+            revalidate()
+            repaint()
+        }
+    }
 }
 
 class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true, true) {
@@ -381,6 +431,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private val mockListFile = config.getProperty("prviewer.mock.list.file", "pr-list.json").trim()
     private val mockDetailFile = config.getProperty("prviewer.mock.detail.file", "pr-detail.json").trim()
     private val mockIssuesFile = config.getProperty("prviewer.mock.issues.file", "pr-issues.json").trim()
+    private val mockRepoMemberRoleFile = config.getProperty("prviewer.mock.repoMemberRole.file", "repo-member-role.json").trim()
+    private val mockCanCreatePrFile = config.getProperty("prviewer.mock.canCreatePr.file", "can-create-pr.json").trim()
+    private val mockDevelopersFile = config.getProperty("prviewer.mock.developers.file", "developers.json").trim()
+    private val mockCreatePrFile = config.getProperty("prviewer.mock.createPr.file", "create-pr.json").trim()
 
     private val listUrl = buildUrl(config.getProperty("prviewer.api.list.path", "/pset/api/gitee-api/pull-request-reviews/pullRequestsList"))
     private val detailUrl = buildUrl(config.getProperty("prviewer.api.detail.path", "/pset/api/gitee/selectPullRequestInfos"))
@@ -393,6 +447,11 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private val aiReviewPrDetailUrl = buildUrl(config.getProperty("prviewer.api.aiReviewPrDetail.path", "/pset/api/gitee/queryAiReviewPrDetailData"))
     private val aiReviewFileDetailUrl = buildUrl(config.getProperty("prviewer.api.aiReviewFileDetail.path", "/pset/api/gitee/queryAiReviewFileIssueDetailData"))
     private val aiHandleIssueUrl = buildUrl(config.getProperty("prviewer.api.aiHandleIssue.path", "/pset/api/gitee/handleAiReviewIssue"))
+    private val createPrUrl = buildUrl(config.getProperty("prviewer.api.createPr.path", "/pset/api/gitee/createPRByUser"))
+    private val developersUrl = buildUrl(config.getProperty("prviewer.api.developers.path", "/pset/api/gitee/getDevelopers"))
+    private val repoMemberRoleUrl = buildUrl(config.getProperty("prviewer.api.repoMemberRole.path", "/pset/api/gitee/getRepoMemberRole"))
+    private val canCreatePrUrl = buildUrl(config.getProperty("prviewer.api.canCreatePr.path", "/pset/api/gitee/canCreatePR"))
+    private val repoProjectId = config.getProperty("prviewer.repo.projectId", "").trim()
 
     private val apiService = PrApiService(
         httpClient = httpClient,
@@ -407,7 +466,11 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         mergeUrl = mergeUrl,
         aiReviewPrDetailUrl = aiReviewPrDetailUrl,
         aiReviewFileDetailUrl = aiReviewFileDetailUrl,
-        aiHandleIssueUrl = aiHandleIssueUrl
+        aiHandleIssueUrl = aiHandleIssueUrl,
+        createPrUrl = createPrUrl,
+        developersUrl = developersUrl,
+        repoMemberRoleUrl = repoMemberRoleUrl,
+        canCreatePrUrl = canCreatePrUrl
     )
 
     private val branchService = BranchCompareService(project)
@@ -429,6 +492,13 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private val loadMoreLabel = JBLabel("加载更多中...", SwingConstants.CENTER)
     private val searchField = JBTextField()
     private val refreshButton = JButton()
+    private val createPrButton = createPrimaryActionButton("+ 新建 PR", compact = true).apply {
+        toolTipText = "创建新的 Pull Request"
+    }
+    private var canCreatePr: Boolean = false
+    private var createPrPermissionLoaded: Boolean = false
+    private var createPrRoleName: String = ""
+    private var isCreatePrViewActive: Boolean = false
     private val statusFilterButtons = listOf(
         SegmentedFilterButton("开启的"),
         SegmentedFilterButton("已合并"),
@@ -474,6 +544,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private val detailCard = JPanel(java.awt.CardLayout()).apply { isOpaque = true }
     private val detailEmpty = JPanel(BorderLayout()).apply { isOpaque = true }
     private val detailPanel = JPanel(BorderLayout()).apply { isOpaque = true }
+    private val detailCreatePanel = JPanel(BorderLayout()).apply { isOpaque = true }
+    private var createPrView: CreatePrView? = null
     private val detailHeaderTitle = JBLabel("-")
     private val detailStatus: StatusBadgeLabel = StatusBadgeLabel()
     private val detailRefreshButton = JButton(AllIcons.Actions.Refresh).apply {
@@ -662,6 +734,102 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         return stream.bufferedReader().use { it.readText() }
     }
 
+    private fun createRoundedActionButton(
+        text: String,
+        fillColorProvider: () -> Color,
+        hoverFillColorProvider: () -> Color,
+        foregroundColorProvider: () -> Color,
+        disabledFillColorProvider: () -> Color,
+        disabledForegroundColorProvider: () -> Color,
+        outlineColorProvider: (() -> Color)? = null,
+        disabledOutlineColorProvider: (() -> Color)? = outlineColorProvider,
+        padding: Insets = JBUI.insets(4, 10),
+        fontSize: Float = 11f,
+        bold: Boolean = false,
+        arc: Int = JBUI.scale(8)
+    ): JButton {
+        val button = object : JButton(text) {
+            var hovered = false
+
+            override fun paintComponent(g: Graphics) {
+                val g2 = g.create() as Graphics2D
+                try {
+                    g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                    val fillColor = when {
+                        !isEnabled -> disabledFillColorProvider()
+                        hovered -> hoverFillColorProvider()
+                        else -> fillColorProvider()
+                    }
+                    val outlineColor = when {
+                        !isEnabled -> disabledOutlineColorProvider?.invoke()
+                        hovered -> outlineColorProvider?.invoke()?.darker()
+                        else -> outlineColorProvider?.invoke()
+                    }
+                    g2.color = fillColor
+                    g2.fillRoundRect(0, 0, width, height, arc, arc)
+                    if (outlineColor != null) {
+                        g2.color = outlineColor
+                        g2.drawRoundRect(0, 0, width - 1, height - 1, arc, arc)
+                    }
+                } finally {
+                    g2.dispose()
+                }
+                foreground = if (isEnabled) foregroundColorProvider() else disabledForegroundColorProvider()
+                super.paintComponent(g)
+            }
+        }
+        button.font = button.font.deriveFont(if (bold) Font.BOLD else Font.PLAIN, fontSize)
+        button.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+        button.isFocusPainted = false
+        button.isOpaque = false
+        button.isContentAreaFilled = false
+        button.isBorderPainted = false
+        button.margin = JBUI.emptyInsets()
+        button.border = JBUI.Borders.empty(padding.top, padding.left, padding.bottom, padding.right)
+        button.addMouseListener(object : MouseAdapter() {
+            override fun mouseEntered(e: MouseEvent) {
+                button.hovered = true
+                button.repaint()
+            }
+
+            override fun mouseExited(e: MouseEvent) {
+                button.hovered = false
+                button.repaint()
+            }
+        })
+        return button
+    }
+
+    private fun createPrimaryActionButton(text: String, compact: Boolean = false): JButton {
+        val padding = if (compact) JBUI.insets(4, 8) else JBUI.insets(6, 14)
+        return createRoundedActionButton(
+            text = text,
+            fillColorProvider = { JBColor(Color(0x1A73E8), Color(0x3574F0)) },
+            hoverFillColorProvider = { JBColor(Color(0x1557B0), Color(0x4682F2)) },
+            foregroundColorProvider = { Color.WHITE },
+            disabledFillColorProvider = { JBColor(Color(0xE5E7EB), Color(0x3C3F41)) },
+            disabledForegroundColorProvider = { JBColor(Color(0x9CA3AF), Color(0x7D8694)) },
+            padding = padding,
+            fontSize = if (compact) (globalUiFontSize - 1f).coerceAtLeast(11f) else globalUiFontSize,
+            bold = true
+        )
+    }
+
+    private fun createSecondaryActionButton(text: String): JButton {
+        return createRoundedActionButton(
+            text = text,
+            fillColorProvider = { JBColor(Color(0xF0F2F5), Color(0x2B2D30)) },
+            hoverFillColorProvider = { JBColor(Color(0xE5E7EB), Color(0x3A3D41)) },
+            foregroundColorProvider = { JBColor(Color(0x374151), Color(0xD1D5DB)) },
+            disabledFillColorProvider = { JBColor(Color(0xF3F4F6), Color(0x2B2D30)) },
+            disabledForegroundColorProvider = { JBColor(Color(0x9CA3AF), Color(0x7D8694)) },
+            outlineColorProvider = { JBColor(Color(0xD1D5DB), Color(0x43454A)) },
+            padding = JBUI.insets(6, 14),
+            fontSize = globalUiFontSize,
+            bold = true
+        )
+    }
+
     private fun applyGlobalFontSettings() {
         statusLabel.font = statusLabel.font.deriveFont(Font.PLAIN, globalUiFontSize)
         loadMoreLabel.font = loadMoreLabel.font.deriveFont(Font.PLAIN, globalUiFontSize)
@@ -796,15 +964,18 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             add(roleFilterPanel)
         }
 
+        val filterRow = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            border = JBUI.Borders.emptyTop(JBUI.scale(16))
+            add(filterBar, BorderLayout.WEST)
+            add(createPrButton, BorderLayout.EAST)
+        }
+
         return JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.empty(0, 8, 8, 8)
             add(headerBar, BorderLayout.NORTH)
-            add(JPanel(BorderLayout()).apply {
-                isOpaque = false
-                border = JBUI.Borders.emptyTop(JBUI.scale(16))
-                add(filterBar, BorderLayout.WEST)
-            }, BorderLayout.CENTER)
+            add(filterRow, BorderLayout.CENTER)
         }
     }
 
@@ -1089,6 +1260,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         detailPanel.add(detailRoot, BorderLayout.CENTER)
         detailCard.add(detailPanel, "detail")
 
+        createPrView = CreatePrView().also { detailCreatePanel.add(it.rootComponent, BorderLayout.CENTER) }
+        detailCard.add(detailCreatePanel, "create")
+
         (detailCard.layout as java.awt.CardLayout).show(detailCard, "empty")
         renderEmptyDetail()
     }
@@ -1188,6 +1362,24 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private fun detailSurfaceFill(): Color = JBColor(Color(0xF7F8FA), Color(0x313438))
 
+    private fun createPrOuterFill(): Color = detailPanelFill()
+
+    private fun createPrHeaderFill(): Color = detailPanelFill()
+
+    private fun createPrSectionFill(): Color = detailTabPaneFill()
+
+    private fun createPrSubtleFill(): Color = detailSurfaceFill()
+
+    private fun createPrInputFill(): Color = detailSurfaceFill()
+
+    private fun createPrBorderColor(): Color = detailOutlineColor()
+
+    private fun createPrPrimaryTextColor(): Color = detailPrimaryTextColor()
+
+    private fun createPrSecondaryTextColor(): Color = detailMutedColor()
+
+    private fun createPrTabSelectedTextColor(): Color = detailAccentColor
+
     private fun commitCardFill(): Color = JBColor(Color(0xFCFCFD), Color(0x363A3F))
 
     private fun commitCardOutlineColor(): Color = JBColor(Color(0xD7DDE6), Color(0x59606A))
@@ -1235,6 +1427,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         return metricsOwner.getFontMetrics(metricsOwner.font).charWidth('中').coerceAtLeast(JBUI.scale(12))
     }
 
+    private fun createPrHorizontalInset(): Int = (detailHorizontalInset() / 2).coerceAtLeast(JBUI.scale(6))
+
     private fun detailHeaderInsetDelta(): Int = JBUI.scale(16)
 
     private fun detailHeaderRowInsetDelta(): Int = JBUI.scale(10)
@@ -1265,8 +1459,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         return detailContentSideInsets(overviewComponent)
     }
 
-    private fun buildDetailTabBody(topInset: Int = 12, bottomInset: Int = 10): ViewportWidthPanel {
-        return ViewportWidthPanel().apply {
+    private fun buildDetailTabBody(
+        topInset: Int = 12,
+        bottomInset: Int = 10,
+        tracksViewportWidth: Boolean = true
+    ): ViewportWidthPanel {
+        return ViewportWidthPanel(tracksViewportWidth).apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
             isOpaque = false
             border = JBUI.Borders.empty(topInset, detailHorizontalInset(), bottomInset, detailHorizontalInset())
@@ -1340,6 +1538,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         detailCard.background = panelFill
         detailEmpty.background = panelFill
         detailPanel.background = panelFill
+        detailCreatePanel.background = createPrOuterFill()
         detailTabs.background = tabFill
         overviewDesc.background = detailSurfaceFill()
         commitTimelineContent.background = detailSurfaceFill()
@@ -1354,6 +1553,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 is JComponent -> component.background = tabFill
             }
         }
+        createPrView?.applyTheme()
     }
 
     private fun createDetailScrollPane(
@@ -1376,9 +1576,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             border = JBUI.Borders.empty()
             viewportBorder = null
             isOpaque = false
+            minimumSize = Dimension(0, 0)
             viewport.isOpaque = true
             background = fillColorProvider()
             viewport.background = fillColorProvider()
+            verticalScrollBar.unitIncrement = JBUI.scale(16)
+            horizontalScrollBar.unitIncrement = JBUI.scale(16)
         }
     }
 
@@ -2462,6 +2665,114 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 PrManagerFileLogger.error("Failed to refresh PR list", e)
             }
         }
+
+        createPrButton.addActionListener {
+            try {
+                if (!canCreatePr) {
+                    updateStatus("无权限创建 PR")
+                    return@addActionListener
+                }
+                if (isCreatePrViewActive) {
+                    updateStatus("请先处理当前新建PR")
+                    return@addActionListener
+                }
+                showCreatePrView()
+            } catch (e: Exception) {
+                PrManagerFileLogger.error("Failed to open create PR dialog", e)
+                updateStatus("打开创建窗口失败: ${e.message ?: "未知错误"}")
+            }
+        }
+    }
+
+    private fun refreshCreatePermission(retryCount: Int = 0) {
+        val sshPath = resolveGitAddress()
+        val currentUser = System.getenv(pluginAuthorUsernameEnv).orEmpty().trim()
+        if (sshPath.isBlank()) {
+            if (retryCount < 6) {
+                PrManagerFileLogger.info("Create PR permission deferred: sshPath is blank, retry=${retryCount + 1}")
+                createPrPermissionLoaded = false
+                canCreatePr = false
+                createPrRoleName = ""
+                applyCreatePrButtonState()
+                scheduleCreatePrPermissionRetry(retryCount + 1)
+            } else {
+                createPrPermissionLoaded = true
+                canCreatePr = false
+                createPrRoleName = ""
+                applyCreatePrButtonState()
+            }
+            return
+        }
+        if (currentUser.isBlank()) {
+            createPrPermissionLoaded = true
+            canCreatePr = false
+            createPrRoleName = ""
+            applyCreatePrButtonState()
+            return
+        }
+        try {
+            val role = if (mockEnabled) {
+                val mockJson = readMockJson(mockRepoMemberRoleFile)
+                    ?: throw IllegalStateException("Mock文件不存在: $mockDir/$mockRepoMemberRoleFile")
+                parseRepoMemberRole(mockJson)
+            } else {
+                val response = apiService.fetchRepoMemberRole(sshPath = sshPath, userName = currentUser)
+                if (response.statusCode() !in 200..299) {
+                    PrManagerFileLogger.warn("Fetch repo member role failed, status=${response.statusCode()}")
+                    ""
+                } else {
+                    parseRepoMemberRole(response.body())
+                }
+            }
+            createPrPermissionLoaded = true
+            createPrRoleName = role
+            canCreatePr = role in setOf("拥有者", "配置", "管理", "协作", "owner", "maintainer", "master", "admin", "developer")
+            applyCreatePrButtonState()
+        } catch (e: Exception) {
+            PrManagerFileLogger.error("Fetch repo member role failed", e)
+            createPrPermissionLoaded = true
+            canCreatePr = false
+            createPrRoleName = ""
+            applyCreatePrButtonState()
+        }
+    }
+
+    private fun scheduleCreatePrPermissionRetry(retryCount: Int) {
+        SwingUtilities.invokeLater {
+            javax.swing.Timer(400) {
+                ApplicationManager.getApplication().executeOnPooledThread {
+                    refreshCreatePermission(retryCount)
+                }
+            }.apply {
+                isRepeats = false
+                start()
+            }
+        }
+    }
+
+    private fun applyCreatePrButtonState() {
+        SwingUtilities.invokeLater {
+            val enabled = createPrPermissionLoaded && canCreatePr && !isCreatePrViewActive
+            createPrButton.isEnabled = enabled
+            createPrButton.toolTipText = when {
+                !createPrPermissionLoaded || !canCreatePr -> "无权限"
+                isCreatePrViewActive -> "请先处理当前新建PR"
+                else -> "创建新的 Pull Request"
+            }
+            createPrButton.repaint()
+        }
+    }
+
+    private fun setCreatePrViewActive(active: Boolean) {
+        if (isCreatePrViewActive == active) return
+        isCreatePrViewActive = active
+        applyCreatePrButtonState()
+    }
+
+    private fun parseRepoMemberRole(body: String): String {
+        val root = runCatching { objectMapper.readTree(body) }.getOrNull() ?: return ""
+        val result = root.get("result") ?: root
+        return result.readText("role_name", "roleName")
     }
 
     private fun dismissSearchFieldFocus() {
@@ -2633,6 +2944,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private fun resetAndLoad() {
         PrManagerFileLogger.info("Reset list state and reload")
+        createPrPermissionLoaded = false
+        canCreatePr = false
+        applyCreatePrButtonState()
         prListQueryVersion += 1
         activePrListLoadId = 0L
         isLoading = false
@@ -2670,6 +2984,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
+                val sshPath = resolveGitAddress()
                 val result = if (mockEnabled) {
                     val mockJson = readMockJson(mockListFile) ?: ""
                     if (mockJson.isBlank()) {
@@ -2678,7 +2993,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                         buildMockPrListResult(mockJson, append)
                     }
                 } else {
-                    val requestBody = buildListRequestBody(append)
+                    val requestBody = buildListRequestBody(append, sshPath)
                     val response = apiService.fetchPrList(requestBody)
                     if (response.statusCode() !in 200..299) {
                         PrManagerFileLogger.warn("Load PR list failed, status=${response.statusCode()}")
@@ -2689,6 +3004,11 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 }
 
                 SwingUtilities.invokeLater {
+                    if (!append) {
+                        ApplicationManager.getApplication().executeOnPooledThread {
+                            refreshCreatePermission()
+                        }
+                    }
                     if (queryVersion != prListQueryVersion || loadId != activePrListLoadId) {
                         PrManagerFileLogger.info("Ignore stale PR list result: append=$append page=${result.page} queryVersion=$queryVersion activeQueryVersion=$prListQueryVersion loadId=$loadId activeLoadId=$activePrListLoadId")
                         return@invokeLater
@@ -2778,7 +3098,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         )
     }
 
-    private fun buildListRequestBody(append: Boolean): String {
+    private fun buildListRequestBody(append: Boolean, sshPath: String): String {
         val status = when (activeFilter) {
             PrFilter.OPEN -> "opened"
             PrFilter.CLOSED -> "closed"
@@ -2788,7 +3108,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         val pageValue = if (append) currentPage + 1 else 1
         val currentUser = System.getenv("USERID").orEmpty().trim()
         val payload = linkedMapOf(
-            "sshPath" to resolveGitAddress(),
+            "sshPath" to sshPath,
             "page" to pageValue,
             "perPage" to pageSize,
             "states" to listOf(status),
@@ -2813,6 +3133,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun renderEmptyDetail() {
+        setCreatePrViewActive(false)
         currentDetail = null
         currentDetailId = null
         currentAiOverview = null
@@ -2866,7 +3187,23 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         updateDetailTabCounters(0, 0)
     }
 
+    private fun showCreatePrView() {
+        setCreatePrViewActive(true)
+        createPrView?.prepareForDisplay()
+        (detailCard.layout as java.awt.CardLayout).show(detailCard, "create")
+    }
+
+    private fun exitCreatePrView() {
+        setCreatePrViewActive(false)
+        if (currentDetail != null && currentDetailId != null) {
+            (detailCard.layout as java.awt.CardLayout).show(detailCard, "detail")
+        } else {
+            renderEmptyDetail()
+        }
+    }
+
     private fun showDetail(prId: Long) {
+        setCreatePrViewActive(false)
         selectPrCard(prId)
         currentDetailId = prId
         changeTreeFlatMode = false
@@ -4285,9 +4622,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun updateFilterButtonStyles() {
-        val selectedBackground = Color.WHITE
+        val darkTheme = UIUtil.isUnderDarcula()
+        val selectedBackground = if (darkTheme) withAlpha(detailAccentColor, 92) else Color.WHITE
         val normalBackground = JBColor(Color(0, 0, 0, 0), Color(0, 0, 0, 0))
-        val selectedForeground = JBColor(Color(0x111827), Color(0x111827))
+        val selectedForeground = if (darkTheme) Color.WHITE else Color(0x111827)
         val normalForeground = JBColor(Color(0x6B7280), Color(0xD1D5DB))
         (statusFilterButtons + roleFilterButtons).forEach { button ->
             button.background = if (button.isSelected) selectedBackground else normalBackground
@@ -5070,6 +5408,22 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         val aiState: AiReviewBadgeState
     )
 
+    private data class DeveloperCandidate(
+        val id: Long,
+        val username: String,
+        val name: String
+    )
+
+    private data class PreCreateCheck(
+        val code: Int,
+        val message: String,
+        val canBeAutomerge: Boolean,
+        val primaryReviewers: List<DeveloperCandidate>,
+        val generalReviewers: List<DeveloperCandidate>,
+        val primaryReviewerNum: Int,
+        val generalReviewerNum: Int
+    )
+
     private class PrTableModel : AbstractTableModel() {
         private val columns = arrayOf("标题", "源分支", "目标分支", "创建人", "评审人")
         private var rows: List<PrItem> = emptyList()
@@ -5146,6 +5500,3034 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     else -> "-"
                 }
                 else -> ""
+            }
+        }
+    }
+
+    private inner class CreatePrView {
+        private val mergeTypeChooseOption = "__merge_type_choose__"
+        val rootPanel = JPanel(BorderLayout())
+        val rootComponent = createDetailScrollPane(
+            rootPanel,
+            ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
+            ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED,
+            ::createPrOuterFill
+        ).apply {
+            border = JBUI.Borders.empty()
+            viewportBorder = null
+            isOpaque = false
+            background = createPrOuterFill()
+            viewport.isOpaque = true
+            viewport.background = createPrOuterFill()
+        }
+        private val headerPanel = JPanel(BorderLayout())
+        private val branchPanel = JPanel()
+        private val branchStatusPanel = JPanel(BorderLayout())
+        private val createTabs = JBTabbedPane()
+        private val tabsWrapper = JPanel(BorderLayout())
+        private val footerPanel = JPanel(BorderLayout())
+
+        private val titleLabel = JBLabel("创建 Pull Request")
+        private val newBadge = OutlinedPillLabel(JBUI.scale(16))
+        private val branchArrowLabel = JBLabel("→", SwingConstants.CENTER)
+
+        private val sourceBranchBox = javax.swing.JComboBox<String>()
+        private val targetBranchBox = javax.swing.JComboBox<String>()
+        private val titleField = JBTextField()
+        private val descField = JBTextArea()
+        private val primaryReviewerPicker = ReviewerPickerField("搜索关键评审人") { updateReviewerPickerLinkState() }
+        private val generalReviewerPicker = ReviewerPickerField("搜索普通评审人") { updateReviewerPickerLinkState() }
+        private val primaryNumSpinner = javax.swing.JSpinner(javax.swing.SpinnerNumberModel(0, 0, 999, 1))
+        private val generalNumSpinner = javax.swing.JSpinner(javax.swing.SpinnerNumberModel(0, 0, 999, 1))
+        private val deleteSourceBranchCheck = JBCheckBox("合并后删除源分支", false)
+        private val mergeTypeBox = javax.swing.JComboBox(arrayOf(mergeTypeChooseOption, "merge", "squash"))
+        private val diffTabCountLabel = OutlinedPillLabel(JBUI.scale(16))
+        private val commitTabCountLabel = OutlinedPillLabel(JBUI.scale(16))
+        private val createFileChangeWarningButton = JBLabel(IconManager.getInstance().getIcon("/icons/file-change-warning.svg", javaClass)).apply {
+            isVisible = false
+            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+        }
+        private val createCommitWarningLabel = JBLabel(IconManager.getInstance().getIcon("/icons/file-change-warning.svg", javaClass)).apply {
+            isVisible = false
+            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+        }
+
+        private val branchStatusIconLabel = JBLabel("·")
+        private val branchStatusTextLabel = JBLabel("请选择源分支和目标分支")
+        private val createChangeSearchField = JBTextField()
+        private val createChangeSummaryLabel = JBLabel("0 个文件变更")
+        private val createChangeAdditionsLabel = JBLabel("+0")
+        private val createChangeDeletionsLabel = JBLabel("-0")
+        private val createChangeTreeToggleButton = SegmentedFilterButton("树状")
+        private val createChangeFlatToggleButton = SegmentedFilterButton("平铺")
+        private val createChangeTreeRoot = DefaultMutableTreeNode("ROOT")
+        private val createChangeTreeModel = DefaultTreeModel(createChangeTreeRoot)
+        private val createChangeTree = Tree(createChangeTreeModel)
+        private var createChangeTreeFlatMode = false
+
+        private val createCommitTimelineContent = ViewportWidthPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            isOpaque = false
+            border = JBUI.Borders.empty()
+        }
+        private var createCommitTimelineScrollPane: JBScrollPane? = null
+
+        private val submitButton = createPrimaryActionButton("提交")
+        private val cancelButton = createSecondaryActionButton("取消")
+
+        private val developerByKey = mutableMapOf<String, DeveloperCandidate>()
+        private val createTabHeaders = mutableListOf<CreateTabHeader>()
+        private var createTabHeaderListenerBound = false
+        private var mandatoryPrimaryUsers: Set<String> = emptySet()
+        private var minimumPrimary = 0
+        private var minimumGeneral = 0
+        private var precheckBlockedReason: String? = null
+        private var latestChanges: List<ChangeItem> = emptyList()
+        private var latestCommits: List<CommitItem> = emptyList()
+        private var latestPreCreateCheck: PreCreateCheck? = null
+        private var createFileChangeWarningText: String? = null
+        private var createCommitWarningText: String? = null
+        private var createCommitWarningBalloon: Balloon? = null
+        private var createFileChangeWarningBalloon: Balloon? = null
+        private var latestMissingCommitHashes: Set<String> = emptySet()
+
+        init {
+            configureStaticComponents()
+            buildUi()
+            bindActions()
+            applyTheme()
+            if (createTabs.tabCount > 0) {
+                createTabs.selectedIndex = 0
+                updateCreateTabHeaderStates()
+            }
+        }
+
+        fun prepareForDisplay() {
+            developerByKey.clear()
+            mandatoryPrimaryUsers = emptySet()
+            minimumPrimary = 0
+            minimumGeneral = 0
+            latestChanges = emptyList()
+            latestCommits = emptyList()
+            latestPreCreateCheck = null
+            latestMissingCommitHashes = emptySet()
+            updateCreateFileChangeWarning(false, null)
+            updateCreateCommitWarning(false)
+            precheckBlockedReason = "正在加载分支信息..."
+
+            titleField.text = ""
+            descField.text = ""
+            primaryReviewerPicker.clearSelection()
+            generalReviewerPicker.clearSelection()
+            primaryNumSpinner.value = 0
+            generalNumSpinner.value = 0
+            deleteSourceBranchCheck.isSelected = false
+            mergeTypeBox.selectedIndex = -1
+
+            sourceBranchBox.removeAllItems()
+            targetBranchBox.removeAllItems()
+            refreshReviewerRequirementControls()
+            refreshDiffAndCommitView()
+            refreshStatusBanner()
+            updateCreateTabsVisibility()
+            if (createTabs.tabCount > 0) {
+                createTabs.selectedIndex = 0
+                updateCreateTabHeaderStates()
+            }
+            setSubmitEnabled(false)
+            loadInitialData()
+        }
+
+        fun applyTheme() {
+            val panelFill = createPrOuterFill()
+            rootPanel.background = panelFill
+            rootComponent.background = panelFill
+            rootComponent.viewport.background = panelFill
+            headerPanel.background = createPrHeaderFill()
+            branchPanel.background = panelFill
+            branchStatusPanel.background = panelFill
+            footerPanel.background = createPrHeaderFill()
+            createTabs.background = createPrSectionFill()
+            titleLabel.foreground = createPrPrimaryTextColor()
+            branchStatusTextLabel.foreground = createPrPrimaryTextColor()
+            createChangeSummaryLabel.foreground = createPrSecondaryTextColor()
+            createChangeAdditionsLabel.foreground = JBColor(Color(0x1E8E3E), Color(0x57D163))
+            createChangeDeletionsLabel.foreground = JBColor(Color(0xD93025), Color(0xF47067))
+            createFileChangeWarningButton.foreground = detailMutedColor()
+            createCommitWarningLabel.foreground = detailMutedColor()
+            configureInputColors()
+            updateCreateTabHeaderStates()
+            refreshStatusBanner()
+            createChangeTree.revalidate()
+            createChangeTree.repaint()
+            createCommitTimelineContent.revalidate()
+            createCommitTimelineContent.repaint()
+            updateCreateTabsVisibility()
+            createTabs.revalidate()
+            createTabs.repaint()
+        }
+
+        private fun configureStaticComponents() {
+            newBadge.setPill("NEW", createPrTabSelectedTextColor())
+            newBadge.font = newBadge.font.deriveFont(Font.BOLD, 10f)
+            titleLabel.font = titleLabel.font.deriveFont(Font.BOLD, globalUiFontSize + 2f)
+            branchArrowLabel.font = branchArrowLabel.font.deriveFont(Font.PLAIN, globalUiFontSize + 2f)
+
+            titleField.isOpaque = true
+            titleField.border = JBUI.Borders.empty()
+            titleField.font = titleField.font.deriveFont(globalUiFontSize.toFloat())
+            titleField.emptyText.text = "请输入 Pull Request 标题..."
+
+            descField.rows = 3
+            descField.lineWrap = true
+            descField.wrapStyleWord = true
+            descField.border = JBUI.Borders.empty()
+            descField.isOpaque = true
+            descField.font = descField.font.deriveFont(globalUiFontSize.toFloat())
+
+            val textFieldFocusListener = object : java.awt.event.FocusAdapter() {
+                override fun focusLost(e: java.awt.event.FocusEvent?) {
+                    repaintCreateTextInputs()
+                }
+
+                override fun focusGained(e: java.awt.event.FocusEvent?) {
+                    repaintCreateTextInputs()
+                }
+            }
+            titleField.addFocusListener(textFieldFocusListener)
+            descField.addFocusListener(textFieldFocusListener)
+
+            primaryReviewerPicker.configureEditor(globalUiFontSize.toFloat())
+            generalReviewerPicker.configureEditor(globalUiFontSize.toFloat())
+
+            listOf(sourceBranchBox, targetBranchBox, mergeTypeBox).forEach { box ->
+                box.border = JBUI.Borders.empty()
+                box.font = box.font.deriveFont(globalUiFontSize - 1f)
+                box.maximumRowCount = 12
+                configureFlatComboBox(box)
+            }
+            mergeTypeBox.maximumRowCount = 3
+            sourceBranchBox.preferredSize = Dimension(JBUI.scale(280), JBUI.scale(28))
+            sourceBranchBox.minimumSize = Dimension(JBUI.scale(214), JBUI.scale(28))
+            targetBranchBox.preferredSize = Dimension(JBUI.scale(280), JBUI.scale(28))
+            targetBranchBox.minimumSize = Dimension(JBUI.scale(214), JBUI.scale(28))
+            mergeTypeBox.preferredSize = Dimension(JBUI.scale(220), JBUI.scale(28))
+            mergeTypeBox.minimumSize = Dimension(JBUI.scale(160), JBUI.scale(28))
+
+            listOf(primaryNumSpinner, generalNumSpinner).forEach { spinner ->
+                spinner.border = JBUI.Borders.empty()
+                spinner.preferredSize = Dimension(JBUI.scale(64), JBUI.scale(30))
+                spinner.minimumSize = spinner.preferredSize
+                spinner.maximumSize = spinner.preferredSize
+                (spinner.editor as? javax.swing.JSpinner.DefaultEditor)?.textField?.apply {
+                    border = JBUI.Borders.empty()
+                    horizontalAlignment = javax.swing.JTextField.CENTER
+                    isOpaque = false
+                    font = font.deriveFont(globalUiFontSize - 1f)
+                    addFocusListener(object : java.awt.event.FocusAdapter() {
+                        override fun focusLost(e: java.awt.event.FocusEvent?) {
+                            runCatching { spinner.commitEdit() }
+                        }
+                    })
+                }
+            }
+
+            deleteSourceBranchCheck.isOpaque = false
+            deleteSourceBranchCheck.border = JBUI.Borders.empty()
+            deleteSourceBranchCheck.margin = JBUI.insets(0)
+            deleteSourceBranchCheck.font = deleteSourceBranchCheck.font.deriveFont(globalUiFontSize - 1f)
+            listOf(cancelButton, submitButton).forEach { button ->
+                button.border = JBUI.Borders.empty(3, 10, 3, 10)
+                button.margin = JBUI.emptyInsets()
+                button.alignmentY = Component.CENTER_ALIGNMENT
+                val metrics = button.getFontMetrics(button.font)
+                val width = metrics.stringWidth(button.text.orEmpty()) + JBUI.scale(32)
+                val height = maxOf(JBUI.scale(28), metrics.height + JBUI.scale(6))
+                val size = Dimension(width, height)
+                button.preferredSize = size
+                button.minimumSize = size
+                button.maximumSize = size
+            }
+
+            createFileChangeWarningButton.addMouseListener(object : MouseAdapter() {
+                override fun mousePressed(e: MouseEvent) {
+                    if (!SwingUtilities.isLeftMouseButton(e)) return
+                    toggleCreateFileChangeWarningBalloon()
+                }
+            })
+            createCommitWarningLabel.addMouseListener(object : MouseAdapter() {
+                override fun mousePressed(e: MouseEvent) {
+                    if (!SwingUtilities.isLeftMouseButton(e)) return
+                    toggleCreateCommitWarningBalloon()
+                }
+            })
+            diffTabCountLabel.setPill("0", detailTabBadgeColor())
+            diffTabCountLabel.setPill("0", detailTabBadgeColor())
+            commitTabCountLabel.setPill("0", detailTabBadgeColor())
+            val changeSearchHint = "按名称搜索文件..."
+            createChangeSearchField.emptyText.text = changeSearchHint
+            createChangeSearchField.isOpaque = false
+            createChangeSearchField.border = JBUI.Borders.empty()
+            val changeSearchWidth = (createChangeSearchField.getFontMetrics(createChangeSearchField.font).stringWidth(changeSearchHint) + JBUI.scale(32)) * 2
+            val changeSearchSize = Dimension(changeSearchWidth, createChangeSearchField.preferredSize.height)
+            createChangeSearchField.preferredSize = changeSearchSize
+            createChangeSearchField.minimumSize = changeSearchSize
+
+            configureListFilterButton(createChangeTreeToggleButton)
+            configureListFilterButton(createChangeFlatToggleButton)
+            createChangeTree.emptyText.text = "暂无对比结果"
+            createChangeTree.cellRenderer = CreateChangeTreeCellRenderer()
+            createChangeTree.rowHeight = 0
+            createChangeTree.isRootVisible = false
+            createChangeTree.showsRootHandles = true
+            createChangeTree.toggleClickCount = 0
+            createChangeTree.isOpaque = false
+            createChangeTree.border = JBUI.Borders.empty(6, 6)
+            updateCreateChangeModeToggleStyle()
+
+            createCommitTimelineContent.isOpaque = true
+            createCommitTimelineContent.background = detailSurfaceFill()
+            createCommitTimelineContent.border = JBUI.Borders.empty()
+            refreshReviewerRequirementControls()
+        }
+
+        private fun configureInputColors() {
+            val inputFill = createPrInputFill()
+            val textColor = createPrPrimaryTextColor()
+            val secondaryText = createPrSecondaryTextColor()
+
+            titleField.background = inputFill
+            titleField.foreground = textColor
+            titleField.caretColor = textColor
+            descField.background = inputFill
+            descField.foreground = textColor
+            descField.caretColor = textColor
+            primaryReviewerPicker.applyTheme()
+            generalReviewerPicker.applyTheme()
+            createChangeSearchField.background = searchFieldSurfaceFill()
+            createChangeSearchField.foreground = textColor
+            createChangeSearchField.caretColor = textColor
+            branchArrowLabel.foreground = secondaryText
+
+            listOf(sourceBranchBox, targetBranchBox, mergeTypeBox).forEach { box ->
+                box.background = inputFill
+                box.foreground = textColor
+            }
+            listOf(primaryNumSpinner, generalNumSpinner).forEach { spinner ->
+                spinner.background = inputFill
+                spinner.foreground = textColor
+                (spinner.editor as? javax.swing.JSpinner.DefaultEditor)?.textField?.apply {
+                    background = inputFill
+                    foreground = textColor
+                    caretColor = textColor
+                }
+            }
+            deleteSourceBranchCheck.foreground = secondaryText
+        }
+
+        private fun buildUi() {
+            val contentInset = createPrHorizontalInset()
+            val overviewContentInset = detailHorizontalInset()
+
+            rootPanel.isOpaque = true
+            rootPanel.isFocusable = true
+            rootPanel.background = createPrOuterFill()
+            rootPanel.minimumSize = Dimension(0, 0)
+            rootPanel.border = JBUI.Borders.empty(10, contentInset, 12, contentInset)
+            branchPanel.minimumSize = Dimension(0, 0)
+            branchStatusPanel.minimumSize = Dimension(0, 0)
+            createTabs.minimumSize = Dimension(0, 0)
+            footerPanel.minimumSize = Dimension(0, 0)
+
+            val topContainer = JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                isOpaque = false
+                border = JBUI.Borders.empty(10, 0, 0, 0)
+                alignmentX = Component.LEFT_ALIGNMENT
+            }
+
+            headerPanel.isOpaque = false
+            headerPanel.alignmentX = Component.LEFT_ALIGNMENT
+            headerPanel.border = JBUI.Borders.empty(0, contentInset + overviewContentInset, 0, contentInset + JBUI.scale(18))
+            headerPanel.layout = GridBagLayout()
+            headerPanel.add(newBadge, GridBagConstraints().apply {
+                gridx = 0
+                gridy = 0
+                anchor = GridBagConstraints.BASELINE_LEADING
+            })
+            headerPanel.add(Box.createHorizontalStrut(JBUI.scale(8)), GridBagConstraints().apply {
+                gridx = 1
+                gridy = 0
+            })
+            headerPanel.add(titleLabel, GridBagConstraints().apply {
+                gridx = 2
+                gridy = 0
+                weightx = 1.0
+                fill = GridBagConstraints.HORIZONTAL
+                anchor = GridBagConstraints.BASELINE_LEADING
+            })
+            headerPanel.add(cancelButton, GridBagConstraints().apply {
+                gridx = 3
+                gridy = 0
+                anchor = GridBagConstraints.BASELINE_TRAILING
+                insets = JBUI.insetsRight(12)
+            })
+            headerPanel.add(submitButton, GridBagConstraints().apply {
+                gridx = 4
+                gridy = 0
+                anchor = GridBagConstraints.BASELINE_TRAILING
+                insets = JBUI.insetsRight(JBUI.scale(6))
+            })
+            topContainer.add(headerPanel)
+
+            branchPanel.layout = BoxLayout(branchPanel, BoxLayout.Y_AXIS)
+            branchPanel.isOpaque = false
+            branchPanel.alignmentX = Component.LEFT_ALIGNMENT
+            branchPanel.border = JBUI.Borders.empty(20, contentInset + overviewContentInset, 0, contentInset)
+            branchPanel.add(buildBranchSection())
+            topContainer.add(branchPanel)
+
+            branchStatusPanel.isOpaque = false
+            branchStatusPanel.alignmentX = Component.LEFT_ALIGNMENT
+            branchStatusPanel.border = JBUI.Borders.empty(12, contentInset + overviewContentInset, 0, contentInset)
+            branchStatusPanel.add(buildBranchStatusContent(), BorderLayout.CENTER)
+            topContainer.add(branchStatusPanel)
+
+            createTabs.border = JBUI.Borders.empty()
+            createTabs.isOpaque = true
+            createTabs.background = createPrSectionFill()
+            installCreateTabsUi()
+            createTabs.addTab("概览", buildOverviewTab())
+            createTabs.addTab("文件改动", buildDiffTab())
+            createTabs.addTab("提交记录", buildCommitTab())
+            setupCreateTabsHeader()
+
+            tabsWrapper.apply {
+                isOpaque = false
+                border = JBUI.Borders.empty(22, 0, 0, 0)
+                removeAll()
+                add(createTabs, BorderLayout.CENTER)
+            }
+
+            val cardContent = JPanel(BorderLayout()).apply {
+                isOpaque = false
+                add(topContainer, BorderLayout.NORTH)
+                add(tabsWrapper, BorderLayout.CENTER)
+            }
+            rootPanel.add(cardContent, BorderLayout.CENTER)
+            bindCreateBackgroundClickDismiss(rootPanel)
+        }
+
+        private fun buildBranchSection(): JComponent {
+            val selectorWidth = JBUI.scale(240)
+            val selectorMinWidth = JBUI.scale(200)
+            val gap = JBUI.scale(12)
+            val arrowSlotWidth = branchArrowLabel.preferredSize.width
+            fun fixedSlot(content: JComponent, width: Int, minWidth: Int = width): JComponent {
+                return JPanel(BorderLayout()).apply {
+                    isOpaque = false
+                    preferredSize = Dimension(width, content.preferredSize.height)
+                    minimumSize = Dimension(minWidth, content.preferredSize.height)
+                    maximumSize = preferredSize
+                    add(content, BorderLayout.WEST)
+                }
+            }
+
+            val sourceSelector = wrapCreateInput(sourceBranchBox as JComponent, JBUI.insets(3, 10)).apply {
+                preferredSize = Dimension(selectorWidth, preferredSize.height)
+                minimumSize = Dimension(selectorMinWidth, preferredSize.height)
+                maximumSize = preferredSize
+            }
+            val targetSelector = wrapCreateInput(targetBranchBox as JComponent, JBUI.insets(3, 10)).apply {
+                preferredSize = Dimension(selectorWidth, preferredSize.height)
+                minimumSize = Dimension(selectorMinWidth, preferredSize.height)
+                maximumSize = preferredSize
+            }
+
+            val labelsRow = JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.X_AXIS)
+                isOpaque = false
+                alignmentX = Component.LEFT_ALIGNMENT
+                add(fixedSlot(buildBranchColumnLabel("源分支"), selectorWidth, selectorMinWidth))
+                add(Box.createHorizontalStrut(gap))
+                add(Box.createHorizontalStrut(arrowSlotWidth))
+                add(Box.createHorizontalStrut(gap))
+                add(fixedSlot(buildBranchColumnLabel("目标分支"), selectorWidth, selectorMinWidth))
+                maximumSize = preferredSize
+            }
+
+            val selectorsRow = JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.X_AXIS)
+                isOpaque = false
+                alignmentX = Component.LEFT_ALIGNMENT
+                add(sourceSelector)
+                add(Box.createHorizontalStrut(gap))
+                add(branchArrowLabel)
+                add(Box.createHorizontalStrut(gap))
+                add(targetSelector)
+                maximumSize = preferredSize
+            }
+
+            val content = JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                isOpaque = false
+                alignmentX = Component.LEFT_ALIGNMENT
+                add(labelsRow)
+                add(Box.createVerticalStrut(JBUI.scale(8)))
+                add(selectorsRow)
+                maximumSize = preferredSize
+            }
+
+            return JPanel(BorderLayout()).apply {
+                isOpaque = false
+                alignmentX = Component.LEFT_ALIGNMENT
+                add(content, BorderLayout.WEST)
+            }
+        }
+
+        private fun buildBranchColumnLabel(text: String): JComponent {
+            return JBLabel(text).apply {
+                font = font.deriveFont(Font.BOLD, globalUiFontSize - 1f)
+                foreground = createPrSecondaryTextColor()
+            }
+        }
+
+        private fun createBranchConstraints(
+            gridx: Int,
+            weightx: Double,
+            fill: Int = GridBagConstraints.HORIZONTAL,
+            left: Int = 0,
+            right: Int = 0,
+            bottom: Int = 0
+        ): GridBagConstraints {
+            return GridBagConstraints().apply {
+                this.gridx = gridx
+                this.gridy = 0
+                this.weightx = weightx
+                this.fill = fill
+                anchor = GridBagConstraints.WEST
+                insets = JBUI.insets(0, left, bottom, right)
+            }
+        }
+
+        private fun buildBranchStatusContent(): JComponent {
+            return JPanel(BorderLayout(JBUI.scale(12), 0)).apply {
+                isOpaque = false
+                add(JPanel().apply {
+                    layout = BoxLayout(this, BoxLayout.X_AXIS)
+                    isOpaque = false
+                    add(branchStatusIconLabel)
+                    add(Box.createHorizontalStrut(JBUI.scale(8)))
+                    add(branchStatusTextLabel)
+                }, BorderLayout.CENTER)
+            }
+        }
+
+        private fun buildOverviewTab(): JComponent {
+            val content = buildDetailTabBody(topInset = 24, bottomInset = 20, tracksViewportWidth = false).apply {
+                isOpaque = true
+                background = createPrSectionFill()
+            }
+            content.add(buildFieldSection("标题", wrapCreateInput(titleField, JBUI.insets(8, 12)), required = true, bottomGap = 20))
+            content.add(buildFieldSection("描述", wrapCreateInput(createTextAreaScroll(descField, 80), JBUI.insets(8, 12)), required = true, bottomGap = 20))
+            content.add(buildReviewerFieldSection("关键评审人", primaryReviewerPicker, primaryNumSpinner, "名关键评审成员审查通过后可合并。"))
+            content.add(buildReviewerFieldSection("普通评审人", generalReviewerPicker, generalNumSpinner, "名评审成员审查通过后可合并。"))
+            content.add(Box.createVerticalStrut(JBUI.scale(20)))
+            content.add(buildMergeSection())
+            content.add(Box.createVerticalGlue())
+            bindCreateBackgroundClickDismiss(content)
+            return wrapCreateTabContent(
+                createDetailScrollPane(content, ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED, ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED, ::createPrSectionFill)
+            )
+        }
+
+        private fun buildMergeSection(): JComponent {
+            val mergeInputRow = JPanel(GridLayout(1, 2, JBUI.scale(16), 0)).apply {
+                isOpaque = false
+                alignmentX = Component.LEFT_ALIGNMENT
+                add(wrapCreateInput(mergeTypeBox as JComponent, JBUI.insets(3, 10)))
+                add(JPanel().apply { isOpaque = false })
+            }
+            val deleteRow = JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.X_AXIS)
+                isOpaque = false
+                alignmentX = Component.LEFT_ALIGNMENT
+                add(deleteSourceBranchCheck)
+            }
+            return buildFieldSection("合并方式", JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                isOpaque = false
+                alignmentX = Component.LEFT_ALIGNMENT
+                add(mergeInputRow)
+                add(Box.createVerticalStrut(JBUI.scale(12)))
+                add(deleteRow)
+            }, bottomGap = 20)
+        }
+
+        private fun buildInlineFieldRow(left: JComponent, right: JComponent): JComponent {
+            return stretchDetailTabChild(ResponsiveGridPanel(
+                expandedColumns = 2,
+                collapseWidth = JBUI.scale(760),
+                expandedHorizontalGap = JBUI.scale(16),
+                collapsedVerticalGap = JBUI.scale(16)
+            ).apply {
+                alignmentX = Component.LEFT_ALIGNMENT
+                add(left)
+                add(right)
+            })
+        }
+
+        private fun buildReviewerFieldSection(title: String, picker: ReviewerPickerField, spinner: javax.swing.JSpinner, hintSuffix: String): JComponent {
+            val reviewerFieldPreferredWidth = JBUI.scale(520)
+            val reviewerFieldMinWidth = JBUI.scale(360)
+            val reviewerInput = wrapCreateInput(picker, JBUI.insets(3, 10), allowVerticalExpand = true).apply {
+                preferredSize = Dimension(reviewerFieldPreferredWidth, preferredSize.height)
+                minimumSize = Dimension(reviewerFieldMinWidth, minimumSize.height)
+            }
+            val hintRow = JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.X_AXIS)
+                isOpaque = false
+                alignmentX = Component.LEFT_ALIGNMENT
+                add(JBLabel("至少需要").apply {
+                    font = font.deriveFont(globalUiFontSize - 2f)
+                    foreground = createPrSecondaryTextColor()
+                })
+                add(Box.createHorizontalStrut(JBUI.scale(6)))
+                add(wrapCreateInput(spinner, JBUI.insets(2, 6)))
+                add(Box.createHorizontalStrut(JBUI.scale(6)))
+                add(JBLabel(hintSuffix).apply {
+                    font = font.deriveFont(globalUiFontSize - 2f)
+                    foreground = createPrSecondaryTextColor()
+                })
+            }
+            return buildFieldSection(title, JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                isOpaque = false
+                alignmentX = Component.LEFT_ALIGNMENT
+                add(leftAlignCreateSectionContent(reviewerInput, reviewerFieldPreferredWidth, reviewerFieldMinWidth, stretchVertically = true))
+                add(Box.createVerticalStrut(JBUI.scale(10)))
+                add(leftAlignCreateSectionContent(hintRow, reviewerFieldPreferredWidth, reviewerFieldMinWidth))
+            }, bottomGap = 20)
+        }
+
+        private fun leftAlignCreateSectionContent(
+            content: JComponent,
+            preferredWidth: Int,
+            minWidth: Int = preferredWidth,
+            stretchVertically: Boolean = false
+        ): JComponent {
+            return JPanel(BorderLayout()).apply {
+                isOpaque = false
+                alignmentX = Component.LEFT_ALIGNMENT
+                add(content, BorderLayout.WEST)
+                maximumSize = Dimension(Int.MAX_VALUE, if (stretchVertically) Int.MAX_VALUE else content.preferredSize.height)
+                preferredSize = Dimension(preferredWidth, content.preferredSize.height)
+                minimumSize = Dimension(minWidth, content.minimumSize.height.coerceAtLeast(content.preferredSize.height))
+            }
+        }
+
+        private fun buildFieldSection(title: String, component: JComponent, required: Boolean = false, bottomGap: Int = 18): JComponent {
+            return JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                isOpaque = false
+                alignmentX = Component.LEFT_ALIGNMENT
+                add(JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
+                    isOpaque = false
+                    alignmentX = Component.LEFT_ALIGNMENT
+                    add(JBLabel(title).apply {
+                        font = font.deriveFont(Font.BOLD, globalUiFontSize - 1f)
+                        foreground = createPrPrimaryTextColor()
+                    })
+                    if (required) {
+                        add(JBLabel(" *").apply {
+                            font = font.deriveFont(Font.BOLD, globalUiFontSize - 1f)
+                            foreground = JBColor(Color(0xC75450), Color(0xF47067))
+                        })
+                    }
+                })
+                add(Box.createVerticalStrut(JBUI.scale(8)))
+                component.alignmentX = Component.LEFT_ALIGNMENT
+                add(stretchDetailTabChild(component))
+                if (bottomGap > 0) {
+                    add(Box.createVerticalStrut(JBUI.scale(bottomGap)))
+                }
+            }
+        }
+
+        private fun buildDiffTab(): JComponent = wrapCreateTabContent(buildCreateFileChangePanel())
+
+        private fun buildCommitTab(): JComponent = wrapCreateTabContent(buildCreateCommitPanel())
+
+        private fun wrapCreateTabContent(component: JComponent): JComponent {
+            return JPanel(BorderLayout()).apply {
+                isOpaque = true
+                background = createPrSectionFill()
+                border = JBUI.Borders.customLineTop(detailTabUnderlineColor())
+                add(component, BorderLayout.CENTER)
+            }
+        }
+
+        private fun buildCreateFileChangePanel(): JComponent {
+            val togglePanel = JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.X_AXIS)
+                isOpaque = false
+                add(createChangeTreeToggleButton)
+                add(Box.createHorizontalStrut(JBUI.scale(4)))
+                add(createChangeFlatToggleButton)
+            }
+            val toolbar = JPanel(BorderLayout(JBUI.scale(8), 0)).apply {
+                isOpaque = false
+                add(
+                    wrapDetailSurface(
+                        createChangeSearchField,
+                        fillColor = searchFieldSurfaceFill(),
+                        outlineColor = searchFieldOutlineColor(),
+                        fillColorProvider = ::searchFieldSurfaceFill,
+                        outlineColorProvider = ::searchFieldOutlineColor,
+                        padding = JBUI.insets(5, 10)
+                    ),
+                    BorderLayout.WEST
+                )
+                add(wrapDetailSurface(togglePanel, padding = JBUI.insets(2)), BorderLayout.EAST)
+            }
+            val treeScroll = createDetailScrollPane(
+                createChangeTree,
+                ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
+                ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED,
+                fillColorProvider = ::detailSurfaceFill
+            )
+            val footer = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(14), 0)).apply {
+                isOpaque = false
+                border = JBUI.Borders.customLineTop(detailOutlineColor())
+                add(createChangeSummaryLabel)
+                add(createChangeAdditionsLabel)
+                add(createChangeDeletionsLabel)
+            }
+            val treeWrapper = JPanel(BorderLayout()).apply {
+                isOpaque = false
+                add(treeScroll, BorderLayout.CENTER)
+                add(JPanel(BorderLayout()).apply {
+                    isOpaque = false
+                    border = JBUI.Borders.empty(8)
+                    add(footer, BorderLayout.WEST)
+                }, BorderLayout.SOUTH)
+            }
+            val body = buildDetailTabBody().apply {
+                add(stretchDetailTabChild(toolbar))
+                add(Box.createVerticalStrut(JBUI.scale(10)))
+                add(stretchDetailTabChild(wrapDetailSurface(treeWrapper, padding = JBUI.insets(8, 8, 0, 8)), stretchVertically = true))
+            }
+            return JPanel(BorderLayout()).apply {
+                isOpaque = true
+                background = createPrSectionFill()
+                add(body, BorderLayout.CENTER)
+            }
+        }
+
+        private fun buildCreateCommitPanel(): JComponent {
+            val pane = createDetailScrollPane(
+                createCommitTimelineContent,
+                ScrollPaneConstants.VERTICAL_SCROLLBAR_ALWAYS,
+                ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER,
+                ::detailSurfaceFill
+            ).apply {
+                border = JBUI.Borders.emptyTop(6)
+                viewportBorder = null
+                verticalScrollBar.unitIncrement = JBUI.scale(24)
+                verticalScrollBar.blockIncrement = JBUI.scale(96)
+            }
+            createCommitTimelineScrollPane = pane
+            val body = buildDetailTabBody().apply {
+                add(Box.createVerticalStrut(JBUI.scale(10)))
+                add(stretchDetailTabChild(wrapDetailSurface(pane, padding = JBUI.insets(6, 8, 6, 8)), stretchVertically = true))
+            }
+            return JPanel(BorderLayout()).apply {
+                isOpaque = true
+                background = createPrSectionFill()
+                add(body, BorderLayout.CENTER)
+            }
+        }
+
+        private fun refreshReviewerRequirementControls() {
+            val primaryHasSelection = primaryReviewerPicker.getSelectedCandidates().isNotEmpty()
+            val generalHasSelection = generalReviewerPicker.getSelectedCandidates().isNotEmpty()
+            val primaryRequired = if (primaryHasSelection) maxOf(minimumPrimary, 1) else 0
+            val generalRequired = if (generalHasSelection) maxOf(minimumGeneral, 1) else 0
+            (primaryNumSpinner.model as javax.swing.SpinnerNumberModel).minimum = primaryRequired
+            (generalNumSpinner.model as javax.swing.SpinnerNumberModel).minimum = generalRequired
+            primaryNumSpinner.value = if (primaryHasSelection) {
+                maxOf((primaryNumSpinner.value as? Int) ?: 0, primaryRequired)
+            } else {
+                0
+            }
+            generalNumSpinner.value = if (generalHasSelection) {
+                maxOf((generalNumSpinner.value as? Int) ?: 0, generalRequired)
+            } else {
+                0
+            }
+        }
+
+        private fun updateReviewerPickerLinkState() {
+            primaryReviewerPicker.syncMirroredCandidates(generalReviewerPicker.getSelectedCandidates())
+            generalReviewerPicker.syncMirroredCandidates(primaryReviewerPicker.getSelectedCandidates())
+            refreshReviewerRequirementControls()
+        }
+
+        private fun mergeTypeDisplayText(value: String?, inPopup: Boolean): String {
+            return when (value?.trim().orEmpty()) {
+                "" -> if (inPopup) "合并时选择" else "请用户选择（非必填）"
+                mergeTypeChooseOption -> "合并时选择"
+                "merge" -> "Merge（合并所有提交）"
+                "squash" -> "Squash（扁平化分支合并）"
+                else -> value.orEmpty()
+            }
+        }
+
+        private fun resolveMergeTypeValue(selected: String?): String {
+            return when (selected?.trim().orEmpty()) {
+                "", mergeTypeChooseOption -> ""
+                else -> selected.orEmpty().trim()
+            }
+        }
+
+        private fun configureFlatComboBox(comboBox: javax.swing.JComboBox<String>) {
+            val textInset = JBUI.scale(8)
+            val popupSelectedFill = JBColor(Color(0xF3F4F6), Color(0x3A3D41))
+            comboBox.isOpaque = false
+            comboBox.renderer = object : javax.swing.DefaultListCellRenderer() {
+                override fun getListCellRendererComponent(
+                    list: javax.swing.JList<*>?,
+                    value: Any?,
+                    index: Int,
+                    isSelected: Boolean,
+                    cellHasFocus: Boolean
+                ): Component {
+                    val label = super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus) as javax.swing.JLabel
+                    label.border = JBUI.Borders.empty(0, textInset, 0, JBUI.scale(6))
+                    label.font = label.font.deriveFont(Font.PLAIN, globalUiFontSize - 1f)
+                    val isMergeTypeBox = comboBox === mergeTypeBox
+                    label.text = if (isMergeTypeBox) {
+                        mergeTypeDisplayText(value as? String, index >= 0)
+                    } else {
+                        value?.toString().orEmpty()
+                    }
+                    label.foreground = if (isMergeTypeBox && index < 0 && value == null) {
+                        createPrSecondaryTextColor()
+                    } else {
+                        createPrPrimaryTextColor()
+                    }
+                    if (index < 0) {
+                        label.isOpaque = false
+                        label.background = comboBox.background
+                    } else {
+                        label.isOpaque = true
+                        label.background = if (isSelected) popupSelectedFill else detailSurfaceFill()
+                    }
+                    return label
+                }
+            }
+            comboBox.setUI(object : javax.swing.plaf.basic.BasicComboBoxUI() {
+                override fun createArrowButton(): JButton {
+                    return JButton(AllIcons.General.ArrowDown).apply {
+                        text = ""
+                        isOpaque = false
+                        isContentAreaFilled = false
+                        isBorderPainted = false
+                        isFocusable = false
+                        border = JBUI.Borders.empty()
+                        horizontalAlignment = SwingConstants.CENTER
+                        verticalAlignment = SwingConstants.CENTER
+                        iconTextGap = 0
+                        val size = Dimension(JBUI.scale(16), JBUI.scale(16))
+                        preferredSize = size
+                        minimumSize = size
+                        maximumSize = size
+                    }
+                }
+
+                override fun createPopup(): javax.swing.plaf.basic.ComboPopup {
+                    if (comboBox !== mergeTypeBox) {
+                        return super.createPopup()
+                    }
+                    @Suppress("UNCHECKED_CAST")
+                    val mergeComboBox = comboBox as javax.swing.JComboBox<Any?>
+                    return object : javax.swing.plaf.basic.BasicComboPopup(mergeComboBox) {
+                        init {
+                            scroller.verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER
+                            scroller.border = JBUI.Borders.empty()
+                        }
+
+                        override fun show() {
+                            comboBox.maximumRowCount = comboBox.itemCount
+                            list.visibleRowCount = comboBox.itemCount
+                            super.show()
+                            val visibleRowCount = comboBox.itemCount
+                            if (visibleRowCount > 0) {
+                                val allRowsBounds = list.getCellBounds(0, visibleRowCount - 1)
+                                val popupHeight = allRowsBounds?.height ?: return
+                                val popupWidth = width.coerceAtLeast(comboBox.width)
+                                scroller.preferredSize = Dimension(popupWidth, popupHeight)
+                                scroller.minimumSize = scroller.preferredSize
+                                scroller.maximumSize = scroller.preferredSize
+                                preferredSize = Dimension(popupWidth, popupHeight)
+                                size = preferredSize
+                                revalidate()
+                                repaint()
+                            }
+                        }
+                    }
+                }
+
+                override fun paintCurrentValue(g: Graphics, bounds: Rectangle, hasFocus: Boolean) {
+                    val renderer = comboBox.renderer ?: return
+                    @Suppress("UNCHECKED_CAST")
+                    val component = (renderer as javax.swing.ListCellRenderer<Any?>).getListCellRendererComponent(
+                        listBox as javax.swing.JList<Any?>,
+                        comboBox.selectedItem,
+                        -1,
+                        false,
+                        false
+                    )
+                    currentValuePane.paintComponent(g, component, comboBox, bounds.x, bounds.y, bounds.width, bounds.height, false)
+                }
+
+                override fun paintCurrentValueBackground(g: Graphics, bounds: Rectangle, hasFocus: Boolean) = Unit
+            })
+        }
+
+        private fun bindCreateBackgroundClickDismiss(component: Component) {
+            if ((component is CreateInputSurface || component is JBScrollPane || component is JViewport) &&
+                findNestedTextComponent(component) != null
+            ) {
+                return
+            }
+            when (component) {
+                is JButton,
+                is JToggleButton,
+                is javax.swing.JComboBox<*>,
+                is javax.swing.JSpinner,
+                is javax.swing.text.JTextComponent,
+                is Tree,
+                is ReviewerPickerField -> return
+            }
+            component.addMouseListener(object : MouseAdapter() {
+                override fun mousePressed(e: MouseEvent) {
+                    if (SwingUtilities.isLeftMouseButton(e)) {
+                        dismissCreateInputFocus()
+                    }
+                }
+            })
+            if (component is Container) {
+                component.components.forEach { bindCreateBackgroundClickDismiss(it) }
+            }
+        }
+
+        private fun dismissCreateInputFocus(): Boolean {
+            val focusOwner = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner ?: return false
+            val shouldDismiss = focusOwner === titleField ||
+                focusOwner === descField ||
+                isReviewerSpinnerEditor(focusOwner) ||
+                primaryReviewerPicker.containsFocus(focusOwner) ||
+                generalReviewerPicker.containsFocus(focusOwner)
+            if (!shouldDismiss) return false
+            if (focusOwner === titleField) {
+                titleField.select(titleField.caretPosition, titleField.caretPosition)
+            }
+            if (focusOwner === descField) {
+                descField.select(descField.caretPosition, descField.caretPosition)
+            }
+            commitReviewerSpinnerEditors()
+            primaryReviewerPicker.hidePopup()
+            generalReviewerPicker.hidePopup()
+            if (!createTabs.requestFocusInWindow()) {
+                rootPanel.requestFocusInWindow()
+            }
+            flushCreateTextInputPainting()
+            SwingUtilities.invokeLater { flushCreateTextInputPainting() }
+            return true
+        }
+
+        private fun isReviewerSpinnerEditor(component: Component?): Boolean {
+            return component != null && (
+                SwingUtilities.isDescendingFrom(component, primaryNumSpinner) ||
+                    SwingUtilities.isDescendingFrom(component, generalNumSpinner)
+                )
+        }
+
+        private fun commitReviewerSpinnerEditors() {
+            listOf(primaryNumSpinner, generalNumSpinner).forEach { spinner ->
+                runCatching { spinner.commitEdit() }
+                (spinner.editor as? javax.swing.JSpinner.DefaultEditor)?.textField?.apply {
+                    select(selectionEnd, selectionEnd)
+                    caret.isVisible = false
+                }
+            }
+        }
+
+        private fun flushCreateTextInputPainting() {
+            repaintCreateTextInputs()
+            listOf<JComponent>(titleField, descField).forEach { field ->
+                val visibleRect = field.visibleRect
+                val textComponent = field as? javax.swing.text.JTextComponent
+                textComponent?.caret?.isVisible = false
+                textComponent?.caret?.isSelectionVisible = false
+                if (field.isShowing && visibleRect.width > 0 && visibleRect.height > 0) {
+                    field.repaint(visibleRect.x, visibleRect.y, visibleRect.width, visibleRect.height)
+                }
+            }
+        }
+
+        private fun repaintCreateTextInput(field: JComponent) {
+            val visibleRect = field.visibleRect
+            val textComponent = field as? javax.swing.text.JTextComponent
+            textComponent?.caret?.isVisible = false
+            textComponent?.caret?.isSelectionVisible = false
+            field.revalidate()
+            if (field.isShowing && visibleRect.width > 0 && visibleRect.height > 0) {
+                field.repaint(visibleRect.x, visibleRect.y, visibleRect.width, visibleRect.height)
+            } else {
+                field.repaint()
+            }
+            (field.parent as? JComponent)?.repaint()
+            (SwingUtilities.getAncestorOfClass(JViewport::class.java, field) as? JViewport)?.repaint()
+            (SwingUtilities.getAncestorOfClass(CreateInputSurface::class.java, field) as? JComponent)?.repaint()
+        }
+
+        private fun repaintCreateTextInputs() {
+            listOf<JComponent>(titleField, descField).forEach(::repaintCreateTextInput)
+            rootPanel.repaint()
+        }
+
+        private inner class CreateInputSurface(
+            private val fillColorProvider: () -> Color,
+            private val outlineColorProvider: () -> Color,
+            private val arc: Int = JBUI.scale(10)
+        ) : JPanel(BorderLayout()) {
+            init {
+                isOpaque = false
+                background = fillColorProvider()
+            }
+
+            override fun paintComponent(g: Graphics) {
+                val g2 = g.create() as Graphics2D
+                try {
+                    g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                    g2.color = fillColorProvider()
+                    g2.fillRoundRect(0, 0, width, height, arc, arc)
+                } finally {
+                    g2.dispose()
+                }
+                super.paintComponent(g)
+            }
+
+            override fun paintBorder(g: Graphics) {
+                val g2 = g.create() as Graphics2D
+                try {
+                    g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                    g2.color = outlineColorProvider()
+                    g2.stroke = BasicStroke(JBUI.scale(1f))
+                    g2.drawRoundRect(0, 0, width - 1, height - 1, arc, arc)
+                } finally {
+                    g2.dispose()
+                }
+            }
+        }
+
+        private fun wrapCreateInput(
+            component: JComponent,
+            padding: Insets,
+            fillColorProvider: () -> Color = ::createPrInputFill,
+            allowVerticalExpand: Boolean = false
+        ): JComponent {
+            return CreateInputSurface(fillColorProvider, ::createPrBorderColor).apply {
+                layout = BorderLayout()
+                border = JBUI.Borders.empty(padding.top, padding.left, padding.bottom, padding.right)
+                maximumSize = Dimension(
+                    Int.MAX_VALUE,
+                    if (allowVerticalExpand) Int.MAX_VALUE else preferredSize.height.coerceAtLeast(component.preferredSize.height + padding.top + padding.bottom)
+                )
+                add(component, BorderLayout.CENTER)
+                findNestedTextComponent(component)?.let { textComponent ->
+                    installTextInputFocusBridge(this, textComponent)
+                }
+            }
+        }
+
+        private fun findNestedTextComponent(component: Component): javax.swing.text.JTextComponent? {
+            if (component is javax.swing.text.JTextComponent) return component
+            if (component is Container) {
+                component.components.forEach { child ->
+                    findNestedTextComponent(child)?.let { return it }
+                }
+            }
+            return null
+        }
+
+        private fun installTextInputFocusBridge(component: Component, target: javax.swing.text.JTextComponent) {
+            if (component === target || component is javax.swing.text.JTextComponent) return
+            component.addMouseListener(object : MouseAdapter() {
+                override fun mousePressed(e: MouseEvent) {
+                    if (!SwingUtilities.isLeftMouseButton(e)) return
+                    SwingUtilities.invokeLater {
+                        target.requestFocusInWindow()
+                        target.caret.isVisible = true
+                        if (target.document.length == 0) {
+                            target.caretPosition = 0
+                        }
+                    }
+                }
+            })
+            if (component is Container) {
+                component.components.forEach { child -> installTextInputFocusBridge(child, target) }
+            }
+        }
+
+        private fun createTextAreaScroll(area: JBTextArea, preferredHeight: Int): JComponent {
+            val inputFill = createPrInputFill()
+            return JBScrollPane(area).apply {
+                border = JBUI.Borders.empty()
+                viewportBorder = null
+                isOpaque = true
+                background = inputFill
+                viewport.isOpaque = true
+                viewport.background = inputFill
+                preferredSize = Dimension(0, JBUI.scale(preferredHeight))
+                minimumSize = Dimension(0, JBUI.scale(preferredHeight))
+                horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+                installTextInputFocusBridge(this, area)
+                installTextInputFocusBridge(viewport, area)
+            }
+        }
+
+        private inner class ReviewerPickerField(
+            private val placeholderText: String,
+            private val onSelectionChanged: () -> Unit
+        ) : JPanel(BorderLayout()) {
+            private val localSelectedCandidates = linkedMapOf<Long, DeveloperCandidate>()
+            private val mirroredSelectedCandidates = linkedMapOf<Long, DeveloperCandidate>()
+            private val selectedCandidates = linkedMapOf<Long, DeveloperCandidate>()
+            private val mandatoryLockedCandidateIds = mutableSetOf<Long>()
+            private val editorField = JBTextField()
+            private val chipContainer = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), JBUI.scale(6))).apply {
+                isOpaque = true
+                isDoubleBuffered = true
+                background = createPrInputFill()
+                alignmentX = Component.LEFT_ALIGNMENT
+            }
+            private val resultListPanel = JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                isOpaque = true
+                background = detailSurfaceFill()
+            }
+            private val popupContent = JPanel(BorderLayout()).apply {
+                isOpaque = true
+                border = JBUI.Borders.empty(8)
+                background = detailSurfaceFill()
+            }
+            private val popupScrollPane = JBScrollPane(resultListPanel).apply {
+                isOpaque = true
+                border = JBUI.Borders.empty()
+                viewportBorder = null
+                horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+                verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED
+                verticalScrollBar.unitIncrement = JBUI.scale(16)
+                preferredSize = Dimension(JBUI.scale(320), JBUI.scale(220))
+                background = detailSurfaceFill()
+                viewport.isOpaque = true
+                viewport.background = detailSurfaceFill()
+            }
+            private var popup: com.intellij.openapi.ui.popup.JBPopup? = null
+            private var searchTimer: javax.swing.Timer? = null
+            private var requestToken = 0
+            private var currentKeyword = ""
+            private var loading = false
+            private var errorMessage: String? = null
+            private var currentResults: List<DeveloperCandidate> = emptyList()
+            private var suppressEditorDocumentEvents = false
+
+            init {
+                isOpaque = true
+                isDoubleBuffered = true
+                background = createPrInputFill()
+                editorField.isOpaque = false
+                editorField.border = JBUI.Borders.empty()
+                editorField.emptyText.text = placeholderText
+                editorField.columns = 12
+                chipContainer.add(editorField)
+                add(chipContainer, BorderLayout.CENTER)
+                popupScrollPane.setViewportView(resultListPanel)
+                popupContent.add(popupScrollPane, BorderLayout.CENTER)
+                popupContent.preferredSize = popupScrollPane.preferredSize
+                popupContent.minimumSize = popupScrollPane.preferredSize
+                refreshPopupResults()
+
+                val openPopupListener = object : MouseAdapter() {
+                    override fun mousePressed(e: MouseEvent) {
+                        if (!SwingUtilities.isLeftMouseButton(e)) return
+                        val focusOwner = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
+                        val switchingFromTextInput = focusOwner === titleField || focusOwner === descField
+                        if (switchingFromTextInput) {
+                            dismissCreateInputFocus()
+                            SwingUtilities.invokeLater {
+                                openReviewerPopup()
+                            }
+                            return
+                        }
+                        dismissCreateInputFocus()
+                        openReviewerPopup()
+                    }
+                }
+                addMouseListener(openPopupListener)
+                chipContainer.addMouseListener(openPopupListener)
+                editorField.addMouseListener(openPopupListener)
+                editorField.addFocusListener(object : java.awt.event.FocusAdapter() {
+                    override fun focusGained(e: java.awt.event.FocusEvent?) {
+                        ensurePopupVisible()
+                        queueSearch(immediate = true)
+                    }
+                })
+                editorField.document.addDocumentListener(object : DocumentListener {
+                    override fun insertUpdate(e: DocumentEvent?) = if (suppressEditorDocumentEvents) Unit else queueSearch()
+                    override fun removeUpdate(e: DocumentEvent?) = if (suppressEditorDocumentEvents) Unit else queueSearch()
+                    override fun changedUpdate(e: DocumentEvent?) = if (suppressEditorDocumentEvents) Unit else queueSearch()
+                })
+            }
+
+            fun configureEditor(fontSize: Float) {
+                editorField.font = editorField.font.deriveFont(fontSize)
+            }
+
+            fun applyTheme() {
+                background = createPrInputFill()
+                chipContainer.background = createPrInputFill()
+                editorField.background = createPrInputFill()
+                editorField.foreground = createPrPrimaryTextColor()
+                editorField.caretColor = createPrPrimaryTextColor()
+                resultListPanel.background = detailSurfaceFill()
+                popupContent.background = detailSurfaceFill()
+                popupScrollPane.background = detailSurfaceFill()
+                popupScrollPane.isOpaque = true
+                popupScrollPane.viewport.isOpaque = true
+                popupScrollPane.viewport.background = detailSurfaceFill()
+                renderChips()
+                refreshPopupResults()
+            }
+
+            fun clearSelection() {
+                localSelectedCandidates.clear()
+                mirroredSelectedCandidates.clear()
+                selectedCandidates.clear()
+                mandatoryLockedCandidateIds.clear()
+                currentKeyword = ""
+                currentResults = emptyList()
+                errorMessage = null
+                loading = false
+                requestToken++
+                clearSearchKeyword()
+                hidePopup()
+                renderChips()
+            }
+
+            fun setSelectedCandidates(items: List<DeveloperCandidate>, lockedIds: Set<Long> = emptySet()) {
+                localSelectedCandidates.clear()
+                mirroredSelectedCandidates.clear()
+                selectedCandidates.clear()
+                mandatoryLockedCandidateIds.clear()
+                items.distinctBy { it.id }.forEach { localSelectedCandidates[it.id] = it }
+                mandatoryLockedCandidateIds.addAll(lockedIds)
+                rebuildSelectedCandidates()
+                clearSearchKeyword()
+                renderChips()
+                refreshPopupResults()
+                onSelectionChanged()
+            }
+
+            fun getSelectedCandidates(): List<DeveloperCandidate> = localSelectedCandidates.values.toList()
+
+            fun syncMirroredCandidates(items: List<DeveloperCandidate>) {
+                val newMirrored = linkedMapOf<Long, DeveloperCandidate>()
+                items.distinctBy { it.id }.forEach { candidate ->
+                    if (!localSelectedCandidates.containsKey(candidate.id)) {
+                        newMirrored[candidate.id] = candidate
+                    }
+                }
+                if (mirroredSelectedCandidates.keys == newMirrored.keys && mirroredSelectedCandidates.values.toList() == newMirrored.values.toList()) {
+                    return
+                }
+                mirroredSelectedCandidates.clear()
+                mirroredSelectedCandidates.putAll(newMirrored)
+                rebuildSelectedCandidates()
+                refreshPopupResults()
+            }
+
+            fun containsFocus(component: Component?): Boolean {
+                return component != null && SwingUtilities.isDescendingFrom(component, this)
+            }
+
+            fun hidePopup() {
+                val currentPopup = popup
+                if (currentPopup != null) {
+                    currentPopup.cancel()
+                } else {
+                    clearSearchKeyword()
+                }
+            }
+
+            private fun openReviewerPopup() {
+                editorField.requestFocusInWindow()
+                ensurePopupVisible()
+                if (currentResults.isEmpty() && !loading) {
+                    queueSearch(immediate = true)
+                }
+            }
+
+            private fun ensurePopupVisible() {
+                if (!isShowing || popup != null) return
+                popupContent.revalidate()
+                popupContent.repaint()
+                popup = JBPopupFactory.getInstance()
+                    .createComponentPopupBuilder(popupContent, editorField)
+                    .setRequestFocus(false)
+                    .setResizable(false)
+                    .setMovable(false)
+                    .setCancelOnClickOutside(true)
+                    .setCancelOnWindowDeactivation(true)
+                    .setShowBorder(false)
+                    .setShowShadow(true)
+                    .createPopup()
+                popup?.addListener(object : JBPopupListener {
+                    override fun onClosed(event: LightweightWindowEvent) {
+                        popup = null
+                        clearSearchKeyword()
+                    }
+                })
+                popup?.show(RelativePoint.getSouthWestOf(this))
+            }
+
+            private fun queueSearch(immediate: Boolean = false) {
+                val keyword = editorField.text.trim()
+                currentKeyword = keyword
+                if (immediate) {
+                    searchTimer?.stop()
+                    performSearch(keyword)
+                    return
+                }
+                if (searchTimer == null) {
+                    searchTimer = javax.swing.Timer(220) {
+                        performSearch(currentKeyword)
+                    }.apply {
+                        isRepeats = false
+                    }
+                }
+                searchTimer?.restart()
+            }
+
+            private fun performSearch(keyword: String) {
+                loading = true
+                errorMessage = null
+                currentKeyword = keyword
+                refreshPopupResults()
+                ensurePopupVisible()
+                val token = ++requestToken
+                ApplicationManager.getApplication().executeOnPooledThread {
+                    val result = runCatching { loadDevelopersFromApi(keyword) }
+                    SwingUtilities.invokeLater {
+                        if (token != requestToken) return@invokeLater
+                        loading = false
+                        result.onSuccess { items ->
+                            indexDevelopers(items)
+                            currentResults = (selectedCandidates.values + items).distinctBy { it.id }
+                            errorMessage = null
+                        }.onFailure { throwable ->
+                            currentResults = selectedCandidates.values.toList()
+                            errorMessage = throwable.message ?: "人员查询失败"
+                        }
+                        refreshPopupResults()
+                    }
+                }
+            }
+
+            private fun refreshPopupResults() {
+                resultListPanel.removeAll()
+                val results = currentResults
+                when {
+                    loading -> {
+                        resultListPanel.add(buildPopupHintLabel("正在查询人员..."))
+                    }
+                    !errorMessage.isNullOrBlank() -> {
+                        resultListPanel.add(buildPopupHintLabel(errorMessage.orEmpty()))
+                    }
+                    results.isEmpty() && currentKeyword.isBlank() -> {
+                        resultListPanel.add(buildPopupHintLabel("输入姓名或 OA 搜索评审人"))
+                    }
+                    results.isEmpty() -> {
+                        resultListPanel.add(buildPopupHintLabel("未找到匹配人员"))
+                    }
+                    else -> {
+                        results.forEach { resultListPanel.add(buildPopupRow(it)) }
+                    }
+                }
+                updatePopupSize()
+                resultListPanel.revalidate()
+                resultListPanel.repaint()
+                popupContent.revalidate()
+                popupContent.repaint()
+            }
+
+            private fun buildPopupHintLabel(text: String): JComponent {
+                val label = JBLabel(text).apply {
+                    foreground = createPrSecondaryTextColor()
+                    font = font.deriveFont(Font.PLAIN, globalUiFontSize - 1f)
+                    border = JBUI.Borders.empty(6, 8)
+                }
+                return JPanel(BorderLayout()).apply {
+                    isOpaque = true
+                    background = detailSurfaceFill()
+                    alignmentX = Component.LEFT_ALIGNMENT
+                    border = JBUI.Borders.empty(2, 0)
+                    add(label, BorderLayout.CENTER)
+                    val rowHeight = JBUI.scale(34)
+                    preferredSize = Dimension(JBUI.scale(280), rowHeight)
+                    minimumSize = Dimension(0, rowHeight)
+                    maximumSize = Dimension(Int.MAX_VALUE, rowHeight)
+                }
+            }
+
+            private fun buildPopupRow(candidate: DeveloperCandidate): JComponent {
+                val isLocked = isCandidateLocked(candidate.id)
+                val checkBox = JBCheckBox().apply {
+                    isOpaque = false
+                    isSelected = selectedCandidates.containsKey(candidate.id)
+                    isEnabled = !isLocked
+                }
+                val displayName = if (candidate.name.isNotBlank() && candidate.name != candidate.username) {
+                    "${candidate.name}（${candidate.username}）"
+                } else {
+                    candidate.username
+                }
+                val nameLabel = JBLabel(displayName).apply {
+                    foreground = createPrPrimaryTextColor()
+                    font = font.deriveFont(Font.PLAIN, globalUiFontSize - 1f)
+                }
+                val row = JPanel(BorderLayout(JBUI.scale(8), 0)).apply {
+                    isOpaque = true
+                    background = detailSurfaceFill()
+                    border = JBUI.Borders.empty(4, 8)
+                    alignmentX = Component.LEFT_ALIGNMENT
+                    cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                    add(checkBox, BorderLayout.WEST)
+                    add(nameLabel, BorderLayout.CENTER)
+                    val rowHeight = JBUI.scale(34)
+                    preferredSize = Dimension(JBUI.scale(280), rowHeight)
+                    minimumSize = Dimension(0, rowHeight)
+                    maximumSize = Dimension(Int.MAX_VALUE, rowHeight)
+                }
+                val toggleSelection = {
+                    if (isLocked) {
+                        checkBox.isSelected = true
+                    } else if (checkBox.isSelected) {
+                        localSelectedCandidates[candidate.id] = candidate
+                    } else {
+                        localSelectedCandidates.remove(candidate.id)
+                    }
+                    rebuildSelectedCandidates()
+                    renderChips()
+                    refreshPopupResults()
+                    onSelectionChanged()
+                    editorField.requestFocusInWindow()
+                }
+                checkBox.addActionListener { toggleSelection() }
+                row.addMouseListener(object : MouseAdapter() {
+                    override fun mousePressed(e: MouseEvent) {
+                        if (!SwingUtilities.isLeftMouseButton(e)) return
+                        if (isLocked) return
+                        checkBox.isSelected = !checkBox.isSelected
+                        toggleSelection()
+                    }
+                })
+                return row
+            }
+
+            private fun renderChips() {
+                chipContainer.removeAll()
+                localSelectedCandidates.values.forEach { candidate ->
+                    val displayName = if (candidate.name.isNotBlank() && candidate.name != candidate.username) {
+                        "${candidate.name}（${candidate.username}）"
+                    } else {
+                        candidate.username
+                    }
+                    val chip = RoundedOutlinePanel(
+                        fillColor = withAlpha(detailAccentColor, if (UIUtil.isUnderDarcula()) 36 else 20),
+                        outlineColor = withAlpha(detailAccentColor, if (UIUtil.isUnderDarcula()) 108 else 88),
+                        arc = JBUI.scale(14)
+                    ).apply {
+                        layout = BoxLayout(this, BoxLayout.X_AXIS)
+                        border = JBUI.Borders.empty(4, 8, 4, 4)
+                        add(JBLabel(displayName).apply {
+                            foreground = createPrPrimaryTextColor()
+                            font = font.deriveFont(Font.PLAIN, globalUiFontSize - 1f)
+                        })
+                        if (!isCandidateLocked(candidate.id)) {
+                            add(Box.createHorizontalStrut(JBUI.scale(4)))
+                            add(JButton("×").apply {
+                                isOpaque = false
+                                isContentAreaFilled = false
+                                isBorderPainted = false
+                                isFocusable = false
+                                border = JBUI.Borders.empty()
+                                margin = JBUI.emptyInsets()
+                                preferredSize = Dimension(JBUI.scale(12), JBUI.scale(12))
+                                minimumSize = preferredSize
+                                maximumSize = preferredSize
+                                foreground = createPrSecondaryTextColor()
+                                font = font.deriveFont(Font.PLAIN, globalUiFontSize - 3f)
+                                addActionListener {
+                                    localSelectedCandidates.remove(candidate.id)
+                                    rebuildSelectedCandidates()
+                                    renderChips()
+                                    refreshPopupResults()
+                                    onSelectionChanged()
+                                    hidePopup()
+                                    if (!createTabs.requestFocusInWindow()) {
+                                        rootPanel.requestFocusInWindow()
+                                    }
+                                }
+                            })
+                        }
+                    }
+                    chipContainer.add(chip)
+                }
+                chipContainer.add(editorField)
+                chipContainer.revalidate()
+                chipContainer.repaint()
+                revalidate()
+                repaint()
+            }
+
+            private fun rebuildSelectedCandidates() {
+                selectedCandidates.clear()
+                localSelectedCandidates.values.forEach { selectedCandidates[it.id] = it }
+                mirroredSelectedCandidates.values.forEach { selectedCandidates.putIfAbsent(it.id, it) }
+            }
+
+            private fun isCandidateLocked(candidateId: Long): Boolean {
+                return candidateId in mandatoryLockedCandidateIds || candidateId in mirroredSelectedCandidates
+            }
+
+            private fun clearSearchKeyword() {
+                currentKeyword = ""
+                suppressEditorDocumentEvents = true
+                try {
+                    if (editorField.text.isNotEmpty()) {
+                        editorField.text = ""
+                    }
+                } finally {
+                    suppressEditorDocumentEvents = false
+                }
+            }
+
+            private fun updatePopupSize() {
+                val rowHeight = JBUI.scale(34)
+                val popupWidth = JBUI.scale(320)
+                val maxBodyHeight = JBUI.scale(220)
+                val bodyHeight = (maxOf(1, resultListPanel.componentCount) * rowHeight).coerceAtMost(maxBodyHeight)
+                popupScrollPane.preferredSize = Dimension(popupWidth, bodyHeight)
+                popupScrollPane.minimumSize = Dimension(popupWidth, rowHeight)
+                popupContent.preferredSize = Dimension(popupWidth, bodyHeight + JBUI.scale(16))
+                popupContent.minimumSize = popupContent.preferredSize
+                popup?.setSize(popupContent.preferredSize)
+            }
+        }
+
+        private fun installCreateTabsUi() {
+            createTabs.setUI(object : BasicTabbedPaneUI() {
+                override fun installDefaults() {
+                    super.installDefaults()
+                    tabAreaInsets = Insets(0, 0, 0, 0)
+                    contentBorderInsets = Insets(0, 0, 0, 0)
+                    selectedTabPadInsets = Insets(0, 0, 0, 0)
+                }
+
+                override fun getTabInsets(tabPlacement: Int, tabIndex: Int): Insets = Insets(0, 0, 0, 0)
+
+                override fun getTabLabelShiftX(tabPlacement: Int, tabIndex: Int, isSelected: Boolean): Int = 0
+
+                override fun getTabLabelShiftY(tabPlacement: Int, tabIndex: Int, isSelected: Boolean): Int = 0
+
+                override fun paintTabArea(g: Graphics, tabPlacement: Int, selectedIndex: Int) {
+                    val g2 = g.create() as Graphics2D
+                    try {
+                        val tabAreaHeight = calculateTabAreaHeight(tabPlacement, runCount, maxTabHeight)
+                        g2.color = detailTabPaneFill()
+                        g2.fillRect(0, 0, tabPane.width, tabAreaHeight)
+                    } finally {
+                        g2.dispose()
+                    }
+                    super.paintTabArea(g, tabPlacement, selectedIndex)
+                }
+
+                override fun paintTabBackground(g: Graphics, tabPlacement: Int, tabIndex: Int, x: Int, y: Int, w: Int, h: Int, isSelected: Boolean) = Unit
+                override fun paintTabBorder(g: Graphics, tabPlacement: Int, tabIndex: Int, x: Int, y: Int, w: Int, h: Int, isSelected: Boolean) = Unit
+                override fun paintContentBorder(g: Graphics, tabPlacement: Int, selectedIndex: Int) = Unit
+                override fun paintFocusIndicator(g: Graphics, tabPlacement: Int, rects: Array<Rectangle>, tabIndex: Int, iconRect: Rectangle, textRect: Rectangle, isSelected: Boolean) = Unit
+            })
+        }
+
+        private fun createTabUnderlineSideInsets(): Pair<Int, Int> {
+            val overviewComponent = if (createTabs.tabCount > 0) createTabs.getComponentAt(0) else null
+            return detailContentSideInsets(overviewComponent)
+        }
+
+        private fun setupCreateTabsHeader() {
+            createTabHeaders.clear()
+            val diffMeta = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
+                isOpaque = false
+                add(diffTabCountLabel)
+                add(createFileChangeWarningButton)
+            }
+            val commitMeta = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
+                isOpaque = false
+                add(commitTabCountLabel)
+                add(createCommitWarningLabel)
+            }
+            val headers = listOf(
+                CreateTabHeader(JBLabel("概览"), null, isFirst = true),
+                CreateTabHeader(JBLabel("文件改动"), diffMeta),
+                CreateTabHeader(JBLabel("提交记录"), commitMeta, isLast = true)
+            )
+            headers.forEach { header ->
+                header.titleFontSize = detailSectionTitleFontSize()
+            }
+            headers.forEachIndexed { index, header ->
+                createTabs.setTabComponentAt(index, header)
+                createTabHeaders.add(header)
+            }
+            if (!createTabHeaderListenerBound) {
+                createTabs.addChangeListener { updateCreateTabHeaderStates() }
+                createTabHeaderListenerBound = true
+            }
+            updateCreateTabHeaderStates()
+        }
+
+        private fun updateCreateTabHeaderStates() {
+            createTabHeaders.forEachIndexed { index, header ->
+                header.setSelectedState(index == createTabs.selectedIndex)
+            }
+        }
+
+        private fun bindActions() {
+            cancelButton.addActionListener { exitCreatePrView() }
+            submitButton.addActionListener { submit() }
+
+            val branchListener = object : java.awt.event.ItemListener {
+                override fun itemStateChanged(e: java.awt.event.ItemEvent?) {
+                    if (e?.stateChange == java.awt.event.ItemEvent.SELECTED) {
+                        triggerBranchRefresh()
+                    }
+                }
+            }
+            sourceBranchBox.addItemListener(branchListener)
+            targetBranchBox.addItemListener(branchListener)
+
+            createChangeSearchField.document.addDocumentListener(object : DocumentListener {
+                override fun insertUpdate(e: DocumentEvent?) = applyCreateChangeTreeFilter()
+                override fun removeUpdate(e: DocumentEvent?) = applyCreateChangeTreeFilter()
+                override fun changedUpdate(e: DocumentEvent?) = applyCreateChangeTreeFilter()
+            })
+            createChangeTreeToggleButton.addActionListener {
+                if (createChangeTreeFlatMode) {
+                    createChangeTreeFlatMode = false
+                    updateCreateChangeModeToggleStyle()
+                    applyCreateChangeTreeFilter()
+                }
+            }
+            createChangeFlatToggleButton.addActionListener {
+                if (!createChangeTreeFlatMode) {
+                    createChangeTreeFlatMode = true
+                    updateCreateChangeModeToggleStyle()
+                    applyCreateChangeTreeFilter()
+                }
+            }
+            createChangeTree.addMouseMotionListener(object : MouseMotionAdapter() {
+                override fun mouseMoved(e: MouseEvent) {
+                    val path = resolveTreePathAtPoint(createChangeTree, e.x, e.y) ?: return
+                    val node = path.lastPathComponent as? DefaultMutableTreeNode ?: return
+                    val change = node.userObject as? ChangeItem
+                    createChangeTree.toolTipText = change?.let { changeTypeTooltip(it) }
+                }
+            })
+            createChangeTree.addMouseListener(object : MouseAdapter() {
+                override fun mouseExited(e: MouseEvent) {
+                    createChangeTree.toolTipText = null
+                }
+
+                override fun mousePressed(e: MouseEvent) {
+                    if (SwingUtilities.isLeftMouseButton(e)) {
+                        dismissCreateInputFocus()
+                        dismissSearchFieldFocus()
+                        resolveTreePathAtPoint(createChangeTree, e.x, e.y)?.let { createChangeTree.selectionPath = it }
+                    }
+                }
+
+                override fun mouseClicked(e: MouseEvent) {
+                    if (e.clickCount != 2 || !SwingUtilities.isLeftMouseButton(e)) return
+                    val path = resolveTreePathAtPoint(createChangeTree, e.x, e.y) ?: return
+                    val node = path.lastPathComponent as? DefaultMutableTreeNode ?: return
+                    if (node.userObject !is String || createChangeTreeFlatMode) return
+                    if (createChangeTree.isExpanded(path)) createChangeTree.collapsePath(path) else createChangeTree.expandPath(path)
+                }
+            })
+        }
+
+        private fun setSubmitEnabled(enabled: Boolean) {
+            submitButton.isEnabled = enabled
+            submitButton.repaint()
+        }
+
+        private fun refreshStatusBanner() {
+            val reason = precheckBlockedReason
+            val check = latestPreCreateCheck
+            val diffCount = latestChanges.size
+            val commitCount = latestCommits.size
+            when {
+                reason == "正在加载分支信息..." || reason == "正在校验分支..." -> {
+                    branchStatusIconLabel.text = "…"
+                    branchStatusIconLabel.foreground = createPrSecondaryTextColor()
+                    branchStatusTextLabel.text = reason ?: "正在校验分支..."
+                }
+                !reason.isNullOrBlank() -> {
+                    branchStatusIconLabel.text = "⚠"
+                    branchStatusIconLabel.foreground = JBColor(Color(0xB28C00), Color(0xF6C26B))
+                    branchStatusTextLabel.text = reason
+                }
+                else -> {
+                    val canAutoMerge = check?.canBeAutomerge == true
+                    branchStatusIconLabel.text = if (canAutoMerge) "✔" else "•"
+                    branchStatusIconLabel.foreground = if (canAutoMerge) JBColor(Color(0x5C962C), Color(0x57D163)) else JBColor(Color(0xB28C00), Color(0xF6C26B))
+                    branchStatusTextLabel.text = buildString {
+                        append(if (canAutoMerge) "分支间代码可自动合并。" else "分支可创建 PR，但需人工确认合并。")
+                        append("共包含 ")
+                        append(diffCount)
+                        append(" 个文件修改与 ")
+                        append(commitCount)
+                        append(" 条提交记录。")
+                    }
+                }
+            }
+        }
+
+        private fun refreshDiffAndCommitView() {
+            diffTabCountLabel.setPill(latestChanges.size.toString(), detailTabBadgeColor())
+            commitTabCountLabel.setPill(latestCommits.size.toString(), detailTabBadgeColor())
+            applyCreateChangeTreeFilter()
+            renderCreateCommitTimeline()
+            updateCreateWarningStates()
+            refreshStatusBanner()
+            updateCreateTabsVisibility()
+            updateCreateTabHeaderStates()
+        }
+
+        private fun updateCreateWarningStates() {
+            val source = (sourceBranchBox.selectedItem as? String).orEmpty().trim()
+            updateCreateFileChangeBranchWarning(source)
+            updateCreateCommitWarning(latestMissingCommitHashes.isNotEmpty())
+        }
+
+        private fun updateCreateTabsVisibility() {
+            val sourceSelected = (sourceBranchBox.selectedItem as? String).orEmpty().isNotBlank()
+            val targetSelected = (targetBranchBox.selectedItem as? String).orEmpty().isNotBlank()
+            val showTabs = sourceSelected && targetSelected && latestPreCreateCheck?.code == 200
+            tabsWrapper.isVisible = showTabs
+            if (!showTabs && createTabs.tabCount > 0 && createTabs.selectedIndex != 0) {
+                createTabs.selectedIndex = 0
+            }
+            tabsWrapper.revalidate()
+            tabsWrapper.repaint()
+        }
+
+        private fun updateCreateFileChangeBranchWarning(sourceBranch: String) {
+            val srBranch = normalizeLocalBranchName(sourceBranch)
+            if (srBranch.isBlank()) {
+                updateCreateFileChangeWarning(false, null)
+                return
+            }
+
+            ApplicationManager.getApplication().executeOnPooledThread {
+                try {
+                    val repo = GitRepositoryManager.getInstance(project).repositories.firstOrNull()
+                    if (repo == null) {
+                        updateCreateFileChangeWarning(false, null)
+                        return@executeOnPooledThread
+                    }
+
+                    val currentBranch = repo.currentBranch?.name.orEmpty()
+                    val isSourceBranch = currentBranch == srBranch
+                    val hasWarning = !isSourceBranch
+                    val tip = if (hasWarning) buildFileChangeWarningText(isSourceBranch) else null
+                    updateCreateFileChangeWarning(hasWarning, tip)
+                } catch (e: Exception) {
+                    PrManagerFileLogger.error("Check create PR source branch failed: sourceBranch=$sourceBranch", e)
+                    updateCreateFileChangeWarning(false, null)
+                }
+            }
+        }
+
+        private fun updateCreateFileChangeWarning(visible: Boolean, tooltip: String?) {
+            SwingUtilities.invokeLater {
+                createFileChangeWarningText = tooltip
+                createFileChangeWarningButton.isVisible = visible
+                createFileChangeWarningButton.toolTipText = tooltip
+                if (!visible) {
+                    hideCreateFileChangeWarningBalloon()
+                }
+                createTabs.revalidate()
+                createTabs.repaint()
+            }
+        }
+
+        private fun updateCreateCommitWarning(visible: Boolean) {
+            SwingUtilities.invokeLater {
+                createCommitWarningText = if (visible) {
+                    "当前分支缺少如下提交记录，可能会影响文件对比中的上下文查看的准确性"
+                } else {
+                    null
+                }
+                createCommitWarningLabel.isVisible = visible
+                createCommitWarningLabel.toolTipText = createCommitWarningText
+                if (!visible) {
+                    hideCreateCommitWarningBalloon()
+                }
+                createTabs.revalidate()
+                createTabs.repaint()
+            }
+        }
+
+        private fun toggleCreateCommitWarningBalloon() {
+            if (createCommitWarningBalloon != null) {
+                hideCreateCommitWarningBalloon()
+                return
+            }
+            showCreateCommitWarningBalloon()
+        }
+
+        private fun showCreateCommitWarningBalloon() {
+            val text = createCommitWarningText?.takeIf { it.isNotBlank() } ?: return
+            createCommitWarningBalloon?.hide()
+            val fgColor = UIUtil.getToolTipForeground()
+            val bgColor = UIUtil.getToolTipBackground()
+            val styledText = wrapHtmlWithColor(text, fgColor)
+            val balloon = JBPopupFactory.getInstance()
+                .createHtmlTextBalloonBuilder(
+                    styledText,
+                    null,
+                    bgColor,
+                    UIUtil.getBoundsColor(),
+                    null
+                )
+                .setHideOnClickOutside(true)
+                .setHideOnKeyOutside(true)
+                .setAnimationCycle(80)
+                .createBalloon()
+            createCommitWarningBalloon = balloon
+            balloon.show(RelativePoint.getSouthOf(createCommitWarningLabel), Balloon.Position.below)
+        }
+
+        private fun hideCreateCommitWarningBalloon() {
+            createCommitWarningBalloon?.hide()
+            createCommitWarningBalloon = null
+        }
+
+        private fun toggleCreateFileChangeWarningBalloon() {
+            if (createFileChangeWarningBalloon != null) {
+                hideCreateFileChangeWarningBalloon()
+                return
+            }
+            showCreateFileChangeWarningBalloon()
+        }
+
+        private fun showCreateFileChangeWarningBalloon() {
+            val text = createFileChangeWarningText?.takeIf { it.isNotBlank() } ?: return
+            createFileChangeWarningBalloon?.hide()
+            val fgColor = UIUtil.getToolTipForeground()
+            val bgColor = UIUtil.getToolTipBackground()
+            val styledText = wrapHtmlWithColor(text, fgColor)
+            val balloon = JBPopupFactory.getInstance()
+                .createHtmlTextBalloonBuilder(
+                    styledText,
+                    null,
+                    bgColor,
+                    UIUtil.getBoundsColor(),
+                    null
+                )
+                .setHideOnClickOutside(true)
+                .setHideOnKeyOutside(true)
+                .setAnimationCycle(80)
+                .createBalloon()
+            createFileChangeWarningBalloon = balloon
+            balloon.show(RelativePoint.getSouthOf(createFileChangeWarningButton), Balloon.Position.below)
+        }
+
+        private fun hideCreateFileChangeWarningBalloon() {
+            createFileChangeWarningBalloon?.hide()
+            createFileChangeWarningBalloon = null
+        }
+
+        private fun updateCreateChangeModeToggleStyle() {
+            styleSegmentedToggle(createChangeTreeToggleButton, !createChangeTreeFlatMode)
+            styleSegmentedToggle(createChangeFlatToggleButton, createChangeTreeFlatMode)
+        }
+
+        private fun applyCreateChangeTreeFilter() {
+            val keyword = createChangeSearchField.text?.trim().orEmpty().lowercase()
+            val visibleChanges = if (keyword.isBlank()) {
+                latestChanges
+            } else {
+                latestChanges.filter {
+                    it.filePath.lowercase().contains(keyword) || it.filePath.substringAfterLast('/').lowercase().contains(keyword)
+                }
+            }
+            createChangeTree.emptyText.text = when {
+                latestChanges.isEmpty() -> "暂无对比结果"
+                visibleChanges.isEmpty() -> "未找到匹配文件"
+                else -> ""
+            }
+            renderCreateChangeTreeNodes(visibleChanges)
+        }
+
+        private fun renderCreateChangeTreeNodes(changes: List<ChangeItem>) {
+            createChangeTreeRoot.removeAllChildren()
+            var insertedFiles = 0
+            if (createChangeTreeFlatMode) {
+                changes.sortedBy { it.filePath.lowercase() }.forEach { change ->
+                    createChangeTreeRoot.add(DefaultMutableTreeNode(change))
+                    insertedFiles++
+                }
+            } else {
+                changes.forEach { change ->
+                    if (insertCreateChangeNode(change)) {
+                        insertedFiles++
+                    }
+                }
+                sortTree(createChangeTreeRoot)
+                compactDirectoryTree(createChangeTreeRoot)
+            }
+            createChangeTree.showsRootHandles = !createChangeTreeFlatMode
+            createChangeTreeModel.reload()
+            if (!createChangeTreeFlatMode) {
+                val rootPath = TreePath(createChangeTreeRoot.path)
+                expandCreateChangeTree(rootPath)
+                SwingUtilities.invokeLater { expandCreateChangeTree(rootPath) }
+            }
+            val additions = changes.sumOf { it.additions }
+            val deletions = changes.sumOf { it.deletions }
+            createChangeSummaryLabel.text = "${changes.size} 个文件变更"
+            createChangeAdditionsLabel.text = "+$additions additions"
+            createChangeDeletionsLabel.text = "-$deletions deletions"
+            if (insertedFiles < changes.size) {
+                updateStatus("文件树构建异常: 期望${changes.size}，实际$insertedFiles")
+            }
+        }
+
+        private fun insertCreateChangeNode(change: ChangeItem): Boolean {
+            val normalizedPath = change.filePath.trim().replace('\\', '/').trim('/')
+            if (normalizedPath.isBlank()) return false
+            val parts = normalizedPath.split('/').filter { it.isNotBlank() }
+            if (parts.isEmpty()) return false
+            var parent = createChangeTreeRoot
+            parts.dropLast(1).forEach { dirName ->
+                parent = findOrCreateDirectoryNode(parent, dirName)
+            }
+            parent.add(DefaultMutableTreeNode(change))
+            return true
+        }
+
+        private fun expandCreateChangeTree(path: TreePath) {
+            createChangeTree.expandPath(path)
+            val node = path.lastPathComponent as? DefaultMutableTreeNode ?: return
+            val children = node.children()
+            while (children.hasMoreElements()) {
+                val child = children.nextElement() as? DefaultMutableTreeNode ?: continue
+                expandCreateChangeTree(path.pathByAddingChild(child))
+            }
+        }
+
+        private fun renderCreateCommitTimeline() {
+            createCommitTimelineContent.removeAll()
+            if (latestCommits.isEmpty()) {
+                createCommitTimelineContent.add(JPanel(BorderLayout()).apply {
+                    isOpaque = false
+                    border = JBUI.Borders.empty(28, 8)
+                    add(JBLabel("暂无提交记录", SwingConstants.CENTER).apply {
+                        foreground = detailMutedColor()
+                        font = font.deriveFont(Font.PLAIN, globalUiFontSize + 1f)
+                    }, BorderLayout.CENTER)
+                    alignmentX = Component.LEFT_ALIGNMENT
+                    maximumSize = Dimension(Int.MAX_VALUE, preferredSize.height)
+                })
+            } else {
+                latestCommits.forEachIndexed { index, commit ->
+                    createCommitTimelineContent.add(createCommitTimelineItem(commit, index == latestCommits.lastIndex, latestMissingCommitHashes.contains(commit.hash)).apply {
+                        alignmentX = Component.LEFT_ALIGNMENT
+                        maximumSize = Dimension(Int.MAX_VALUE, preferredSize.height)
+                    })
+                }
+            }
+            createCommitTimelineContent.revalidate()
+            createCommitTimelineContent.repaint()
+            createCommitTimelineScrollPane?.viewport?.repaint()
+        }
+
+        private inner class CreateTabHeader(
+            private val titleLabel: JBLabel,
+            badge: JComponent?,
+            private val isFirst: Boolean = false,
+            private val isLast: Boolean = false
+        ) : JPanel(BorderLayout()) {
+            private val contentPanel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply { isOpaque = false }
+            private var selectedState = false
+            var titleFontSize: Float = detailSectionTitleFontSize()
+                set(value) {
+                    field = value
+                    titleLabel.font = titleLabel.font.deriveFont(Font.PLAIN, value)
+                }
+
+            init {
+                isOpaque = false
+                cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                val sideInset = detailHeaderSideInset()
+                border = JBUI.Borders.empty(
+                    JBUI.scale(2),
+                    if (isFirst) sideInset else JBUI.scale(12),
+                    JBUI.scale(12),
+                    if (isLast) sideInset else JBUI.scale(12)
+                )
+                titleLabel.font = titleLabel.font.deriveFont(Font.PLAIN, titleFontSize)
+                contentPanel.add(titleLabel)
+                if (badge != null) {
+                    contentPanel.add(Box.createHorizontalStrut(JBUI.scale(6)))
+                    contentPanel.add(badge)
+                }
+                add(contentPanel, BorderLayout.WEST)
+                bindClickHandlerRecursively(this)
+            }
+
+            private fun bindClickHandlerRecursively(component: Component) {
+                component.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                component.addMouseListener(object : MouseAdapter() {
+                    override fun mousePressed(e: MouseEvent) {
+                        if (!SwingUtilities.isLeftMouseButton(e)) return
+                        dismissCreateInputFocus()
+                        val index = createTabs.indexOfTabComponent(this@CreateTabHeader)
+                        if (index in 0 until createTabs.tabCount && createTabs.selectedIndex != index) {
+                            createTabs.selectedIndex = index
+                        }
+                    }
+                })
+                if (component is Container) {
+                    component.components.forEach { child -> bindClickHandlerRecursively(child) }
+                }
+            }
+
+            override fun paintComponent(g: Graphics) {
+                if (selectedState) {
+                    val g2 = g.create() as Graphics2D
+                    try {
+                        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                        val bounds = contentPanel.bounds
+                        if (bounds.width > 0 && bounds.height > 0) {
+                            val insetX = JBUI.scale(8)
+                            val insetY = JBUI.scale(4)
+                            val x = (bounds.x - insetX).coerceAtLeast(0)
+                            val y = (bounds.y - insetY).coerceAtLeast(0)
+                            val fillWidth = (bounds.width + insetX * 2).coerceAtMost(width - x)
+                            val fillHeight = (bounds.height + insetY * 2).coerceAtMost(height - y)
+                            if (fillWidth > 0 && fillHeight > 0) {
+                                val arc = JBUI.scale(12)
+                                g2.color = detailTabHeaderSelectedFill()
+                                g2.fillRoundRect(x, y, fillWidth, fillHeight, arc, arc)
+                                g2.color = detailTabHeaderSelectedOutline()
+                                g2.drawRoundRect(x, y, fillWidth - 1, fillHeight - 1, arc, arc)
+                            }
+                        }
+                    } finally {
+                        g2.dispose()
+                    }
+                }
+                super.paintComponent(g)
+            }
+
+            fun setSelectedState(selected: Boolean) {
+                selectedState = selected
+                titleLabel.foreground = if (selected) detailTabHeaderSelectedTextColor() else detailTabHeaderMutedTextColor()
+                repaint()
+            }
+        }
+
+        private inner class CreateChangeTreeCellRenderer : javax.swing.tree.TreeCellRenderer {
+            private val fallbackRenderer = DefaultTreeCellRenderer()
+            private val statsPanel = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0)).apply { isOpaque = false }
+            private val rowPanel = object : JPanel(BorderLayout(JBUI.scale(10), 0)) {
+                override fun paintComponent(g: Graphics) {
+                    val outlineColor = getClientProperty("outlineColor") as? Color
+                    if (background.alpha > 0 || outlineColor != null) {
+                        val g2 = g.create() as Graphics2D
+                        try {
+                            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                            val shape = RoundRectangle2D.Float(0.5f, 0.5f, (width - 1f).coerceAtLeast(0f), (height - 1f).coerceAtLeast(0f), JBUI.scale(10).toFloat(), JBUI.scale(10).toFloat())
+                            if (background.alpha > 0) {
+                                g2.color = background
+                                g2.fill(shape)
+                            }
+                            if (outlineColor != null) {
+                                g2.color = outlineColor
+                                g2.draw(shape)
+                            }
+                        } finally {
+                            g2.dispose()
+                        }
+                    }
+                    super.paintComponent(g)
+                }
+            }.apply {
+                isOpaque = false
+                border = JBUI.Borders.empty(3, 0, 3, 6)
+            }
+            private val infoPanel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply { isOpaque = false }
+            private val mainLabel = JBLabel()
+            private val additionLabel = JBLabel()
+            private val deletionLabel = JBLabel()
+
+            init {
+                infoPanel.add(mainLabel)
+                rowPanel.add(infoPanel, BorderLayout.CENTER)
+                statsPanel.add(additionLabel)
+                statsPanel.add(deletionLabel)
+                rowPanel.add(statsPanel, BorderLayout.EAST)
+            }
+
+            override fun getTreeCellRendererComponent(
+                tree: javax.swing.JTree?,
+                value: Any?,
+                sel: Boolean,
+                expanded: Boolean,
+                leaf: Boolean,
+                row: Int,
+                hasFocus: Boolean
+            ): Component {
+                val base = fallbackRenderer.getTreeCellRendererComponent(tree, value, sel, expanded, leaf, row, hasFocus)
+                val node = value as? DefaultMutableTreeNode
+                val userObject = node?.userObject
+                if (userObject !is ChangeItem && userObject !is String) {
+                    if (base is JComponent) base.font = base.font.deriveFont(Font.PLAIN, globalUiFontSize)
+                    return base
+                }
+                rowPanel.background = if (sel) withAlpha(detailAccentColor, 22) else Color(0, 0, 0, 0)
+                rowPanel.putClientProperty("outlineColor", if (sel) withAlpha(detailAccentColor, 92) else null)
+                val font = fallbackRenderer.font.deriveFont(Font.PLAIN, globalUiFontSize)
+                val statFont = Font(Font.MONOSPACED, Font.PLAIN, font.size)
+                mainLabel.font = font
+                mainLabel.foreground = detailPrimaryTextColor()
+                additionLabel.font = statFont
+                deletionLabel.font = statFont
+                additionLabel.foreground = JBColor(Color(0x1E8E3E), Color(0x57D163))
+                deletionLabel.foreground = JBColor(Color(0xD93025), Color(0xF47067))
+                if (userObject is String) {
+                    mainLabel.icon = AllIcons.Nodes.Folder
+                    mainLabel.iconTextGap = JBUI.scale(8)
+                    mainLabel.text = userObject
+                    mainLabel.toolTipText = null
+                    additionLabel.text = ""
+                    deletionLabel.text = ""
+                    additionLabel.isVisible = false
+                    deletionLabel.isVisible = false
+                    statsPanel.isVisible = false
+                    return rowPanel
+                }
+                val change = userObject as ChangeItem
+                val fileName = change.filePath.substringAfterLast('/')
+                mainLabel.icon = changeTypeIcon(change.changeType)
+                mainLabel.iconTextGap = JBUI.scale(8)
+                mainLabel.text = formatFileNameWithChangeType(fileName, change.changeType)
+                mainLabel.toolTipText = changeTypeTooltip(change)
+                additionLabel.text = if (change.additions > 0) "+${change.additions}" else ""
+                deletionLabel.text = if (change.deletions > 0) "-${change.deletions}" else ""
+                additionLabel.isVisible = additionLabel.text.isNotBlank()
+                deletionLabel.isVisible = deletionLabel.text.isNotBlank()
+                statsPanel.isVisible = additionLabel.isVisible || deletionLabel.isVisible
+                return rowPanel
+            }
+        }
+
+        private fun loadInitialData() {
+            ApplicationManager.getApplication().executeOnPooledThread {
+                try {
+                    fetchRemoteBranches()
+                    val branches = collectBranchNames()
+                    SwingUtilities.invokeLater {
+                        sourceBranchBox.removeAllItems()
+                        targetBranchBox.removeAllItems()
+                        branches.forEach {
+                            sourceBranchBox.addItem(it)
+                            targetBranchBox.addItem(it)
+                        }
+                        sourceBranchBox.selectedIndex = -1
+                        targetBranchBox.selectedIndex = -1
+                        precheckBlockedReason = null
+                        triggerBranchRefresh()
+                    }
+                } catch (e: Exception) {
+                    PrManagerFileLogger.error("Load create PR inline view initial data failed", e)
+                    SwingUtilities.invokeLater {
+                        precheckBlockedReason = e.message ?: "初始化失败"
+                        refreshStatusBanner()
+                        setSubmitEnabled(false)
+                    }
+                }
+            }
+        }
+
+        private fun collectBranchNames(): List<String> {
+            val repo = GitRepositoryManager.getInstance(project).repositories.firstOrNull() ?: return emptyList()
+            val handler = GitLineHandler(project, repo.root, GitCommand.BRANCH)
+            handler.addParameters("-a", "--no-color")
+            val result = Git.getInstance().runCommand(handler)
+            if (!result.success()) return emptyList()
+            return result.output.mapNotNull { rawLine ->
+                val line = rawLine.trim().removePrefix("*").trim()
+                if (line.isBlank() || line.contains("->")) return@mapNotNull null
+                val normalized = line.removePrefix("remotes/")
+                    .removePrefix("origin/")
+                    .removePrefix("refs/heads/")
+                    .removePrefix("refs/remotes/origin/")
+                normalized.takeIf { it.isNotBlank() }
+            }.distinct().sorted()
+        }
+
+        private fun triggerBranchRefresh() {
+            val source = (sourceBranchBox.selectedItem as? String).orEmpty().trim()
+            val target = (targetBranchBox.selectedItem as? String).orEmpty().trim()
+            if (source.isBlank() || target.isBlank()) {
+                precheckBlockedReason = "请选择源分支和目标分支"
+                latestPreCreateCheck = null
+                latestChanges = emptyList()
+                latestCommits = emptyList()
+                latestMissingCommitHashes = emptySet()
+                refreshDiffAndCommitView()
+                setSubmitEnabled(false)
+                return
+            }
+            if (source == target) {
+                precheckBlockedReason = "源分支和目标分支不能相同"
+                latestPreCreateCheck = null
+                latestChanges = emptyList()
+                latestCommits = emptyList()
+                latestMissingCommitHashes = emptySet()
+                refreshDiffAndCommitView()
+                setSubmitEnabled(false)
+                return
+            }
+            precheckBlockedReason = "正在校验分支..."
+            latestPreCreateCheck = null
+            latestChanges = emptyList()
+            latestCommits = emptyList()
+            latestMissingCommitHashes = emptySet()
+            refreshDiffAndCommitView()
+            setSubmitEnabled(false)
+            ApplicationManager.getApplication().executeOnPooledThread {
+                try {
+                    fetchRemoteBranches()
+                    val check = runPreCreateCheck(source, target)
+                    latestPreCreateCheck = check
+                    applyPrecheckResult(check)
+                    loadDevelopersByCurrentSelections(source, target)
+                    computeBranchDiffAndCommits(source, target)
+                } catch (e: Exception) {
+                    PrManagerFileLogger.error("Refresh create PR inline branch state failed", e)
+                    precheckBlockedReason = e.message ?: "校验失败"
+                }
+                SwingUtilities.invokeLater {
+                    refreshDiffAndCommitView()
+                    setSubmitEnabled(precheckBlockedReason.isNullOrBlank())
+                }
+            }
+        }
+
+        private fun runPreCreateCheck(source: String, target: String): PreCreateCheck {
+            if (mockEnabled) {
+                val mockJson = readMockJson(mockCanCreatePrFile)
+                    ?: throw IllegalStateException("Mock文件不存在: $mockDir/$mockCanCreatePrFile")
+                return parsePreCreateCheck(mockJson)
+            }
+            val response = apiService.canCreatePr(
+                sshPath = resolveGitAddress(),
+                sourceBranch = source,
+                targetBranch = target,
+                projectId = repoProjectId.ifBlank { null }
+            )
+            if (response.statusCode() !in 200..299) {
+                return PreCreateCheck(response.statusCode(), "分支校验失败", false, emptyList(), emptyList(), 0, 0)
+            }
+            return parsePreCreateCheck(response.body())
+        }
+
+        private fun parsePreCreateCheck(body: String): PreCreateCheck {
+            val root = objectMapper.readTree(body)
+            val result = root.get("result") ?: root
+            val data = result.get("data")
+            val code = data?.get("code")?.asInt() ?: result.get("code")?.asInt() ?: 500
+            val message = data?.readText("message", "warningMessage").orEmpty().ifBlank { result.readText("message") }
+            val canBeAutomerge = data?.get("canBeAutomerge")?.asBoolean() == true
+            val primary = parseDeveloperCandidates(data?.get("primaryReviewers"))
+            val general = parseDeveloperCandidates(data?.get("generalReviewers"))
+            val primaryNum = data?.get("primaryReviewerNum")?.asInt() ?: if (primary.isNotEmpty()) 1 else 0
+            val generalNum = data?.get("generalReviewerNum")?.asInt() ?: if (general.isNotEmpty()) 1 else 0
+            return PreCreateCheck(code, message, canBeAutomerge, primary, general, primaryNum, generalNum)
+        }
+
+        private fun parseDeveloperCandidates(node: JsonNode?): List<DeveloperCandidate> {
+            if (node == null || !node.isArray) return emptyList()
+            return node.mapNotNull { item ->
+                val id = item.get("id")?.asLong() ?: return@mapNotNull null
+                val username = item.readText("username", "login", "userName")
+                val name = item.readText("name", "login", "username", "userName")
+                val finalUsername = username.ifBlank { name }
+                if (finalUsername.isBlank()) return@mapNotNull null
+                DeveloperCandidate(id = id, username = finalUsername, name = name)
+            }
+        }
+
+        private fun applyPrecheckResult(check: PreCreateCheck) {
+            mandatoryPrimaryUsers = check.primaryReviewers.map { it.username }.toSet()
+            minimumPrimary = check.primaryReviewerNum.coerceAtLeast(if (check.primaryReviewers.isNotEmpty()) 1 else 0)
+            minimumGeneral = check.generalReviewerNum.coerceAtLeast(if (check.generalReviewers.isNotEmpty()) 1 else 0)
+            precheckBlockedReason = if (check.code == 200) null else check.message.ifBlank { "分支不满足创建条件，code=${check.code}" }
+            SwingUtilities.invokeLater {
+                primaryReviewerPicker.setSelectedCandidates(check.primaryReviewers, check.primaryReviewers.map { it.id }.toSet())
+                generalReviewerPicker.setSelectedCandidates(check.generalReviewers)
+                refreshReviewerRequirementControls()
+                refreshStatusBanner()
+            }
+            indexDevelopers(check.primaryReviewers + check.generalReviewers)
+        }
+
+        private fun loadDevelopersByCurrentSelections(source: String, target: String) {
+            if (mandatoryPrimaryUsers.isNotEmpty() || minimumGeneral > 0 || minimumPrimary > 0) return
+            val developers = loadDevelopersFromApi("")
+            indexDevelopers(developers)
+            SwingUtilities.invokeLater {
+                refreshReviewerRequirementControls()
+                if (source == target) {
+                    precheckBlockedReason = "源分支和目标分支不能相同"
+                }
+                refreshStatusBanner()
+            }
+        }
+
+        private fun loadDevelopersFromApi(keywords: String): List<DeveloperCandidate> {
+            if (mockEnabled) {
+                val mockJson = readMockJson(mockDevelopersFile)
+                    ?: throw IllegalStateException("Mock文件不存在: $mockDir/$mockDevelopersFile")
+                val root = objectMapper.readTree(mockJson)
+                val result = root.get("result") ?: root
+                val data = result.get("data")
+                val list = data?.get("developers")
+                return parseDeveloperCandidates(list)
+            }
+            val response = apiService.fetchDevelopers(
+                sshPath = resolveGitAddress(),
+                projectId = repoProjectId.ifBlank { null },
+                keywords = keywords
+            )
+            if (response.statusCode() !in 200..299) return emptyList()
+            val root = objectMapper.readTree(response.body())
+            val result = root.get("result") ?: root
+            val data = result.get("data")
+            val list = data?.get("developers")
+            return parseDeveloperCandidates(list)
+        }
+
+        private fun indexDevelopers(items: List<DeveloperCandidate>) {
+            if (items.isEmpty()) return
+            items.forEach { item ->
+                developerByKey[item.username.trim().lowercase()] = item
+                if (item.name.isNotBlank()) {
+                    developerByKey[item.name.trim().lowercase()] = item
+                }
+            }
+        }
+
+        private fun computeBranchDiffAndCommits(sourceBranch: String, targetBranch: String) {
+            val sourceRef = ensureOriginBranch(sourceBranch)
+            val targetRef = ensureOriginBranch(targetBranch)
+            val compare = branchService.compare(targetRef, sourceRef)
+            latestChanges = if (compare.error == null) compare.changes else emptyList()
+
+            val repo = GitRepositoryManager.getInstance(project).repositories.firstOrNull()
+            latestCommits = if (repo == null) {
+                emptyList()
+            } else {
+                val source = toRemoteBranchRef(repo, sourceBranch)
+                val target = toRemoteBranchRef(repo, targetBranch)
+                val mergeBase = resolveMergeBase(repo, target, source)
+                val range = if (!mergeBase.isNullOrBlank()) "$mergeBase..$source" else "$target..$source"
+                loadCommitsByRange(repo, range)
+            }
+            latestMissingCommitHashes = if (repo == null || latestCommits.isEmpty()) {
+                emptySet()
+            } else {
+                findMissingCommitsInCurrentBranch(repo, latestCommits)
+            }
+            SwingUtilities.invokeLater { refreshDiffAndCommitView() }
+        }
+
+        private fun resolveReviewerSelection(picker: ReviewerPickerField): Pair<List<String>, List<Long>> {
+            val candidates = picker.getSelectedCandidates()
+            return candidates.map { it.username } to candidates.map { it.id }.distinct()
+        }
+
+        private fun submit() {
+            val title = titleField.text.trim()
+            if (title.isBlank()) {
+                Messages.showErrorDialog(project, "标题不能为空", "创建 PR")
+                return
+            }
+            val desc = descField.text.trim()
+            if (desc.isBlank()) {
+                Messages.showErrorDialog(project, "描述不能为空", "创建 PR")
+                return
+            }
+            val source = (sourceBranchBox.selectedItem as? String).orEmpty().trim()
+            val target = (targetBranchBox.selectedItem as? String).orEmpty().trim()
+            if (source.isBlank() || target.isBlank()) {
+                Messages.showErrorDialog(project, "请选择源分支和目标分支", "创建 PR")
+                return
+            }
+            if (source == target) {
+                Messages.showErrorDialog(project, "源分支和目标分支不能相同", "创建 PR")
+                return
+            }
+            if (!precheckBlockedReason.isNullOrBlank()) {
+                Messages.showErrorDialog(project, precheckBlockedReason, "创建 PR")
+                return
+            }
+
+            val (primaryNames, primaryIds) = resolveReviewerSelection(primaryReviewerPicker)
+            val (_, generalIds) = resolveReviewerSelection(generalReviewerPicker)
+
+            if (mandatoryPrimaryUsers.isNotEmpty()) {
+                val missingPrimary = mandatoryPrimaryUsers.filterNot { primaryNames.contains(it) }
+                if (missingPrimary.isNotEmpty()) {
+                    Messages.showErrorDialog(project, "关键评审人不可删除，缺失: ${missingPrimary.joinToString(",")}", "创建 PR")
+                    return
+                }
+            }
+
+            val rawPrimaryNum = (primaryNumSpinner.value as? Int) ?: 0
+            val rawGeneralNum = (generalNumSpinner.value as? Int) ?: 0
+            val primaryNum = if (primaryIds.isEmpty() && minimumPrimary == 0) 0 else rawPrimaryNum
+            val generalNum = if (generalIds.isEmpty() && minimumGeneral == 0) 0 else rawGeneralNum
+            val finalMinPrimary = maxOf(minimumPrimary, if (primaryIds.isNotEmpty()) 1 else 0)
+            val finalMinGeneral = maxOf(minimumGeneral, if (generalIds.isNotEmpty()) 1 else 0)
+            if (primaryNum < finalMinPrimary) {
+                Messages.showErrorDialog(project, "关键评审最少通过人数不能小于 $finalMinPrimary", "创建 PR")
+                return
+            }
+            if (primaryNum > primaryIds.size) {
+                Messages.showErrorDialog(project, "关键评审最少通过人数不能大于当前已选关键评审人数", "创建 PR")
+                return
+            }
+            if (generalNum < finalMinGeneral) {
+                Messages.showErrorDialog(project, "普通评审最少通过人数不能小于 $finalMinGeneral", "创建 PR")
+                return
+            }
+            if (generalNum > generalIds.size) {
+                Messages.showErrorDialog(project, "普通评审最少通过人数不能大于当前已选评审人数", "创建 PR")
+                return
+            }
+
+            val mergeType = resolveMergeTypeValue(mergeTypeBox.selectedItem as? String)
+            setSubmitEnabled(false)
+            ApplicationManager.getApplication().executeOnPooledThread {
+                try {
+                    val body = if (mockEnabled) {
+                        readMockJson(mockCreatePrFile)
+                            ?: throw IllegalStateException("Mock文件不存在: $mockDir/$mockCreatePrFile")
+                    } else {
+                        val response = apiService.createPr(
+                            sshPath = resolveGitAddress(),
+                            title = title,
+                            head = source,
+                            base = target,
+                            body = desc,
+                            assigneesIds = generalIds,
+                            assigneesNum = generalNum,
+                            primaryAssigneesIds = primaryIds,
+                            primaryAssigneesNum = primaryNum,
+                            pruneBranch = deleteSourceBranchCheck.isSelected,
+                            defaultMergeType = mergeType
+                        )
+                        if (response.statusCode() !in 200..299) {
+                            SwingUtilities.invokeLater {
+                                setSubmitEnabled(true)
+                                Messages.showErrorDialog(project, "创建失败: ${response.statusCode()}", "创建 PR")
+                            }
+                            return@executeOnPooledThread
+                        }
+                        response.body()
+                    }
+                    val root = objectMapper.readTree(body)
+                    val result = root.get("result") ?: root
+                    val success = when {
+                        result.isBoolean -> result.asBoolean(false)
+                        result.isObject -> result.get("success")?.asBoolean(false) ?: (result.get("code")?.asInt() == 200)
+                        else -> false
+                    }
+                    if (!success) {
+                        val message = result.readText("message", "code").ifBlank { "创建失败" }
+                        SwingUtilities.invokeLater {
+                            setSubmitEnabled(true)
+                            Messages.showErrorDialog(project, message, "创建 PR")
+                        }
+                        return@executeOnPooledThread
+                    }
+                    SwingUtilities.invokeLater {
+                        updateStatus("创建 PR 成功")
+                        exitCreatePrView()
+                        resetAndLoad()
+                    }
+                } catch (e: Exception) {
+                    PrManagerFileLogger.error("Create PR from inline view failed", e)
+                    SwingUtilities.invokeLater {
+                        setSubmitEnabled(true)
+                        Messages.showErrorDialog(project, e.message ?: "创建失败", "创建 PR")
+                    }
+                }
+            }
+        }
+    }
+
+    private inner class CreatePrDialog(project: Project) : com.intellij.openapi.ui.DialogWrapper(project) {
+        private val sourceBranchBox = javax.swing.JComboBox<String>()
+        private val targetBranchBox = javax.swing.JComboBox<String>()
+        private val titleField = JBTextField()
+        private val descField = JBTextArea()
+        private val primaryReviewersField = JBTextField()
+        private val generalReviewersField = JBTextField()
+        private val primaryNumSpinner = javax.swing.JSpinner(javax.swing.SpinnerNumberModel(0, 0, 999, 1))
+        private val generalNumSpinner = javax.swing.JSpinner(javax.swing.SpinnerNumberModel(0, 0, 999, 1))
+        private val deleteSourceBranchCheck = JBCheckBox("合并后删除源分支", false)
+        private val mergeTypeBox = javax.swing.JComboBox(arrayOf("", "merge", "squash"))
+        private val autoMergeLabel = JBLabel("自动合并：-")
+        private val validationLabel = JBLabel(" ")
+        private val diffSummaryArea = JBTextArea()
+        private val commitSummaryArea = JBTextArea()
+
+        private val developerByKey = mutableMapOf<String, DeveloperCandidate>()
+        private var mandatoryPrimaryUsers: Set<String> = emptySet()
+        private var minimumPrimary = 0
+        private var minimumGeneral = 0
+        private var precheckBlockedReason: String? = null
+        private var latestChanges: List<ChangeItem> = emptyList()
+        private var latestCommits: List<CommitItem> = emptyList()
+
+        init {
+            title = "创建 Pull Request"
+            setOKButtonText("提交 Pull Request")
+            setCancelButtonText("取消")
+            init()
+            validationLabel.foreground = JBColor(Color(0xD93025), Color(0xF47067))
+            autoMergeLabel.foreground = detailMutedColor()
+            descField.rows = 5
+            descField.lineWrap = true
+            descField.wrapStyleWord = true
+            listOf(diffSummaryArea, commitSummaryArea).forEach {
+                it.isEditable = false
+                it.rows = 8
+                it.lineWrap = false
+                it.font = Font(Font.MONOSPACED, Font.PLAIN, (globalUiFontSize - 1f).coerceAtLeast(11f).toInt())
+            }
+            val listener = object : java.awt.event.ItemListener {
+                override fun itemStateChanged(e: java.awt.event.ItemEvent?) {
+                    if (e?.stateChange == java.awt.event.ItemEvent.SELECTED) {
+                        triggerBranchRefresh()
+                    }
+                }
+            }
+            sourceBranchBox.addItemListener(listener)
+            targetBranchBox.addItemListener(listener)
+            loadInitialData()
+        }
+
+        override fun createCenterPanel(): JComponent {
+            val panel = JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                border = JBUI.Borders.empty(12)
+                preferredSize = Dimension(JBUI.scale(920), JBUI.scale(700))
+            }
+
+            val branchRow = JPanel(GridLayout(1, 2, JBUI.scale(8), 0)).apply {
+                isOpaque = false
+                add(section("源分支", sourceBranchBox as JComponent))
+                add(section("目标分支", targetBranchBox as JComponent))
+            }
+
+            val reviewerCard = JPanel(GridLayout(2, 2, JBUI.scale(8), JBUI.scale(8))).apply {
+                isOpaque = false
+                add(section("关键评审人（逗号分隔，OA或姓名）", primaryReviewersField))
+                add(section("关键评审最少通过人数", primaryNumSpinner as JComponent))
+                add(section("普通评审人（逗号分隔，OA或姓名）", generalReviewersField))
+                add(section("普通评审最少通过人数", generalNumSpinner as JComponent))
+            }
+
+            val mergeSettingRow = JPanel(GridLayout(1, 2, JBUI.scale(8), 0)).apply {
+                isOpaque = false
+                add(section("合并方式（可选）", mergeTypeBox as JComponent))
+                add(section("其他", JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(8), 0)).apply {
+                    isOpaque = false
+                    add(deleteSourceBranchCheck)
+                }))
+            }
+
+            val tabs = JBTabbedPane().apply {
+                addTab("概览", createDetailScrollPane(JPanel().apply {
+                    layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                    isOpaque = false
+                    border = JBUI.Borders.empty(8)
+                    add(section("标题", titleField))
+                    add(section("描述", JBScrollPane(descField)))
+                    add(section("分支预检", autoMergeLabel))
+                    add(reviewerCard)
+                    add(Box.createVerticalStrut(JBUI.scale(8)))
+                    add(mergeSettingRow)
+                    add(Box.createVerticalStrut(JBUI.scale(8)))
+                    add(validationLabel)
+                }, ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED, ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER) { detailTabPaneFill() })
+                addTab("文件改动", section("分支差异", JBScrollPane(diffSummaryArea)))
+                addTab("提交记录", section("将合并的提交", JBScrollPane(commitSummaryArea)))
+            }
+
+            panel.add(branchRow)
+            panel.add(Box.createVerticalStrut(JBUI.scale(10)))
+            panel.add(tabs)
+            return panel
+        }
+
+        private fun loadInitialData() {
+            setOKActionEnabled(false)
+            ApplicationManager.getApplication().executeOnPooledThread {
+                try {
+                    fetchRemoteBranches()
+                    val branches = collectBranchNames()
+                    val developers = loadDevelopersFromApi("")
+                    SwingUtilities.invokeLater {
+                        sourceBranchBox.removeAllItems()
+                        targetBranchBox.removeAllItems()
+                        branches.forEach {
+                            sourceBranchBox.addItem(it)
+                            targetBranchBox.addItem(it)
+                        }
+                        val repo = GitRepositoryManager.getInstance(project).repositories.firstOrNull()
+                        val currentBranch = repo?.currentBranchName?.trim().orEmpty()
+                        if (currentBranch.isNotBlank() && branches.contains(currentBranch)) {
+                            sourceBranchBox.selectedItem = currentBranch
+                        }
+                        val target = when {
+                            branches.contains("main") -> "main"
+                            branches.contains("master") -> "master"
+                            else -> branches.firstOrNull().orEmpty()
+                        }
+                        if (target.isNotBlank()) {
+                            targetBranchBox.selectedItem = target
+                        }
+                        indexDevelopers(developers)
+                        triggerBranchRefresh()
+                    }
+                } catch (e: Exception) {
+                    PrManagerFileLogger.error("Load create PR dialog initial data failed", e)
+                    SwingUtilities.invokeLater {
+                        precheckBlockedReason = e.message ?: "初始化失败"
+                        updateValidationState()
+                    }
+                }
+            }
+        }
+
+        private fun collectBranchNames(): List<String> {
+            val repo = GitRepositoryManager.getInstance(project).repositories.firstOrNull() ?: return emptyList()
+            val handler = GitLineHandler(project, repo.root, GitCommand.BRANCH)
+            handler.addParameters("-a", "--no-color")
+            val result = Git.getInstance().runCommand(handler)
+            if (!result.success()) return emptyList()
+            return result.output.mapNotNull { rawLine ->
+                val line = rawLine.trim().removePrefix("*").trim()
+                if (line.isBlank() || line.contains("->")) return@mapNotNull null
+                val normalized = line.removePrefix("remotes/")
+                    .removePrefix("origin/")
+                    .removePrefix("refs/heads/")
+                    .removePrefix("refs/remotes/origin/")
+                normalized.takeIf { it.isNotBlank() }
+            }.distinct().sorted()
+        }
+
+        private fun triggerBranchRefresh() {
+            val source = (sourceBranchBox.selectedItem as? String).orEmpty().trim()
+            val target = (targetBranchBox.selectedItem as? String).orEmpty().trim()
+            if (source.isBlank() || target.isBlank()) {
+                precheckBlockedReason = "请选择源分支和目标分支"
+                updateValidationState()
+                return
+            }
+            if (source == target) {
+                precheckBlockedReason = "源分支和目标分支不能相同"
+                latestChanges = emptyList()
+                latestCommits = emptyList()
+                refreshDiffAndCommitText()
+                updateValidationState()
+                return
+            }
+            setOKActionEnabled(false)
+            precheckBlockedReason = "正在校验分支..."
+            updateValidationState()
+            ApplicationManager.getApplication().executeOnPooledThread {
+                try {
+                    fetchRemoteBranches()
+                    val check = runPreCreateCheck(source, target)
+                    applyPrecheckResult(check)
+                    loadDevelopersByCurrentSelections(source, target)
+                    computeBranchDiffAndCommits(source, target)
+                } catch (e: Exception) {
+                    PrManagerFileLogger.error("Refresh create PR branch state failed", e)
+                    precheckBlockedReason = e.message ?: "校验失败"
+                }
+                SwingUtilities.invokeLater { updateValidationState() }
+            }
+        }
+
+        private fun runPreCreateCheck(source: String, target: String): PreCreateCheck {
+            if (mockEnabled) {
+                val mockJson = readMockJson(mockCanCreatePrFile)
+                    ?: throw IllegalStateException("Mock文件不存在: $mockDir/$mockCanCreatePrFile")
+                return parsePreCreateCheck(mockJson)
+            }
+            val response = apiService.canCreatePr(
+                sshPath = resolveGitAddress(),
+                sourceBranch = source,
+                targetBranch = target,
+                projectId = repoProjectId.ifBlank { null }
+            )
+            if (response.statusCode() !in 200..299) {
+                return PreCreateCheck(response.statusCode(), "分支校验失败", false, emptyList(), emptyList(), 0, 0)
+            }
+            return parsePreCreateCheck(response.body())
+        }
+
+        private fun parsePreCreateCheck(body: String): PreCreateCheck {
+            val root = objectMapper.readTree(body)
+            val result = root.get("result") ?: root
+            val data = result.get("data")
+            val code = data?.get("code")?.asInt() ?: result.get("code")?.asInt() ?: 500
+            val message = data?.readText("message", "warningMessage").orEmpty()
+                .ifBlank { result.readText("message") }
+            val canBeAutomerge = data?.get("canBeAutomerge")?.asBoolean() == true
+            val primary = parseDeveloperCandidates(data?.get("primaryReviewers"))
+            val general = parseDeveloperCandidates(data?.get("generalReviewers"))
+            val primaryNum = data?.get("primaryReviewerNum")?.asInt() ?: if (primary.isNotEmpty()) 1 else 0
+            val generalNum = data?.get("generalReviewerNum")?.asInt() ?: if (general.isNotEmpty()) 1 else 0
+            return PreCreateCheck(code, message, canBeAutomerge, primary, general, primaryNum, generalNum)
+        }
+
+        private fun parseDeveloperCandidates(node: JsonNode?): List<DeveloperCandidate> {
+            if (node == null || !node.isArray) return emptyList()
+            return node.mapNotNull { item ->
+                val id = item.get("id")?.asLong() ?: return@mapNotNull null
+                val username = item.readText("username", "login", "userName")
+                val name = item.readText("name", "login", "username", "userName")
+                val finalUsername = username.ifBlank { name }
+                if (finalUsername.isBlank()) return@mapNotNull null
+                DeveloperCandidate(id = id, username = finalUsername, name = name)
+            }
+        }
+
+        private fun applyPrecheckResult(check: PreCreateCheck) {
+            mandatoryPrimaryUsers = check.primaryReviewers.map { it.username }.toSet()
+            minimumPrimary = check.primaryReviewerNum.coerceAtLeast(if (check.primaryReviewers.isNotEmpty()) 1 else 0)
+            minimumGeneral = check.generalReviewerNum.coerceAtLeast(if (check.generalReviewers.isNotEmpty()) 1 else 0)
+            if (check.code == 200) {
+                precheckBlockedReason = null
+            } else {
+                precheckBlockedReason = check.message.ifBlank { "分支不满足创建条件，code=${check.code}" }
+            }
+            SwingUtilities.invokeLater {
+                autoMergeLabel.text = "自动合并：" + if (check.canBeAutomerge) "可自动合并" else "不可自动合并"
+                autoMergeLabel.foreground = if (check.canBeAutomerge) {
+                    JBColor(Color(0x1E8E3E), Color(0x57D163))
+                } else {
+                    JBColor(Color(0xF29900), Color(0xF6C26B))
+                }
+                if (check.primaryReviewers.isNotEmpty()) {
+                    primaryReviewersField.text = check.primaryReviewers.joinToString(",") { it.username }
+                }
+                if (check.generalReviewers.isNotEmpty()) {
+                    generalReviewersField.text = check.generalReviewers.joinToString(",") { it.username }
+                }
+                (primaryNumSpinner.model as javax.swing.SpinnerNumberModel).minimum = minimumPrimary
+                (generalNumSpinner.model as javax.swing.SpinnerNumberModel).minimum = minimumGeneral
+                primaryNumSpinner.value = maxOf((primaryNumSpinner.value as? Int) ?: 0, minimumPrimary)
+                generalNumSpinner.value = maxOf((generalNumSpinner.value as? Int) ?: 0, minimumGeneral)
+            }
+            indexDevelopers(check.primaryReviewers + check.generalReviewers)
+        }
+
+        private fun loadDevelopersByCurrentSelections(source: String, target: String) {
+            if (mandatoryPrimaryUsers.isNotEmpty() || minimumGeneral > 0 || minimumPrimary > 0) return
+            val developers = loadDevelopersFromApi("")
+            indexDevelopers(developers)
+            val currentPrimary = parseReviewerInput(primaryReviewersField.text)
+            val currentGeneral = parseReviewerInput(generalReviewersField.text)
+            if (currentPrimary.isNotEmpty()) {
+                minimumPrimary = maxOf(minimumPrimary, 1)
+            }
+            if (currentGeneral.isNotEmpty()) {
+                minimumGeneral = maxOf(minimumGeneral, 1)
+            }
+            SwingUtilities.invokeLater {
+                (primaryNumSpinner.model as javax.swing.SpinnerNumberModel).minimum = minimumPrimary
+                (generalNumSpinner.model as javax.swing.SpinnerNumberModel).minimum = minimumGeneral
+                primaryNumSpinner.value = maxOf((primaryNumSpinner.value as? Int) ?: 0, minimumPrimary)
+                generalNumSpinner.value = maxOf((generalNumSpinner.value as? Int) ?: 0, minimumGeneral)
+                if (source == target) {
+                    precheckBlockedReason = "源分支和目标分支不能相同"
+                }
+            }
+        }
+
+        private fun loadDevelopersFromApi(keywords: String): List<DeveloperCandidate> {
+            if (mockEnabled) {
+                val mockJson = readMockJson(mockDevelopersFile)
+                    ?: throw IllegalStateException("Mock文件不存在: $mockDir/$mockDevelopersFile")
+                val root = objectMapper.readTree(mockJson)
+                val result = root.get("result") ?: root
+                val data = result.get("data")
+                val list = data?.get("developers")
+                return parseDeveloperCandidates(list)
+            }
+            val response = apiService.fetchDevelopers(
+                sshPath = resolveGitAddress(),
+                projectId = repoProjectId.ifBlank { null },
+                keywords = keywords
+            )
+            if (response.statusCode() !in 200..299) return emptyList()
+            val root = objectMapper.readTree(response.body())
+            val result = root.get("result") ?: root
+            val data = result.get("data")
+            val list = data?.get("developers")
+            return parseDeveloperCandidates(list)
+        }
+
+        private fun indexDevelopers(items: List<DeveloperCandidate>) {
+            if (items.isEmpty()) return
+            items.forEach { item ->
+                developerByKey[item.username.trim().lowercase()] = item
+                if (item.name.isNotBlank()) {
+                    developerByKey[item.name.trim().lowercase()] = item
+                }
+            }
+        }
+
+        private fun computeBranchDiffAndCommits(sourceBranch: String, targetBranch: String) {
+            val sourceRef = ensureOriginBranch(sourceBranch)
+            val targetRef = ensureOriginBranch(targetBranch)
+            val compare = branchService.compare(targetRef, sourceRef)
+            latestChanges = if (compare.error == null) compare.changes else emptyList()
+
+            val repo = GitRepositoryManager.getInstance(project).repositories.firstOrNull()
+            latestCommits = if (repo == null) {
+                emptyList()
+            } else {
+                val source = toRemoteBranchRef(repo, sourceBranch)
+                val target = toRemoteBranchRef(repo, targetBranch)
+                val mergeBase = resolveMergeBase(repo, target, source)
+                val range = if (!mergeBase.isNullOrBlank()) "$mergeBase..$source" else "$target..$source"
+                loadCommitsByRange(repo, range)
+            }
+            SwingUtilities.invokeLater { refreshDiffAndCommitText() }
+        }
+
+        private fun refreshDiffAndCommitText() {
+            diffSummaryArea.text = if (latestChanges.isEmpty()) {
+                "暂无文件改动"
+            } else {
+                latestChanges.joinToString("\n") { item ->
+                    val stats = buildString {
+                        if (item.additions > 0) append("+${item.additions} ")
+                        if (item.deletions > 0) append("-${item.deletions}")
+                    }.trim()
+                    "${item.changeType.padEnd(2, ' ')}  ${item.filePath}${if (stats.isBlank()) "" else "  ($stats)"}"
+                }
+            }
+            commitSummaryArea.text = if (latestCommits.isEmpty()) {
+                "暂无提交记录"
+            } else {
+                latestCommits.joinToString("\n") { commit ->
+                    "${if (commit.hash.length > 7) commit.hash.take(7) else commit.hash}  ${commit.author}  ${commit.time}  ${commit.message}"
+                }
+            }
+        }
+
+        private fun parseReviewerInput(raw: String): List<String> {
+            return raw.split(',', '，', ';', '；', '\n', '\t', ' ')
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+                .distinct()
+        }
+
+        private fun resolveReviewerIds(rawInput: String): Pair<List<String>, List<Long>> {
+            val names = parseReviewerInput(rawInput)
+            val resolved = names.mapNotNull { name -> developerByKey[name.lowercase()] }
+            if (names.size != resolved.size) {
+                val resolvedKeys = resolved.flatMap { listOf(it.username.lowercase(), it.name.lowercase()) }.toSet()
+                val missing = names.filterNot { resolvedKeys.contains(it.lowercase()) }
+                throw IllegalArgumentException("评审人未匹配到仓库成员: ${missing.joinToString(",")}")
+            }
+            return names to resolved.map { it.id }.distinct()
+        }
+
+        private fun updateValidationState() {
+            val msg = precheckBlockedReason
+            val blocked = !msg.isNullOrBlank() && msg != "正在校验分支..."
+            validationLabel.text = if (msg.isNullOrBlank()) "" else msg
+            validationLabel.foreground = if (blocked) {
+                JBColor(Color(0xD93025), Color(0xF47067))
+            } else {
+                JBColor(Color(0x5F6368), Color(0x9AA0A6))
+            }
+            setOKActionEnabled(msg.isNullOrBlank() || msg == "")
+        }
+
+        override fun doOKAction() {
+            val title = titleField.text.trim()
+            if (title.isBlank()) {
+                Messages.showErrorDialog(project, "标题不能为空", "创建 PR")
+                return
+            }
+            val source = (sourceBranchBox.selectedItem as? String).orEmpty().trim()
+            val target = (targetBranchBox.selectedItem as? String).orEmpty().trim()
+            if (source.isBlank() || target.isBlank()) {
+                Messages.showErrorDialog(project, "请选择源分支和目标分支", "创建 PR")
+                return
+            }
+            if (source == target) {
+                Messages.showErrorDialog(project, "源分支和目标分支不能相同", "创建 PR")
+                return
+            }
+            if (!precheckBlockedReason.isNullOrBlank()) {
+                Messages.showErrorDialog(project, precheckBlockedReason, "创建 PR")
+                return
+            }
+
+            val (primaryNames, primaryIds) = try {
+                resolveReviewerIds(primaryReviewersField.text)
+            } catch (e: Exception) {
+                Messages.showErrorDialog(project, e.message ?: "关键评审人解析失败", "创建 PR")
+                return
+            }
+            val (_, generalIds) = try {
+                resolveReviewerIds(generalReviewersField.text)
+            } catch (e: Exception) {
+                Messages.showErrorDialog(project, e.message ?: "普通评审人解析失败", "创建 PR")
+                return
+            }
+
+            if (mandatoryPrimaryUsers.isNotEmpty()) {
+                val missingPrimary = mandatoryPrimaryUsers.filterNot { primaryNames.contains(it) }
+                if (missingPrimary.isNotEmpty()) {
+                    Messages.showErrorDialog(project, "关键评审人不可删除，缺失: ${missingPrimary.joinToString(",")}", "创建 PR")
+                    return
+                }
+            }
+
+            val primaryNum = (primaryNumSpinner.value as? Int) ?: 0
+            val generalNum = (generalNumSpinner.value as? Int) ?: 0
+            val finalMinPrimary = if (minimumPrimary == 0 && primaryIds.isNotEmpty()) 1 else minimumPrimary
+            val finalMinGeneral = if (minimumGeneral == 0 && generalIds.isNotEmpty()) 1 else minimumGeneral
+            if (primaryNum < finalMinPrimary) {
+                Messages.showErrorDialog(project, "关键评审最少通过人数不能小于 $finalMinPrimary", "创建 PR")
+                return
+            }
+            if (primaryNum > primaryIds.size) {
+                Messages.showErrorDialog(project, "关键评审最少通过人数不能大于当前已选关键评审人数", "创建 PR")
+                return
+            }
+            if (generalNum < finalMinGeneral) {
+                Messages.showErrorDialog(project, "普通评审最少通过人数不能小于 $finalMinGeneral", "创建 PR")
+                return
+            }
+            if (generalNum > generalIds.size) {
+                Messages.showErrorDialog(project, "普通评审最少通过人数不能大于当前已选评审人数", "创建 PR")
+                return
+            }
+
+            val desc = descField.text.trim().ifBlank {
+                latestCommits.joinToString("\n") { it.message }.ifBlank { title }
+            }
+            val mergeType = (mergeTypeBox.selectedItem as? String).orEmpty().trim()
+            setOKActionEnabled(false)
+
+            ApplicationManager.getApplication().executeOnPooledThread {
+                try {
+                    val body = if (mockEnabled) {
+                        readMockJson(mockCreatePrFile)
+                            ?: throw IllegalStateException("Mock文件不存在: $mockDir/$mockCreatePrFile")
+                    } else {
+                        val response = apiService.createPr(
+                            sshPath = resolveGitAddress(),
+                            title = title,
+                            head = source,
+                            base = target,
+                            body = desc,
+                            assigneesIds = generalIds,
+                            assigneesNum = generalNum,
+                            primaryAssigneesIds = primaryIds,
+                            primaryAssigneesNum = primaryNum,
+                            pruneBranch = deleteSourceBranchCheck.isSelected,
+                            defaultMergeType = mergeType
+                        )
+                        if (response.statusCode() !in 200..299) {
+                            SwingUtilities.invokeLater {
+                                setOKActionEnabled(true)
+                                Messages.showErrorDialog(project, "创建失败: ${response.statusCode()}", "创建 PR")
+                            }
+                            return@executeOnPooledThread
+                        }
+                        response.body()
+                    }
+                    val root = objectMapper.readTree(body)
+                    val result = root.get("result") ?: root
+                    val success = when {
+                        result.isBoolean -> result.asBoolean(false)
+                        result.isObject -> result.get("success")?.asBoolean(false) ?: (result.get("code")?.asInt() == 200)
+                        else -> false
+                    }
+                    if (!success) {
+                        val message = result.readText("message", "code").ifBlank { "创建失败" }
+                        SwingUtilities.invokeLater {
+                            setOKActionEnabled(true)
+                            Messages.showErrorDialog(project, message, "创建 PR")
+                        }
+                        return@executeOnPooledThread
+                    }
+                    SwingUtilities.invokeLater {
+                        updateStatus("创建 PR 成功")
+                        close(OK_EXIT_CODE)
+                        resetAndLoad()
+                    }
+                } catch (e: Exception) {
+                    PrManagerFileLogger.error("Create PR failed", e)
+                    SwingUtilities.invokeLater {
+                        setOKActionEnabled(true)
+                        Messages.showErrorDialog(project, e.message ?: "创建失败", "创建 PR")
+                    }
+                }
             }
         }
     }

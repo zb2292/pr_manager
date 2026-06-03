@@ -1,0 +1,38 @@
+{
+  "result": {
+    "prId": 101,
+    "reviewFlag": 2,
+    "validFlag": true,
+    "aiCodeReviewIssueErrorCount": 2,
+    "aiCodeReviewIssueWarnCount": 1,
+    "aiCodeReviewIssueUnhandledCount": 2,
+    "aiCodeReviewIssueAdoptedCount": 1,
+    "aiCodeReviewIssueIgnoredCount": 0,
+    "aiCodeReviewIssueMisreportedCount": 0,
+    "fileTreeNode": [
+      {
+        "nodeName": "merge-request-integration-core",
+        "type": "FOLDER",
+        "issueErrorCount": 0,
+        "issueWarnCount": 0,
+        "children": [
+          {
+            "nodeName": "src/main/kotlin/net/ntworld/mergeRequestIntegrationIde/compatibility/Version203Adapter.kt",
+            "type": "FILE",
+            "issueErrorCount": 1,
+            "issueWarnCount": 1,
+            "children": []
+          },
+          {
+            "nodeName": "src/main/kotlin/net/ntworld/mergeRequestIntegrationIde/compatibility/Version201Adapter.kt",
+            "type": "FILE",
+            "issueErrorCount": 1,
+            "issueWarnCount": 0,
+            "children": []
+          }
+        ]
+      }
+    ]
+  },
+  "type": "S"
+}

@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>新建 PR 页面 - 高保真交互 Mockup</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                    colors: {
+                        ide: {
+                            accent: '#3574f0',
+                            accentHover: '#4682f2',
+                            success: '#5c962c',
+                            warning: '#b28c00',
+                            danger: '#c75450'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            transition: background-color 0.2s ease, color 0.2s ease;
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: rgba(120, 120, 120, 0.3);
+            border-radius: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: rgba(120, 120, 120, 0.5);
+        }
+        /* Tab underline animation */
+        .tab-btn {
+            position: relative;
+            transition: all 0.15s ease;
+        }
+        .tab-btn.active::after {
+            content: '';
+            position: absolute;
+            bottom: -1px;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background-color: currentColor;
+            border-radius: 2px 2px 0 0;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen p-6 flex flex-col items-center justify-center dark">
+
+    <!-- Theme Switcher & Info -->
+    <div class="w-[1100px] mb-4 flex justify-between items-center px-2">
+        <div class="flex items-center space-x-3">
+            <span class="text-xs bg-blue-600/30 text-blue-400 px-2 py-1 rounded-md font-medium border border-blue-500/20">高保真原型</span>
+            <h1 class="text-sm font-semibold text-gray-400 dark:text-gray-400">新建 Pull Request (完美双主题支持)</h1>
+        </div>
+        <div class="flex items-center space-x-3">
+            <button onclick="toggleTheme('dark')" id="dark-theme-btn" class="text-xs bg-blue-600 text-white font-medium px-3 py-1.5 rounded-l-md border border-blue-500/30 focus:outline-none transition-all duration-150">
+                深色主题 (Darcula)
+            </button>
+            <button onclick="toggleTheme('light')" id="light-theme-btn" class="text-xs bg-gray-800 text-gray-300 font-medium px-3 py-1.5 rounded-r-md border border-gray-700/30 -ml-3.5 focus:outline-none hover:bg-gray-700 transition-all duration-150">
+                浅色主题 (Light)
+            </button>
+        </div>
+    </div>
+
+    <!-- IDE Container -->
+    <div id="ide-window" class="w-[1100px] h-[720px] rounded-xl border flex flex-col overflow-hidden shadow-2xl transition-all duration-300 border-gray-300 bg-[#f7f8fa] text-[#202124] dark:border-[#43454a] dark:bg-[#1e1f22] dark:text-[#dfe1e5]">
+        
+        <!-- IDE Top Window Bar -->
+        <div class="h-10 border-b flex items-center justify-between px-4 select-none shrink-0 transition-colors duration-200 border-gray-300 bg-[#f0f2f5] dark:border-[#43454a] dark:bg-[#2b2d30]">
+            <div class="flex items-center space-x-2">
+                <div class="w-3 h-3 rounded-full bg-[#ff5f56]"></div>
+                <div class="w-3 h-3 rounded-full bg-[#ffbd2e]"></div>
+                <div class="w-3 h-3 rounded-full bg-[#27c93f]"></div>
+                <span class="text-xs font-semibold ml-2 font-mono text-gray-600 dark:text-[#a9b0ba]" id="ide-project-title">project - Git Pull Requests [新建原型]</span>
+            </div>
+            <div class="flex items-center space-x-4">
+                <span class="text-xs opacity-60 font-mono text-gray-500 dark:text-gray-400">Gitee PR Viewer 3.0</span>
+            </div>
+        </div>
+
+        <!-- Main Split Area -->
+        <div class="flex flex-1 overflow-hidden">
+            
+            <!-- Left Panel: PR List Panel -->
+            <div class="w-[320px] border-r flex flex-col shrink-0 overflow-hidden transition-colors duration-200 border-gray-300 bg-white dark:border-[#43454a] dark:bg-[#1e1f22]">
+                <!-- Header -->
+                <div class="p-3 border-b shrink-0 border-gray-300 bg-[#f0f2f5] dark:border-[#43454a] dark:bg-[#2b2d30]">
+                    <div class="flex items-center justify-between mb-3">
+                        <span class="text-xs font-bold uppercase tracking-wider text-gray-700 dark:text-[#dfe1e5] opacity-75">Pull Requests</span>
+                        <div class="flex space-x-1.5 text-gray-500 dark:text-[#a9b0ba]">
+                            <button class="p-1 rounded hover:bg-gray-200 dark:hover:bg-[#3c3f41] text-xs" title="刷新">🔄</button>
+                            <button class="p-1 rounded hover:bg-gray-200 dark:hover:bg-[#3c3f41] text-xs" title="搜索">🔍</button>
+                        </div>
+                    </div>
+                    <!-- Search Wrapper -->
+                    <div class="relative flex items-center rounded-md border border-gray-300 bg-white dark:border-[#43454a] dark:bg-[#1e1f22] px-2.5 py-1">
+                        <span class="text-xs opacity-50 mr-2 text-gray-400">🔍</span>
+                        <input type="text" placeholder="搜索 PR..." class="w-full bg-transparent text-xs outline-none focus:outline-none text-gray-800 dark:text-white" disabled>
+                    </div>
+                </div>
+
+                <!-- Filters & Create Action Line -->
+                <div class="p-2 border-b flex items-center justify-between shrink-0 border-gray-300 bg-[#f0f2f5] dark:border-[#43454a] dark:bg-[#2b2d30]">
+                    <!-- Rounded filter segments -->
+                    <div class="flex items-center bg-white rounded-lg p-0.5 border border-gray-300 dark:bg-[#1e1f22] dark:border-[#43454a]">
+                        <span class="px-2 py-1 text-[11px] rounded-md bg-blue-100 text-blue-600 dark:bg-blue-600/30 dark:text-blue-400 font-bold border border-blue-200 dark:border-blue-500/20 cursor-pointer">开启的</span>
+                        <span class="px-2 py-1 text-[11px] text-gray-500 dark:text-[#a9b0ba] hover:text-gray-900 dark:hover:text-[#dfe1e5] cursor-pointer">已合并</span>
+                        <span class="px-2 py-1 text-[11px] text-gray-500 dark:text-[#a9b0ba] hover:text-gray-900 dark:hover:text-[#dfe1e5] cursor-pointer">已关闭</span>
+                    </div>
+
+                    <!-- CREATE PR BUTTON -->
+                    <button onclick="enterCreatePrView()" class="px-2.5 py-1.5 rounded-lg bg-[#1a73e8] hover:bg-[#1557b0] dark:bg-blue-600 dark:hover:bg-blue-500 text-white font-semibold text-[11px] flex items-center space-x-1 shadow-md transition-all duration-150">
+                        <span>➕</span>
+                        <span>新建 PR</span>
+                    </button>
+                </div>
+
+                <!-- PR List cards container -->
+                <div class="flex-1 overflow-y-auto custom-scrollbar p-2 space-y-2 opacity-65 pointer-events-none select-none bg-gray-50 dark:bg-[#1e1f22]/50">
+                    <!-- Card 1 -->
+                    <div class="p-3 rounded-lg border border-gray-200 bg-white dark:border-[#43454a] dark:bg-[#2b2d30]">
+                        <div class="flex items-center justify-between mb-1">
+                            <span class="text-xs font-semibold text-gray-800 dark:text-[#dfe1e5]">#145 优化渲染核心性能</span>
+                            <span class="text-[10px] bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400 border border-green-200 dark:border-green-500/20 px-1.5 py-0.5 rounded">开启</span>
+                        </div>
+                        <div class="text-[10px] text-gray-500 dark:text-[#a9b0ba]">创建者: admin · 3小时前</div>
+                    </div>
+                    <!-- Card 2 -->
+                    <div class="p-3 rounded-lg border border-gray-200 bg-white dark:border-[#43454a] dark:bg-[#2b2d30]">
+                        <div class="flex items-center justify-between mb-1">
+                            <span class="text-xs font-semibold text-gray-800 dark:text-[#dfe1e5]">#144 接入评审相关API</span>
+                            <span class="text-[10px] bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-400 border border-purple-200 dark:border-purple-500/20 px-1.5 py-0.5 rounded">已合并</span>
+                        </div>
+                        <div class="text-[10px] text-gray-500 dark:text-[#a9b0ba]">创建者: user · 昨天</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Panel: PR Detail / Create Panel Card -->
+            <div class="flex-1 flex flex-col overflow-hidden bg-[#f7f8fa] dark:bg-[#1e1f22]">
+                
+                <!-- STATE A: EMPTY STATE (Initial default view) -->
+                <div id="view-empty" class="flex-1 flex flex-col items-center justify-center text-center p-8 bg-[#f7f8fa] dark:bg-[#1e1f22]">
+                    <div class="text-4xl mb-3 opacity-60">📂</div>
+                    <h3 class="text-sm font-semibold opacity-75 mb-1 text-gray-800 dark:text-white">未选择 Pull Request</h3>
+                    <p class="text-xs text-gray-500 dark:text-gray-400 max-w-[320px] mb-4">
+                        请从左侧列表中选择一个 PR 进行审查，或者点击左侧最右边的“新建 PR”按钮发起合并。
+                    </p>
+                    <button onclick="enterCreatePrView()" class="px-4 py-2 rounded-lg bg-white border border-gray-300 text-gray-700 hover:bg-gray-100 hover:border-gray-400 dark:bg-[#2b2d30] dark:border-[#43454a] dark:text-[#dfe1e5] dark:hover:bg-[#3574f0] dark:hover:text-white dark:hover:border-[#3574f0] text-xs font-medium transition-all duration-150">
+                        🚀 快速创建 Pull Request
+                    </button>
+                </div>
+
+                <!-- STATE B: CREATE NEW PR VIEW (Interactive Form Panel) -->
+                <div id="view-create" class="flex-1 flex flex-col overflow-hidden hidden fade-in bg-[#f7f8fa] dark:bg-[#1e1f22]">
+                    
+                    <!-- Form Title Header -->
+                    <div class="px-6 py-4 border-b flex items-center justify-between shrink-0 border-gray-300 bg-[#f0f2f5] dark:border-[#43454a] dark:bg-[#2b2d30]">
+                        <div class="flex items-center space-x-2">
+                            <span class="text-blue-600 dark:text-blue-500 text-xs font-bold uppercase px-2 py-0.5 rounded bg-blue-500/10 border border-blue-500/20">NEW</span>
+                            <h2 class="text-sm font-bold text-gray-800 dark:text-white" id="form-heading">创建 Pull Request</h2>
+                        </div>
+                        <button onclick="exitCreatePrView()" class="text-xs text-gray-500 dark:text-[#a9b0ba] hover:text-red-500 dark:hover:text-red-400 transition-all duration-150 flex items-center space-x-1 font-medium">
+                            <span>❌</span>
+                            <span>取消并返回</span>
+                        </button>
+                    </div>
+
+                    <!-- Branch Picker Cabin -->
+                    <div class="px-6 py-3 border-b flex items-center space-x-4 shrink-0 border-gray-300 bg-white dark:border-[#43454a] dark:bg-[#1e1f22]">
+                        <div class="flex-1 flex items-center space-x-3">
+                            <div class="flex flex-col flex-1">
+                                <label class="text-[10px] text-gray-500 dark:text-[#dfe1e5] opacity-65 mb-1 font-semibold">源分支 (Source Branch)</label>
+                                <select onchange="updateBranchDiffNotification()" id="src-branch" class="bg-white text-gray-800 dark:bg-[#2b2d30] dark:text-[#dfe1e5] border border-gray-300 dark:border-[#43454a] rounded px-2 py-1.5 text-xs outline-none cursor-pointer hover:border-blue-500">
+                                    <option value="feature/login-performance">feature/login-performance</option>
+                                    <option value="bugfix/auth-failed">bugfix/auth-failed</option>
+                                    <option value="main">main</option>
+                                </select>
+                            </div>
+                            
+                            <!-- Flow Arrow direction -->
+                            <div class="flex items-center justify-center pt-4 select-none">
+                                <span class="text-base text-blue-500 animate-pulse font-bold">➔</span>
+                            </div>
+
+                            <div class="flex flex-col flex-1">
+                                <label class="text-[10px] text-gray-500 dark:text-[#dfe1e5] opacity-65 mb-1 font-semibold">目标分支 (Target Branch)</label>
+                                <select onchange="updateBranchDiffNotification()" id="target-branch" class="bg-white text-gray-800 dark:bg-[#2b2d30] dark:text-[#dfe1e5] border border-gray-300 dark:border-[#43454a] rounded px-2 py-1.5 text-xs outline-none cursor-pointer hover:border-blue-500">
+                                    <option value="main">main</option>
+                                    <option value="dev">dev</option>
+                                    <option value="feature/login-performance">feature/login-performance</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Automatic Diff Delta Notification Badge -->
+                    <div class="px-6 py-2 border-b shrink-0 flex items-center justify-between border-gray-300 bg-gray-100/50 dark:border-[#43454a] dark:bg-[#2b2d30]/50" id="diff-notification-bar">
+                        <div class="flex items-center space-x-2 text-[11px] text-gray-700 dark:text-[#dfe1e5]">
+                            <span class="text-green-600 dark:text-green-500">✔</span>
+                            <span class="opacity-80">分支间代码可自动合并。共包含</span>
+                            <span class="font-bold text-green-600 dark:text-green-400 font-mono">3</span>
+                            <span class="opacity-80">个文件修改与</span>
+                            <span class="font-bold text-blue-600 dark:text-blue-400 font-mono">5</span>
+                            <span class="opacity-80">条提交记录。</span>
+                        </div>
+                        <span class="text-[10px] bg-green-500/10 text-green-700 dark:text-green-400 border border-green-200 dark:border-green-500/20 px-2 py-0.5 rounded-full font-medium">Ready</span>
+                    </div>
+
+                    <!-- Tab Headers in Creating State -->
+                    <div class="px-6 border-b shrink-0 flex items-center border-gray-300 bg-[#f0f2f5] dark:border-[#43454a] dark:bg-[#2b2d30]">
+                        <button onclick="switchCreateTab('tab-overview')" id="btn-tab-overview" class="tab-btn active px-4 py-2.5 text-xs font-semibold text-blue-600 dark:text-blue-500 border-blue-500 flex items-center space-x-2">
+                            <span>📝</span>
+                            <span>概览 (Overview)</span>
+                        </button>
+                        <button onclick="switchCreateTab('tab-diff')" id="btn-tab-diff" class="tab-btn px-4 py-2.5 text-xs font-medium text-gray-500 hover:text-gray-900 dark:text-[#a9b0ba] dark:hover:text-[#dfe1e5] flex items-center space-x-2">
+                            <span>📁</span>
+                            <span>文件改动</span>
+                            <span class="text-[10px] px-1.5 py-0.2 rounded-full bg-white text-gray-700 border border-gray-300 dark:border-none dark:bg-[#1e1f22] dark:text-[#dfe1e5] font-mono" id="diff-tab-badge">3</span>
+                        </button>
+                        <button onclick="switchCreateTab('tab-commits')" id="btn-tab-commits" class="tab-btn px-4 py-2.5 text-xs font-medium text-gray-500 hover:text-gray-900 dark:text-[#a9b0ba] dark:hover:text-[#dfe1e5] flex items-center space-x-2">
+                            <span>🕒</span>
+                            <span>提交记录</span>
+                            <span class="text-[10px] px-1.5 py-0.2 rounded-full bg-white text-gray-700 border border-gray-300 dark:border-none dark:bg-[#1e1f22] dark:text-[#dfe1e5] font-mono" id="commit-tab-badge">5</span>
+                        </button>
+                    </div>
+
+                    <!-- Tabs Content Panel -->
+                    <div class="flex-1 overflow-y-auto custom-scrollbar p-6 bg-white dark:bg-[#1e1f22]" id="create-tabs-container">
+                        
+                        <!-- TAB 1: OVERVIEW FORM -->
+                        <div id="tab-overview" class="tab-content space-y-5 fade-in">
+                            <!-- Title Field -->
+                            <div class="flex flex-col">
+                                <label class="text-[11px] font-bold text-gray-700 dark:text-gray-300 mb-1.5 flex items-center">
+                                    <span>标题 (Pull Request Title)</span>
+                                    <span class="text-red-500 ml-1 font-bold">*</span>
+                                </label>
+                                <input type="text" id="pr-form-title" placeholder="请输入 Pull Request 标题..." value="优化登录接口在 Windows 环境下的高并发缓存命中率" class="bg-white text-gray-800 dark:bg-[#2b2d30] dark:text-[#dfe1e5] border border-gray-300 dark:border-[#43454a] hover:border-gray-500 focus:border-blue-500 rounded px-3 py-2 text-xs outline-none">
+                            </div>
+
+                            <!-- Key Reviewers Selection -->
+                            <div class="flex flex-col">
+                                <div class="flex items-center justify-between mb-1.5">
+                                    <label class="text-[11px] font-bold text-gray-700 dark:text-gray-300">关键评审人 (Primary Reviewers)</label>
+                                    <span class="text-[10px] text-gray-400 dark:text-gray-500">支持下拉检索与多选标签</span>
+                                </div>
+                                <div class="border rounded p-2 flex flex-wrap gap-1.5 items-center bg-white dark:bg-[#2b2d30] border-gray-300 dark:border-[#43454a] text-gray-800 dark:text-[#dfe1e5]">
+                                    <!-- Selection Chips -->
+                                    <div class="flex items-center bg-blue-50 text-blue-600 dark:bg-blue-500/10 dark:text-blue-400 border border-blue-200 dark:border-blue-500/20 rounded-full px-2 py-0.5 text-[10px] font-medium space-x-1">
+                                        <span>👤 组长 admin</span>
+                                        <button class="hover:text-red-400 focus:outline-none ml-1">×</button>
+                                    </div>
+                                    <div class="flex items-center bg-blue-50 text-blue-600 dark:bg-blue-500/10 dark:text-blue-400 border border-blue-200 dark:border-blue-500/20 rounded-full px-2 py-0.5 text-[10px] font-medium space-x-1">
+                                        <span>👤 资深开发 arch01</span>
+                                        <button class="hover:text-red-400 focus:outline-none ml-1">×</button>
+                                    </div>
+                                    <input type="text" placeholder="+ 添加关键评审人" class="bg-transparent border-0 outline-none text-[11px] text-gray-700 dark:text-gray-300 placeholder-gray-400 dark:placeholder-gray-500 ml-1 py-0.5 max-w-[130px]">
+                                </div>
+                                <div class="text-[10px] text-gray-400 dark:text-gray-500 mt-1.5 flex items-center space-x-1.5 select-none pl-1">
+                                    <span>💡 至少需要</span>
+                                    <button onclick="changeNum('key-reviewer-count', -1)" class="w-4 h-4 rounded bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-300 flex items-center justify-center font-bold hover:bg-gray-300 dark:hover:bg-gray-600 focus:outline-none">-</button>
+                                    <span id="key-reviewer-count" class="font-bold text-blue-600 dark:text-blue-400">2</span>
+                                    <button onclick="changeNum('key-reviewer-count', 1)" class="w-4 h-4 rounded bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-300 flex items-center justify-center font-bold hover:bg-gray-300 dark:hover:bg-gray-600 focus:outline-none">+</button>
+                                    <span>名关键评审成员审查通过后可合并。</span>
+                                </div>
+                            </div>
+
+                            <!-- General Reviewers Selection -->
+                            <div class="flex flex-col">
+                                <label class="text-[11px] font-bold text-gray-700 dark:text-gray-300 mb-1.5">普通评审人 (General Reviewers)</label>
+                                <div class="border rounded p-2 flex flex-wrap gap-1.5 items-center bg-white dark:bg-[#2b2d30] border-gray-300 dark:border-[#43454a] text-gray-800 dark:text-[#dfe1e5]">
+                                    <!-- Selection Chips -->
+                                    <div class="flex items-center bg-gray-100 text-gray-600 dark:bg-gray-500/20 dark:text-gray-400 border border-gray-200 dark:border-gray-500/30 rounded-full px-2 py-0.5 text-[10px] font-medium space-x-1">
+                                        <span>👤 测试 developer_test</span>
+                                        <button class="hover:text-red-400 focus:outline-none ml-1">×</button>
+                                    </div>
+                                    <input type="text" placeholder="+ 添加普通评审人" class="bg-transparent border-0 outline-none text-[11px] text-gray-700 dark:text-gray-300 placeholder-gray-400 dark:placeholder-gray-500 ml-1 py-0.5 max-w-[130px]">
+                                </div>
+                                <div class="text-[10px] text-gray-400 dark:text-gray-500 mt-1.5 flex items-center space-x-1.5 select-none pl-1">
+                                    <span>💡 至少需要</span>
+                                    <button onclick="changeNum('general-reviewer-count', -1)" class="w-4 h-4 rounded bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-300 flex items-center justify-center font-bold hover:bg-gray-300 dark:hover:bg-gray-600 focus:outline-none">-</button>
+                                    <span id="general-reviewer-count" class="font-bold text-blue-600 dark:text-blue-400">2</span>
+                                    <button onclick="changeNum('general-reviewer-count', 1)" class="w-4 h-4 rounded bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-300 flex items-center justify-center font-bold hover:bg-gray-300 dark:hover:bg-gray-600 focus:outline-none">+</button>
+                                    <span>名评审成员审查通过后可合并。</span>
+                                </div>
+                            </div>
+
+                            <!-- Additional Merge Option Checklist -->
+                            <div class="flex flex-col pt-2 border-t border-gray-200 dark:border-[#43454a]/60">
+                                <label class="text-[11px] font-bold text-gray-700 dark:text-gray-300 mb-2.5">合并设置选项</label>
+                                <label class="inline-flex items-center space-x-2.5 cursor-pointer">
+                                    <input type="checkbox" checked class="rounded border-gray-300 bg-white dark:border-gray-600 dark:bg-gray-700 text-blue-600 focus:ring-0">
+                                    <span class="text-xs text-gray-700 dark:text-gray-300 opacity-85">接受 Pull Request 并自动合并后，自动删除源分支</span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- TAB 2: FILE DIFF -->
+                        <div id="tab-diff" class="tab-content space-y-4 fade-in hidden">
+                            <!-- Custom Tree -->
+                            <div class="rounded-lg border p-3 border-gray-300 bg-gray-50 dark:border-[#43454a] dark:bg-[#2b2d30]/40 font-mono text-[11px] space-y-2">
+                                <div class="flex items-center justify-between py-1 border-b border-gray-200 dark:border-gray-700 pb-2 mb-2">
+                                    <span class="text-xs font-bold text-gray-700 dark:text-gray-300">变更文件树预览</span>
+                                    <span class="text-[10px] text-gray-400 dark:text-gray-500">点击行可展开查看静态 Diff</span>
+                                </div>
+                                
+                                <!-- File node 1 -->
+                                <div class="flex items-center space-x-2 py-1 cursor-pointer hover:bg-gray-200/50 dark:hover:bg-gray-700/20 px-1 rounded">
+                                    <span class="text-green-600 dark:text-green-500 font-sans">✏</span>
+                                    <span class="text-gray-700 dark:text-gray-300">src/main/kotlin/com/gitee/prviewer/toolwindow/PrManagerPanel.kt</span>
+                                    <span class="text-[9px] bg-green-500/10 text-green-700 dark:text-green-400 px-1 py-0.1 rounded border border-green-300 dark:border-green-500/20 font-sans">+24 -8</span>
+                                </div>
+
+                                <!-- File node 2 -->
+                                <div class="flex items-center space-x-2 py-1 cursor-pointer hover:bg-gray-200/50 dark:hover:bg-gray-700/20 px-1 rounded">
+                                    <span class="text-green-600 dark:text-green-500 font-sans">✏</span>
+                                    <span class="text-gray-700 dark:text-gray-300">src/main/kotlin/com/gitee/prviewer/comment/LineCommentManager.kt</span>
+                                    <span class="text-[9px] bg-green-500/10 text-green-700 dark:text-green-400 px-1 py-0.1 rounded border border-green-300 dark:border-green-500/20 font-sans">+12 -3</span>
+                                </div>
+
+                                <!-- File node 3 -->
+                                <div class="flex items-center space-x-2 py-1 cursor-pointer hover:bg-gray-200/50 dark:hover:bg-gray-700/20 px-1 rounded">
+                                    <span class="text-blue-600 dark:text-blue-400 font-sans">📄</span>
+                                    <span class="text-gray-700 dark:text-gray-300">src/main/resources/mock/ai-review-overview.json</span>
+                                    <span class="text-[9px] bg-blue-500/10 text-blue-700 dark:text-blue-400 px-1 py-0.1 rounded border border-blue-300 dark:border-blue-500/20 font-sans">+1 -1</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- TAB 3: COMMITS TIMELINE -->
+                        <div id="tab-commits" class="tab-content space-y-4 fade-in hidden">
+                            <div class="rounded-lg border p-3 border-gray-300 bg-gray-50 dark:border-[#43454a] dark:bg-[#2b2d30]/40 font-mono text-[11px] space-y-4">
+                                <div class="flex items-center py-1 border-b border-gray-200 dark:border-gray-700 pb-2 mb-2">
+                                    <span class="text-xs font-bold text-gray-700 dark:text-gray-300">将合并的 Commit 链路 (最新在最前)</span>
+                                </div>
+
+                                <!-- Timeline elements -->
+                                <div class="relative pl-6 space-y-5">
+                                    <!-- Vertical bar -->
+                                    <div class="absolute left-1.5 top-2 bottom-2 w-[1px] bg-gray-300 dark:bg-gray-600/40"></div>
+
+                                    <!-- Commit 1 -->
+                                    <div class="relative">
+                                        <div class="absolute -left-6 top-1 w-3 h-3 rounded-full bg-[#1a73e8] dark:bg-blue-500 border border-white dark:border-gray-900 commit-dot"></div>
+                                        <div class="flex justify-between items-start">
+                                            <span class="text-gray-700 dark:text-gray-300 font-semibold text-xs">feat: 优化新建 PR 原型设计，增加双主题高保真支持</span>
+                                            <span class="text-[10px] text-gray-400 dark:text-gray-500">e2c7a8b · 3小时前</span>
+                                        </div>
+                                        <div class="text-[10px] text-gray-500 dark:text-gray-400 mt-1 font-sans">提交人: zhangbo</div>
+                                    </div>
+
+                                    <!-- Commit 2 -->
+                                    <div class="relative">
+                                        <div class="absolute -left-6 top-1 w-3 h-3 rounded-full bg-gray-400 dark:bg-gray-600 border border-white dark:border-gray-900 commit-dot"></div>
+                                        <div class="flex justify-between items-start">
+                                            <span class="text-gray-700 dark:text-gray-300 text-xs">fix: 修复 Windows 下 AI 弹窗点击偶发失效的问题</span>
+                                            <span class="text-[10px] text-gray-400 dark:text-gray-500">6a4d2e1 · 昨天</span>
+                                        </div>
+                                        <div class="text-[10px] text-gray-500 dark:text-gray-400 mt-1 font-sans">提交人: zhangbo</div>
+                                    </div>
+
+                                    <!-- Commit 3 -->
+                                    <div class="relative">
+                                        <div class="absolute -left-6 top-1 w-3 h-3 rounded-full bg-gray-400 dark:bg-gray-600 border border-white dark:border-gray-900 commit-dot"></div>
+                                        <div class="flex justify-between items-start">
+                                            <span class="text-gray-700 dark:text-gray-300 text-xs">style: 重新设计 AI 评审总览的高颜值卡片面板</span>
+                                            <span class="text-[10px] text-gray-400 dark:text-gray-500">c4b8e9d · 昨天</span>
+                                        </div>
+                                        <div class="text-[10px] text-gray-500 dark:text-gray-400 mt-1 font-sans">提交人: zhangbo</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Bottom Action Footer Console -->
+                    <div class="px-6 py-4 border-t flex items-center justify-between shrink-0 border-gray-300 bg-[#f0f2f5] dark:border-[#43454a] dark:bg-[#2b2d30]">
+                        <div class="text-[10px] text-gray-400 dark:text-gray-500">
+                        </div>
+                        <div class="flex items-center space-x-3">
+                            <button onclick="exitCreatePrView()" class="px-4 py-2 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700/20 text-gray-700 dark:text-gray-300 text-xs font-semibold transition-all duration-150">
+                                取消
+                            </button>
+                            <button onclick="submitNewPrForm()" class="px-4 py-2 rounded-lg bg-[#1a73e8] hover:bg-[#1557b0] dark:bg-blue-600 dark:hover:bg-blue-500 text-white text-xs font-semibold shadow-md hover:shadow-lg hover:shadow-blue-500/20 active:scale-[0.98] transition-all duration-150">
+                                提交 Pull Request
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <!-- Live Toast Notification Container -->
+    <div id="toast" class="fixed bottom-6 right-6 hidden transform translate-y-10 opacity-0 transition-all duration-300 bg-green-600 text-white px-5 py-3.5 rounded-xl shadow-2xl flex items-center space-x-3 border border-green-500/30 z-50">
+        <span class="text-xl">🎉</span>
+        <div class="flex flex-col">
+            <span class="text-xs font-bold font-sans">Pull Request 创建成功！</span>
+            <span class="text-[10px] opacity-85 mt-0.5">已自动向 admin 等 2 名评审人发起通知。</span>
+        </div>
+    </div>
+
+    <!-- UI Logic Controller -->
+    <script>
+        // Tab switching inside Create View
+        function switchCreateTab(tabId) {
+            // Find all content in right panel
+            const tabContainer = document.getElementById('create-tabs-container');
+            const tabs = tabContainer.querySelectorAll('.tab-content');
+            tabs.forEach(tab => tab.classList.add('hidden'));
+
+            // Toggle active style on tab button
+            const buttons = document.querySelectorAll('.tab-btn');
+            buttons.forEach(btn => {
+                btn.className = "tab-btn px-4 py-2.5 text-xs font-medium text-gray-500 hover:text-gray-900 dark:text-[#a9b0ba] dark:hover:text-[#dfe1e5] flex items-center space-x-2";
+            });
+
+            // Activate chosen tab
+            document.getElementById(tabId).classList.remove('hidden');
+            const activeBtn = document.getElementById('btn-' + tabId);
+            activeBtn.className = "tab-btn active px-4 py-2.5 text-xs font-semibold text-blue-600 dark:text-blue-500 border-blue-500 flex items-center space-x-2";
+        }
+
+        // Branch Selection Dynamic Update
+        function updateBranchDiffNotification() {
+            const src = document.getElementById('src-branch').value;
+            const target = document.getElementById('target-branch').value;
+            const bar = document.getElementById('diff-notification-bar');
+            const diffTabBadge = document.getElementById('diff-tab-badge');
+            const commitTabBadge = document.getElementById('commit-tab-badge');
+
+            if (src === target) {
+                bar.innerHTML = `
+                    <div class="flex items-center space-x-2 text-[11px]">
+                        <span class="text-yellow-600">⚠</span>
+                        <span class="font-bold text-yellow-600 dark:text-yellow-500">错误：源分支和目标分支不能相同。请重新选择差异分支。</span>
+                    </div>
+                    <span class="text-[10px] bg-yellow-500/10 text-yellow-600 dark:text-yellow-400 border border-yellow-300 dark:border-yellow-500/20 px-2 py-0.5 rounded-full font-medium">Blocking</span>
+                `;
+                diffTabBadge.textContent = '0';
+                commitTabBadge.textContent = '0';
+            } else {
+                bar.innerHTML = `
+                    <div class="flex items-center space-x-2 text-[11px] text-gray-700 dark:text-[#dfe1e5]">
+                        <span class="text-green-600 dark:text-green-500">✔</span>
+                        <span class="opacity-80">分支间代码可自动合并。共包含</span>
+                        <span class="font-bold text-green-600 dark:text-green-400 font-mono">3</span>
+                        <span class="opacity-80">个文件修改与</span>
+                        <span class="font-bold text-blue-600 dark:text-blue-400 font-mono">5</span>
+                        <span class="opacity-80">条提交记录。</span>
+                    </div>
+                    <span class="text-[10px] bg-green-500/10 text-green-700 dark:text-green-400 border border-green-200 dark:border-green-500/20 px-2 py-0.5 rounded-full font-medium">Ready</span>
+                `;
+                diffTabBadge.textContent = '3';
+                commitTabBadge.textContent = '5';
+            }
+        }
+
+        // Interactive states switching
+        function enterCreatePrView() {
+            document.getElementById('view-empty').classList.add('hidden');
+            document.getElementById('view-create').classList.remove('hidden');
+            switchCreateTab('tab-overview');
+        }
+
+        function exitCreatePrView() {
+            document.getElementById('view-create').classList.add('hidden');
+            document.getElementById('view-empty').classList.remove('hidden');
+        }
+
+        // Submit Action simulation
+        function submitNewPrForm() {
+            const title = document.getElementById('pr-form-title').value;
+            if (!title.trim()) {
+                alert('标题不能为空！');
+                return;
+            }
+
+            const toast = document.getElementById('toast');
+            toast.classList.remove('hidden');
+            // Trigger animation
+            setTimeout(() => {
+                toast.classList.remove('translate-y-10', 'opacity-0');
+                toast.classList.add('translate-y-0', 'opacity-100');
+            }, 50);
+
+            // Hide Toast and exit view after 3.5s
+            setTimeout(() => {
+                toast.classList.remove('translate-y-0', 'opacity-100');
+                toast.classList.add('translate-y-10', 'opacity-0');
+                setTimeout(() => {
+                    toast.classList.add('hidden');
+                    exitCreatePrView();
+                }, 300);
+            }, 3500);
+        }
+
+        // Theme controller (Light / Darcula)
+        function toggleTheme(theme) {
+            const darkBtn = document.getElementById('dark-theme-btn');
+            const lightBtn = document.getElementById('light-theme-btn');
+
+            if (theme === 'light') {
+                // Change body background in light mode
+                document.body.className = "bg-gray-100 text-gray-800 min-h-screen p-6 flex flex-col items-center justify-center";
+                document.body.classList.remove('dark');
+
+                // Set Theme Button Active state colors
+                lightBtn.className = "text-xs bg-[#1a73e8] text-white font-medium px-3 py-1.5 rounded-r-md border border-blue-500/30 -ml-3.5 focus:outline-none transition-all duration-150";
+                darkBtn.className = "text-xs bg-gray-200 text-gray-700 font-medium px-3 py-1.5 rounded-l-md border border-gray-300 focus:outline-none hover:bg-gray-300 transition-all duration-150";
+            } else {
+                // Change body background in dark mode
+                document.body.className = "bg-gray-900 text-gray-100 min-h-screen p-6 flex flex-col items-center justify-center dark";
+
+                // Set Theme Button Active state colors
+                darkBtn.className = "text-xs bg-blue-600 text-white font-medium px-3 py-1.5 rounded-l-md border border-blue-500/30 focus:outline-none transition-all duration-150";
+                lightBtn.className = "text-xs bg-gray-800 text-gray-300 font-medium px-3 py-1.5 rounded-r-md border border-gray-700/30 -ml-3.5 focus:outline-none hover:bg-gray-700 transition-all duration-150";
+            }
+        }
+    </script>
+</body>
+</html>

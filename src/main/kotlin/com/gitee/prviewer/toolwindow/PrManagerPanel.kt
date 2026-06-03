@@ -5507,8 +5507,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private inner class CreatePrView {
         private val mergeTypeChooseOption = "__merge_type_choose__"
         val rootPanel = JPanel(BorderLayout())
-        val rootComponent = createDetailScrollPane(
-            rootPanel,
+        private val scrollContentPanel = JPanel(BorderLayout())
+        private val rootScrollPane = createDetailScrollPane(
+            scrollContentPanel,
             ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
             ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED,
             ::createPrOuterFill
@@ -5520,6 +5521,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             viewport.isOpaque = true
             viewport.background = createPrOuterFill()
         }
+        val rootComponent: JComponent = rootPanel
         private val headerPanel = JPanel(BorderLayout())
         private val branchPanel = JPanel()
         private val branchStatusPanel = JPanel(BorderLayout())
@@ -5590,6 +5592,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         private var createCommitWarningBalloon: Balloon? = null
         private var createFileChangeWarningBalloon: Balloon? = null
         private var latestMissingCommitHashes: Set<String> = emptySet()
+        private var createChangesLoading = false
+        private var createCommitsLoading = false
+        private var createMissingCommitLoading = false
+        private var branchRefreshVersion = 0
 
         init {
             configureStaticComponents()
@@ -5603,6 +5609,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
 
         fun prepareForDisplay() {
+            branchRefreshVersion += 1
             developerByKey.clear()
             mandatoryPrimaryUsers = emptySet()
             minimumPrimary = 0
@@ -5611,6 +5618,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             latestCommits = emptyList()
             latestPreCreateCheck = null
             latestMissingCommitHashes = emptySet()
+            createChangesLoading = false
+            createCommitsLoading = false
+            createMissingCommitLoading = false
             updateCreateFileChangeWarning(false, null)
             updateCreateCommitWarning(false)
             precheckBlockedReason = "正在加载分支信息..."
@@ -5641,8 +5651,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         fun applyTheme() {
             val panelFill = createPrOuterFill()
             rootPanel.background = panelFill
-            rootComponent.background = panelFill
-            rootComponent.viewport.background = panelFill
+            scrollContentPanel.background = panelFill
+            rootScrollPane.background = panelFill
+            rootScrollPane.viewport.background = panelFill
             headerPanel.background = createPrHeaderFill()
             branchPanel.background = panelFill
             branchStatusPanel.background = panelFill
@@ -5784,6 +5795,11 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             createChangeTree.isOpaque = false
             createChangeTree.border = JBUI.Borders.empty(6, 6)
             updateCreateChangeModeToggleStyle()
+            createChangeTree.addTreeSelectionListener {
+                val node = createChangeTree.lastSelectedPathComponent as? DefaultMutableTreeNode ?: return@addTreeSelectionListener
+                val selected = node.userObject as? ChangeItem ?: return@addTreeSelectionListener
+                openCreateDiff(selected)
+            }
 
             createCommitTimelineContent.isOpaque = true
             createCommitTimelineContent.background = detailSurfaceFill()
@@ -5834,6 +5850,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             rootPanel.background = createPrOuterFill()
             rootPanel.minimumSize = Dimension(0, 0)
             rootPanel.border = JBUI.Borders.empty(10, contentInset, 12, contentInset)
+            scrollContentPanel.isOpaque = false
+            scrollContentPanel.minimumSize = Dimension(0, 0)
             branchPanel.minimumSize = Dimension(0, 0)
             branchStatusPanel.minimumSize = Dimension(0, 0)
             createTabs.minimumSize = Dimension(0, 0)
@@ -5878,7 +5896,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 anchor = GridBagConstraints.BASELINE_TRAILING
                 insets = JBUI.insetsRight(JBUI.scale(6))
             })
-            topContainer.add(headerPanel)
+            rootPanel.add(headerPanel, BorderLayout.NORTH)
 
             branchPanel.layout = BoxLayout(branchPanel, BoxLayout.Y_AXIS)
             branchPanel.isOpaque = false
@@ -5914,7 +5932,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 add(topContainer, BorderLayout.NORTH)
                 add(tabsWrapper, BorderLayout.CENTER)
             }
-            rootPanel.add(cardContent, BorderLayout.CENTER)
+            scrollContentPanel.add(cardContent, BorderLayout.CENTER)
+            rootPanel.add(rootScrollPane, BorderLayout.CENTER)
             bindCreateBackgroundClickDismiss(rootPanel)
         }
 
@@ -6680,12 +6699,6 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 addMouseListener(openPopupListener)
                 chipContainer.addMouseListener(openPopupListener)
                 editorField.addMouseListener(openPopupListener)
-                editorField.addFocusListener(object : java.awt.event.FocusAdapter() {
-                    override fun focusGained(e: java.awt.event.FocusEvent?) {
-                        ensurePopupVisible()
-                        queueSearch(immediate = true)
-                    }
-                })
                 editorField.document.addDocumentListener(object : DocumentListener {
                     override fun insertUpdate(e: DocumentEvent?) = if (suppressEditorDocumentEvents) Unit else queueSearch()
                     override fun removeUpdate(e: DocumentEvent?) = if (suppressEditorDocumentEvents) Unit else queueSearch()
@@ -6733,6 +6746,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 mirroredSelectedCandidates.clear()
                 selectedCandidates.clear()
                 mandatoryLockedCandidateIds.clear()
+                currentResults = emptyList()
+                errorMessage = null
+                loading = false
+                requestToken++
                 items.distinctBy { it.id }.forEach { localSelectedCandidates[it.id] = it }
                 mandatoryLockedCandidateIds.addAll(lockedIds)
                 rebuildSelectedCandidates()
@@ -7167,6 +7184,11 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                         dismissSearchFieldFocus()
                         resolveTreePathAtPoint(createChangeTree, e.x, e.y)?.let { createChangeTree.selectionPath = it }
                     }
+                    showCreateChangeTreePopup(e)
+                }
+
+                override fun mouseReleased(e: MouseEvent) {
+                    showCreateChangeTreePopup(e)
                 }
 
                 override fun mouseClicked(e: MouseEvent) {
@@ -7179,6 +7201,66 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             })
         }
 
+        private fun openCreateDiff(change: ChangeItem) {
+            val sourceBranch = (sourceBranchBox.selectedItem as? String).orEmpty().trim()
+            val targetBranch = (targetBranchBox.selectedItem as? String).orEmpty().trim()
+            if (sourceBranch.isBlank() || targetBranch.isBlank()) return
+
+            val baseRef = ensureOriginBranch(targetBranch)
+            val headRef = ensureOriginBranch(sourceBranch)
+            PrManagerFileLogger.info("Open create diff: file=${change.filePath} base=$baseRef head=$headRef")
+
+            ApplicationManager.getApplication().executeOnPooledThread {
+                try {
+                    val sourceContent = branchService.loadFileContent(headRef, change.filePath)
+                    val targetContent = branchService.loadFileContent(baseRef, change.filePath)
+                    if (sourceContent == null && targetContent == null) {
+                        updateStatus("无法加载文件内容")
+                        PrManagerFileLogger.warn("Open create diff failed, content empty: file=${change.filePath}")
+                        return@executeOnPooledThread
+                    }
+
+                    SwingUtilities.invokeLater {
+                        try {
+                            if (project.isDisposed) return@invokeLater
+                            val fileType = FileTypeManager.getInstance().getFileTypeByFileName(change.filePath)
+                            val contentFactory = DiffContentFactory.getInstance()
+                            val left = contentFactory.create(project, targetContent ?: "", fileType)
+                            val right = contentFactory.create(project, sourceContent ?: "", fileType)
+                            val request = SimpleDiffRequest(
+                                "${change.filePath} ($baseRef..$headRef)",
+                                left,
+                                right,
+                                baseRef,
+                                headRef
+                            )
+                            DiffManager.getInstance().showDiff(project, request)
+                        } catch (e: Exception) {
+                            PrManagerFileLogger.error("Open create diff error on UI thread: file=${change.filePath}", e)
+                            updateStatus("打开Diff失败: ${e.message ?: "未知错误"}")
+                        }
+                    }
+                } catch (e: Exception) {
+                    PrManagerFileLogger.error("Open create diff error: file=${change.filePath}", e)
+                    updateStatus("打开Diff失败: ${e.message ?: "未知错误"}")
+                }
+            }
+        }
+
+        private fun showCreateChangeTreePopup(e: MouseEvent) {
+            if (!e.isPopupTrigger) return
+            val path = resolveTreePathAtPoint(createChangeTree, e.x, e.y) ?: return
+            createChangeTree.selectionPath = path
+            val node = path.lastPathComponent as? DefaultMutableTreeNode ?: return
+            if (node.userObject !is String) return
+
+            val menu = JPopupMenu()
+            val expandItem = JMenuItem("展开目录")
+            expandItem.addActionListener { expandCreateChangeTree(path) }
+            menu.add(expandItem)
+            menu.show(createChangeTree, e.x, e.y)
+        }
+
         private fun setSubmitEnabled(enabled: Boolean) {
             submitButton.isEnabled = enabled
             submitButton.repaint()
@@ -7189,6 +7271,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             val check = latestPreCreateCheck
             val diffCount = latestChanges.size
             val commitCount = latestCommits.size
+            val loadingDiff = createChangesLoading
+            val loadingCommits = createCommitsLoading
+            val loadingMissing = createMissingCommitLoading
             when {
                 reason == "正在加载分支信息..." || reason == "正在校验分支..." -> {
                     branchStatusIconLabel.text = "…"
@@ -7206,11 +7291,21 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     branchStatusIconLabel.foreground = if (canAutoMerge) JBColor(Color(0x5C962C), Color(0x57D163)) else JBColor(Color(0xB28C00), Color(0xF6C26B))
                     branchStatusTextLabel.text = buildString {
                         append(if (canAutoMerge) "分支间代码可自动合并。" else "分支可创建 PR，但需人工确认合并。")
-                        append("共包含 ")
-                        append(diffCount)
-                        append(" 个文件修改与 ")
-                        append(commitCount)
-                        append(" 条提交记录。")
+                        when {
+                            loadingDiff && loadingCommits -> append("正在加载文件改动和提交记录。")
+                            loadingDiff -> append("正在加载文件改动。")
+                            loadingCommits -> append("正在加载提交记录。")
+                            else -> {
+                                append("共包含 ")
+                                append(diffCount)
+                                append(" 个文件修改与 ")
+                                append(commitCount)
+                                append(" 条提交记录。")
+                            }
+                        }
+                        if (!loadingDiff && !loadingCommits && loadingMissing) {
+                            append("正在补充缺失提交检测。")
+                        }
                     }
                 }
             }
@@ -7387,6 +7482,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 }
             }
             createChangeTree.emptyText.text = when {
+                createChangesLoading && latestChanges.isEmpty() -> "正在加载文件改动..."
                 latestChanges.isEmpty() -> "暂无对比结果"
                 visibleChanges.isEmpty() -> "未找到匹配文件"
                 else -> ""
@@ -7453,7 +7549,18 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
         private fun renderCreateCommitTimeline() {
             createCommitTimelineContent.removeAll()
-            if (latestCommits.isEmpty()) {
+            if (createCommitsLoading && latestCommits.isEmpty()) {
+                createCommitTimelineContent.add(JPanel(BorderLayout()).apply {
+                    isOpaque = false
+                    border = JBUI.Borders.empty(28, 8)
+                    add(JBLabel("正在加载提交记录...", SwingConstants.CENTER).apply {
+                        foreground = detailMutedColor()
+                        font = font.deriveFont(Font.PLAIN, globalUiFontSize + 1f)
+                    }, BorderLayout.CENTER)
+                    alignmentX = Component.LEFT_ALIGNMENT
+                    maximumSize = Dimension(Int.MAX_VALUE, preferredSize.height)
+                })
+            } else if (latestCommits.isEmpty()) {
                 createCommitTimelineContent.add(JPanel(BorderLayout()).apply {
                     isOpaque = false
                     border = JBUI.Borders.empty(28, 8)
@@ -7704,6 +7811,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
 
         private fun triggerBranchRefresh() {
+            val refreshVersion = ++branchRefreshVersion
             val source = (sourceBranchBox.selectedItem as? String).orEmpty().trim()
             val target = (targetBranchBox.selectedItem as? String).orEmpty().trim()
             if (source.isBlank() || target.isBlank()) {
@@ -7712,6 +7820,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 latestChanges = emptyList()
                 latestCommits = emptyList()
                 latestMissingCommitHashes = emptySet()
+                createChangesLoading = false
+                createCommitsLoading = false
+                createMissingCommitLoading = false
                 refreshDiffAndCommitView()
                 setSubmitEnabled(false)
                 return
@@ -7722,6 +7833,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 latestChanges = emptyList()
                 latestCommits = emptyList()
                 latestMissingCommitHashes = emptySet()
+                createChangesLoading = false
+                createCommitsLoading = false
+                createMissingCommitLoading = false
                 refreshDiffAndCommitView()
                 setSubmitEnabled(false)
                 return
@@ -7731,23 +7845,34 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             latestChanges = emptyList()
             latestCommits = emptyList()
             latestMissingCommitHashes = emptySet()
+            createChangesLoading = false
+            createCommitsLoading = false
+            createMissingCommitLoading = false
             refreshDiffAndCommitView()
             setSubmitEnabled(false)
             ApplicationManager.getApplication().executeOnPooledThread {
                 try {
-                    fetchRemoteBranches()
                     val check = runPreCreateCheck(source, target)
+                    if (refreshVersion != branchRefreshVersion) return@executeOnPooledThread
                     latestPreCreateCheck = check
-                    applyPrecheckResult(check)
-                    loadDevelopersByCurrentSelections(source, target)
-                    computeBranchDiffAndCommits(source, target)
+                    applyPrecheckResult(check, refreshVersion)
+                    SwingUtilities.invokeLater {
+                        if (refreshVersion != branchRefreshVersion) return@invokeLater
+                        refreshDiffAndCommitView()
+                        setSubmitEnabled(precheckBlockedReason.isNullOrBlank())
+                    }
+                    if (check.code == 200) {
+                        startCreateDiffAndCommitRefresh(source, target, refreshVersion)
+                    }
                 } catch (e: Exception) {
+                    if (refreshVersion != branchRefreshVersion) return@executeOnPooledThread
                     PrManagerFileLogger.error("Refresh create PR inline branch state failed", e)
                     precheckBlockedReason = e.message ?: "校验失败"
-                }
-                SwingUtilities.invokeLater {
-                    refreshDiffAndCommitView()
-                    setSubmitEnabled(precheckBlockedReason.isNullOrBlank())
+                    SwingUtilities.invokeLater {
+                        if (refreshVersion != branchRefreshVersion) return@invokeLater
+                        refreshDiffAndCommitView()
+                        setSubmitEnabled(precheckBlockedReason.isNullOrBlank())
+                    }
                 }
             }
         }
@@ -7796,31 +7921,19 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }
         }
 
-        private fun applyPrecheckResult(check: PreCreateCheck) {
+        private fun applyPrecheckResult(check: PreCreateCheck, refreshVersion: Int) {
             mandatoryPrimaryUsers = check.primaryReviewers.map { it.username }.toSet()
             minimumPrimary = check.primaryReviewerNum.coerceAtLeast(if (check.primaryReviewers.isNotEmpty()) 1 else 0)
             minimumGeneral = check.generalReviewerNum.coerceAtLeast(if (check.generalReviewers.isNotEmpty()) 1 else 0)
             precheckBlockedReason = if (check.code == 200) null else check.message.ifBlank { "分支不满足创建条件，code=${check.code}" }
             SwingUtilities.invokeLater {
+                if (refreshVersion != branchRefreshVersion) return@invokeLater
                 primaryReviewerPicker.setSelectedCandidates(check.primaryReviewers, check.primaryReviewers.map { it.id }.toSet())
                 generalReviewerPicker.setSelectedCandidates(check.generalReviewers)
                 refreshReviewerRequirementControls()
                 refreshStatusBanner()
             }
             indexDevelopers(check.primaryReviewers + check.generalReviewers)
-        }
-
-        private fun loadDevelopersByCurrentSelections(source: String, target: String) {
-            if (mandatoryPrimaryUsers.isNotEmpty() || minimumGeneral > 0 || minimumPrimary > 0) return
-            val developers = loadDevelopersFromApi("")
-            indexDevelopers(developers)
-            SwingUtilities.invokeLater {
-                refreshReviewerRequirementControls()
-                if (source == target) {
-                    precheckBlockedReason = "源分支和目标分支不能相同"
-                }
-                refreshStatusBanner()
-            }
         }
 
         private fun loadDevelopersFromApi(keywords: String): List<DeveloperCandidate> {
@@ -7852,6 +7965,66 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 developerByKey[item.username.trim().lowercase()] = item
                 if (item.name.isNotBlank()) {
                     developerByKey[item.name.trim().lowercase()] = item
+                }
+            }
+        }
+
+        private fun startCreateDiffAndCommitRefresh(sourceBranch: String, targetBranch: String, refreshVersion: Int) {
+            val sourceRef = ensureOriginBranch(sourceBranch)
+            val targetRef = ensureOriginBranch(targetBranch)
+            createChangesLoading = true
+            createCommitsLoading = true
+            createMissingCommitLoading = false
+            latestChanges = emptyList()
+            latestCommits = emptyList()
+            latestMissingCommitHashes = emptySet()
+            SwingUtilities.invokeLater {
+                if (refreshVersion != branchRefreshVersion) return@invokeLater
+                refreshDiffAndCommitView()
+            }
+
+            ApplicationManager.getApplication().executeOnPooledThread {
+                val compare = runCatching { branchService.compare(targetRef, sourceRef) }
+                SwingUtilities.invokeLater {
+                    if (refreshVersion != branchRefreshVersion) return@invokeLater
+                    createChangesLoading = false
+                    val result = compare.getOrNull()
+                    latestChanges = if (result != null && result.error == null) result.changes else emptyList()
+                    refreshDiffAndCommitView()
+                }
+            }
+
+            ApplicationManager.getApplication().executeOnPooledThread {
+                val repo = GitRepositoryManager.getInstance(project).repositories.firstOrNull()
+                val commits = if (repo == null) {
+                    emptyList()
+                } else {
+                    val source = toRemoteBranchRef(repo, sourceBranch)
+                    val target = toRemoteBranchRef(repo, targetBranch)
+                    val mergeBase = resolveMergeBase(repo, target, source)
+                    val range = if (!mergeBase.isNullOrBlank()) "$mergeBase..$source" else "$target..$source"
+                    loadCommitsByRange(repo, range)
+                }
+                SwingUtilities.invokeLater {
+                    if (refreshVersion != branchRefreshVersion) return@invokeLater
+                    latestCommits = commits
+                    latestMissingCommitHashes = emptySet()
+                    createCommitsLoading = false
+                    createMissingCommitLoading = repo != null && commits.isNotEmpty()
+                    refreshDiffAndCommitView()
+                }
+                if (repo == null || commits.isEmpty() || refreshVersion != branchRefreshVersion) return@executeOnPooledThread
+
+                val missingHashes = runCatching { findMissingCommitsInCurrentBranch(repo, commits) }
+                    .getOrElse {
+                        PrManagerFileLogger.error("Load create PR missing commit hashes failed", it)
+                        emptySet()
+                    }
+                SwingUtilities.invokeLater {
+                    if (refreshVersion != branchRefreshVersion) return@invokeLater
+                    latestMissingCommitHashes = missingHashes
+                    createMissingCommitLoading = false
+                    refreshDiffAndCommitView()
                 }
             }
         }

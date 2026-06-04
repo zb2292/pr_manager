@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "com.gitee.prviewer"
-version = "0.1.9"
+version = "0.1.8.20260604"
 
 repositories {
     maven("https://maven.aliyun.com/repository/public/")

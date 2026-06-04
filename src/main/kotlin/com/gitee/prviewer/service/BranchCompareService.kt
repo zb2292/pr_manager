@@ -33,6 +33,29 @@ class BranchCompareService(private val project: Project) {
         return CompareResult(changes)
     }
 
+    fun compareBetweenRefs(baseRef: String, headRef: String, pathFilters: Set<String> = emptySet()): CompareResult {
+        val repo = GitRepositoryManager.getInstance(project).repositories.firstOrNull()
+            ?: return CompareResult(emptyList(), "未找到 Git 仓库")
+
+        val nameStatusResult = runDirectDiff(repo, baseRef, headRef, pathFilters)
+        if (!nameStatusResult.success()) {
+            val message = nameStatusResult.errorOutput.joinToString("\n").ifBlank { "分支对比失败" }
+            return CompareResult(emptyList(), message)
+        }
+
+        val numStatResult = runDirectNumStat(repo, baseRef, headRef, pathFilters)
+        val numStatByPath = if (numStatResult.success()) {
+            numStatResult.output.mapNotNull { parseNumStatLine(it) }.toMap()
+        } else {
+            emptyMap()
+        }
+
+        val changes = nameStatusResult.output.mapNotNull { line ->
+            parseDiffLine(line, numStatByPath)
+        }
+        return CompareResult(changes)
+    }
+
     fun loadFileContent(branch: String, filePath: String): String? {
         val repo = GitRepositoryManager.getInstance(project).repositories.firstOrNull() ?: return null
         val handler = GitLineHandler(project, repo.root, GitCommand.SHOW)
@@ -82,6 +105,40 @@ class BranchCompareService(private val project: Project) {
                 addParameters("--numstat", "-M", "-C", mergeBase, sourceBranch)
             }
         )
+
+    private fun runDirectDiff(
+        repo: GitRepository,
+        baseRef: String,
+        headRef: String,
+        pathFilters: Set<String>
+    ) = Git.getInstance().runCommand(
+        GitLineHandler(project, repo.root, GitCommand.DIFF).apply {
+            addParameters("--name-status", "-M", "-C", baseRef, headRef)
+            addPathFilters(pathFilters)
+        }
+    )
+
+    private fun runDirectNumStat(
+        repo: GitRepository,
+        baseRef: String,
+        headRef: String,
+        pathFilters: Set<String>
+    ) = Git.getInstance().runCommand(
+        GitLineHandler(project, repo.root, GitCommand.DIFF).apply {
+            addParameters("--numstat", "-M", "-C", baseRef, headRef)
+            addPathFilters(pathFilters)
+        }
+    )
+
+    private fun GitLineHandler.addPathFilters(pathFilters: Set<String>) {
+        if (pathFilters.isEmpty()) return
+        addParameters("--")
+        pathFilters
+            .map { it.trim().replace('\\', '/') }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .forEach { addParameters(it) }
+    }
 
     private fun resolveMergeBase(repo: GitRepository, branchA: String, branchB: String): String? {
         val handler = GitLineHandler(project, repo.root, GitCommand.MERGE_BASE)

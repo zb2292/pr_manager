@@ -7,17 +7,91 @@
       "pullRequestsBaseInfo": {
         "title": "优化登录流程",
         "id": 101,
+        "projectId": 14051,
         "iid": 1,
         "sourceBranch": "dev",
         "targetBranch": "main",
         "baseCommitSha": "a65e2f69b6159f2e473d01cd7d67c5b5b0406cb3",
         "headCommitSha": "4ad504ea084744adbc8647a7da8d7c2664f9b2f6",
+        "projectPath": "demo-repo",
+        "namespacePath": "enterprise_demo",
         "userName": "alice",
+        "mergeCommitSha": "",
         "state": "opened",
         "createdAt": "2026-02-12 10:00:00"
       },
+      "pullRequestDetailsEntity": {
+        "created_at": "2026-02-12T10:00:00Z",
+        "updated_at": "2026-02-12T11:20:00Z",
+        "id": 101,
+        "iid": 1,
+        "project_id": 14051,
+        "title": "优化登录流程",
+        "state": "opened",
+        "review_state": "review_pending",
+        "primary_review_state": "review_pending",
+        "general_review_state": "review_pending",
+        "source_branch": "dev",
+        "target_branch": "main",
+        "prune_branch": true,
+        "general_reviewers": [
+          {
+            "id": 3001,
+            "username": "bob",
+            "name": "Bob",
+            "approve_status": "approved",
+            "primary": false
+          },
+          {
+            "id": 3002,
+            "username": "carol",
+            "name": "Carol",
+            "approve_status": "",
+            "primary": false
+          }
+        ],
+        "primary_reviewers": [
+          {
+            "id": 2001,
+            "username": "alice",
+            "name": "Alice",
+            "approve_status": "approved",
+            "primary": true
+          },
+          {
+            "id": 2002,
+            "username": "david",
+            "name": "David",
+            "approve_status": "",
+            "primary": true
+          }
+        ],
+        "general_reviewer_num": 1,
+        "primary_reviewer_num": 2,
+        "can_be_merge": false,
+        "body": "本次 PR 主要优化登录流程，并补充异常提示。",
+        "default_merge_type": "squash",
+        "author": {
+          "id": 1001,
+          "username": "alice",
+          "name": "Alice"
+        }
+      },
       "pullRequestCommit": [
+        {
+          "commitId": "4ad504ea084744adbc8647a7da8d7c2664f9b2f6",
+          "commitBy": "Alice",
+          "commitTime": "2026-02-12 09:58:00",
+          "commitMsg": "优化登录流程"
+        },
+        {
+          "commitId": "24f447f41f6601a0f9f60d8ac10a7d4e78224110",
+          "commitBy": "Alice",
+          "commitTime": "2026-02-12 09:40:00",
+          "commitMsg": "补充登录失败提示"
+        }
       ]
-    }
+    },
+    "type": "S"
   }
 }

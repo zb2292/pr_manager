@@ -641,8 +641,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private var commitWarningBalloon: Balloon? = null
     private var fileChangeWarningBalloon: Balloon? = null
 
+    private var detailOverviewScrollPaneRef: JBScrollPane? = null
     private val overviewDesc = JBTextArea()
-    private val reviewStatusCardsPanel = JPanel(GridLayout(0, 2, JBUI.scale(12), JBUI.scale(12))).apply {
+    private val reviewStatusCardsPanel = JPanel().apply {
         isOpaque = false
     }
     private val keyReviewersField = JBTextField()
@@ -1427,6 +1428,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private fun detailSectionTitleFontSize(): Float = globalUiFontSize + 2f
 
+    private fun overviewSectionTitleFontSize(): Float = detailSectionTitleFontSize()
+
+    private fun createMergeFieldFrameWidth(): Int = JBUI.scale(240)
+
+    private fun createMergeFieldFrameHeight(): Int = JBUI.scale(34)
+
     private fun detailHorizontalInset(): Int {
         val metricsOwner = if (detailHeaderTitle.font != null) detailHeaderTitle else detailTabs
         return metricsOwner.getFontMetrics(metricsOwner.font).charWidth('中').coerceAtLeast(JBUI.scale(12))
@@ -1678,7 +1685,6 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         panel.add(buildOverviewSectionTitle("PR 描述"))
         panel.add(overviewDescCard)
         panel.add(Box.createVerticalStrut(JBUI.scale(16)))
-        panel.add(buildOverviewSectionTitle("审查状态"))
         panel.add(reviewStatusSectionBody)
         panel.add(Box.createVerticalGlue())
 
@@ -1688,40 +1694,160 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER,
             fillColorProvider = ::detailTabPaneFill
         ).apply {
+            detailOverviewScrollPaneRef = this
             verticalScrollBar.unitIncrement = JBUI.scale(16)
         }
     }
 
     private fun renderReviewStatusCards(detail: PrDetail?) {
         reviewStatusCardsPanel.removeAll()
-        val reviewers = when {
-            detail == null -> emptyList()
-            detail.reviewerInfos.isNotEmpty() -> detail.reviewerInfos
-            else -> (detail.overview.keyReviewers + detail.overview.reviewers)
-                .distinct()
-                .map { ReviewerInfo(it, "pending") }
-        }
+        reviewStatusCardsPanel.layout = BoxLayout(reviewStatusCardsPanel, BoxLayout.Y_AXIS)
 
-        if (reviewers.isEmpty()) {
-            reviewStatusCardsPanel.layout = GridLayout(1, 1, 0, 0)
-            reviewStatusCardsPanel.add(
-                wrapDetailSurface(
-                    JBLabel("暂无审查人信息").apply {
-                        foreground = detailMutedColor()
-                        border = JBUI.Borders.empty(4, 2)
-                    },
-                    padding = JBUI.insets(14)
-                )
+        val primaryReviewers = detail?.primaryReviewerInfos.orEmpty()
+        val generalReviewers = detail?.generalReviewerInfos.orEmpty()
+
+        keyReviewersField.text = primaryReviewers.joinToString(",").ifBlank { "暂无关键评审人员" }
+        keyReviewersField.toolTipText = primaryReviewers.joinToString(",").ifBlank { null }
+        keyReviewerHint.text = ""
+
+        reviewersField.text = generalReviewers.joinToString(",").ifBlank { "暂无普通评审人员" }
+        reviewersField.toolTipText = generalReviewers.joinToString(",").ifBlank { null }
+        reviewerHint.text = ""
+
+        reviewStatusCardsPanel.add(
+            buildReviewerStatusGroup(
+                "关键评审人审查状态（至少${detail?.overview?.needKeyReviewers ?: 0}人评审）",
+                primaryReviewers,
+                keyReviewersField
             )
-        } else {
-            reviewStatusCardsPanel.layout = GridLayout((reviewers.size + 1) / 2, 2, JBUI.scale(12), JBUI.scale(12))
-            reviewers.forEach { reviewStatusCardsPanel.add(buildReviewStatusCard(it)) }
-            if (reviewers.size % 2 != 0) {
-                reviewStatusCardsPanel.add(JPanel().apply { isOpaque = false })
-            }
-        }
+        )
+        reviewStatusCardsPanel.add(Box.createVerticalStrut(JBUI.scale(16)))
+        reviewStatusCardsPanel.add(
+            buildReviewerStatusGroup(
+                "评审人审查状态（至少${detail?.overview?.needReviewers ?: 0}人评审）",
+                generalReviewers,
+                reviewersField
+            )
+        )
+        reviewStatusCardsPanel.add(Box.createVerticalStrut(JBUI.scale(16)))
+        reviewStatusCardsPanel.add(
+            buildReviewStatusFooter(
+                detail?.overview?.mergedType.orEmpty(),
+                detail?.overview?.deleteBranchAfterMerged ?: false
+            )
+        )
         reviewStatusCardsPanel.revalidate()
         reviewStatusCardsPanel.repaint()
+    }
+
+    private fun buildReviewerStatusGroup(
+        title: String,
+        reviewers: List<ReviewerInfo>,
+        field: JBTextField
+    ): JComponent {
+        val content = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            isOpaque = false
+            alignmentX = Component.LEFT_ALIGNMENT
+            add(buildOverviewSectionTitle(title))
+        }
+        if (reviewers.isEmpty()) {
+            content.add(
+                wrapDetailSurface(
+                    JPanel().apply {
+                        layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                        isOpaque = false
+                        alignmentX = Component.LEFT_ALIGNMENT
+                        add(buildSingleFieldRow(field.apply { alignmentX = Component.LEFT_ALIGNMENT }))
+                    },
+                    padding = JBUI.insets(14)
+                ).apply { alignmentX = Component.LEFT_ALIGNMENT }
+            )
+        } else {
+            val cards = JPanel(GridLayout((reviewers.size + 1) / 2, 2, JBUI.scale(12), JBUI.scale(12))).apply {
+                isOpaque = false
+                alignmentX = Component.LEFT_ALIGNMENT
+            }
+            reviewers.forEach { cards.add(buildReviewStatusCard(it)) }
+            if (reviewers.size % 2 != 0) {
+                cards.add(JPanel().apply { isOpaque = false })
+            }
+            content.add(cards)
+        }
+        return content
+    }
+
+    private fun buildReviewStatusFooter(mergeType: String, deleteSourceBranch: Boolean): JComponent {
+        val content = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            isOpaque = false
+            alignmentX = Component.LEFT_ALIGNMENT
+        }
+        content.add(buildOverviewSectionTitle("合并方式"))
+        content.add(buildReadonlyMergeTypeField(mergeType))
+        content.add(Box.createVerticalStrut(JBUI.scale(14)))
+        deleteBranchCheck.isSelected = deleteSourceBranch
+        deleteBranchCheck.isEnabled = false
+        deleteBranchCheck.isOpaque = false
+        deleteBranchCheck.alignmentX = Component.LEFT_ALIGNMENT
+        deleteBranchCheck.foreground = detailPrimaryTextColor()
+        content.add(deleteBranchCheck)
+        return content
+    }
+
+    private fun buildReadonlyMergeTypeField(mergeType: String): JComponent {
+        val displayText = detailMergeTypeDisplayText(mergeType)
+        val fieldWidth = createMergeFieldFrameWidth()
+        val fieldHeight = createMergeFieldFrameHeight()
+        val textLabel = JBLabel(displayText).apply {
+            foreground = createPrPrimaryTextColor()
+            font = font.deriveFont(Font.PLAIN, globalUiFontSize - 1f)
+            border = JBUI.Borders.empty(0, 0, 0, JBUI.scale(8))
+        }
+        val arrowLabel = JBLabel().apply {
+            icon = object : Icon {
+                private val size = JBUI.scale(12)
+
+                override fun getIconWidth(): Int = size
+                override fun getIconHeight(): Int = size
+
+                override fun paintIcon(c: Component?, g: Graphics, x: Int, y: Int) {
+                    val g2 = g.create() as Graphics2D
+                    try {
+                        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                        g2.color = createPrPrimaryTextColor()
+                        g2.stroke = BasicStroke(JBUI.scale(1.6f), BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+                        val centerX = x + size / 2f
+                        val centerY = y + size / 2f
+                        val half = JBUI.scale(3).toFloat()
+                        g2.drawLine((centerX - half).toInt(), (centerY - 1).toInt(), centerX.toInt(), (centerY + 2).toInt())
+                        g2.drawLine(centerX.toInt(), (centerY + 2).toInt(), (centerX + half).toInt(), (centerY - 1).toInt())
+                    } finally {
+                        g2.dispose()
+                    }
+                }
+            }
+        }
+        return RoundedOutlinePanel(
+            fillColor = createPrInputFill(),
+            outlineColor = createPrBorderColor(),
+            arc = JBUI.scale(10)
+        ).bindTheme(::createPrInputFill, ::createPrBorderColor).apply {
+            layout = BorderLayout()
+            border = JBUI.Borders.empty(3, 10, 3, 10)
+            alignmentX = Component.LEFT_ALIGNMENT
+            preferredSize = Dimension(fieldWidth, fieldHeight)
+            minimumSize = Dimension(fieldWidth, fieldHeight)
+            maximumSize = Dimension(fieldWidth, fieldHeight)
+            add(textLabel, BorderLayout.CENTER)
+            add(arrowLabel, BorderLayout.EAST)
+        }
+    }
+
+    private fun detailMergeTypeDisplayText(value: String): String = when (value.trim().lowercase()) {
+        "merge" -> "merge"
+        "squash" -> "squash"
+        else -> "合并时选择"
     }
 
     private fun buildReviewStatusCard(reviewer: ReviewerInfo): JComponent {
@@ -1784,7 +1910,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private fun buildOverviewSectionTitle(title: String): JComponent {
         return JBLabel(title).apply {
-            font = detailHeaderTitle.font.deriveFont(Font.BOLD, detailSectionTitleFontSize())
+            font = font.deriveFont(Font.BOLD, overviewSectionTitleFontSize())
             foreground = detailPrimaryTextColor()
             border = JBUI.Borders.emptyBottom(8)
             alignmentX = Component.LEFT_ALIGNMENT
@@ -2278,7 +2404,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             detailTabHeaders.add(header)
         }
         if (!detailTabHeaderListenerBound) {
-            detailTabs.addChangeListener { updateDetailTabHeaderStates() }
+            detailTabs.addChangeListener {
+                updateDetailTabHeaderStates()
+            }
             detailTabHeaderListenerBound = true
         }
         updateDetailTabCounters(0, 0)
@@ -3207,12 +3335,52 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
     }
 
+    private fun confirmCloseCreatePrViewIfNeeded(): Boolean {
+        if (!isCreatePrViewActive) return true
+        val choice = Messages.showYesNoDialog(
+            project,
+            "当前存在新建 PR 页面，确认关闭后继续查看该 PR 吗？",
+            "关闭新建 PR 页面",
+            "确认",
+            "取消",
+            null
+        )
+        return choice == Messages.YES
+    }
+
+    private fun refreshDetailTabDisplay() {
+        (detailTabs.getComponentAt(0) as? JComponent)?.let { overviewComponent ->
+            overviewComponent.revalidate()
+            overviewComponent.repaint()
+        }
+        (detailTabs.selectedComponent as? JComponent)?.let { selectedComponent ->
+            selectedComponent.revalidate()
+            selectedComponent.repaint()
+        }
+        overviewDesc.revalidate()
+        overviewDesc.repaint()
+        detailTabs.revalidate()
+        detailTabs.repaint()
+        detailCard.revalidate()
+        detailCard.repaint()
+    }
+
+    private fun resetOverviewScrollPosition() {
+        val scrollPane = detailOverviewScrollPaneRef ?: return
+        scrollPane.viewport?.viewPosition = Point(0, 0)
+        scrollPane.verticalScrollBar?.value = 0
+        scrollPane.horizontalScrollBar?.value = 0
+        scrollPane.viewport?.revalidate()
+        scrollPane.viewport?.repaint()
+    }
+
     private fun showDetail(prId: Long) {
         setCreatePrViewActive(false)
         selectPrCard(prId)
         currentDetailId = prId
         changeTreeFlatMode = false
         (detailCard.layout as java.awt.CardLayout).show(detailCard, "detail")
+        resetOverviewScrollPosition()
         detailHeaderTitle.text = "加载中..."
         detailStatus.isVisible = false
         detailStatus.setBadge("", JBColor.GRAY)
@@ -3234,21 +3402,24 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         updateAiReviewBadge(AiReviewBadgeState.NO_DATA)
         reviewActionButton.isVisible = false
         changeSearchField.text = ""
+        overviewDesc.text = ""
+        overviewDesc.caretPosition = 0
         changeSummaryLabel.text = "0 个文件变更"
         changeAdditionsLabel.text = "+0 additions"
         changeDeletionsLabel.text = "-0 deletions"
         updateChangeModeToggleStyle()
         renderReviewStatusCards(null)
         renderCommitTimeline(emptyList())
+        resetOverviewScrollPosition()
+        refreshDetailTabDisplay()
         PrManagerFileLogger.info("Start loading PR detail: prId=$prId")
 
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
-                val listItem = tableModel.findById(prId)
                 val detail = if (mockEnabled) {
                     val mockJson = readMockJson(mockDetailFile)
                         ?: throw IllegalStateException("Mock文件不存在: $mockDir/$mockDetailFile")
-                    parseDetail(mockJson, listItem)
+                    parseDetail(mockJson)
                 } else {
                     val response = apiService.fetchPrDetail(prId)
                     if (response.statusCode() !in 200..299) {
@@ -3256,7 +3427,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                         updateStatus("详情加载失败: ${response.statusCode()}")
                         return@executeOnPooledThread
                     }
-                    parseDetail(response.body(), listItem)
+                    parseDetail(response.body())
                 }
                 SwingUtilities.invokeLater {
                     currentDetail = detail
@@ -3297,15 +3468,11 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         issueCountLabel.toolTipText = "评审未解决问题/总问题 = 0/0"
 
         overviewDesc.text = detail.overview.desc.ifBlank { "暂无描述" }
+        overviewDesc.caretPosition = 0
         renderReviewStatusCards(detail)
-        keyReviewersField.text = detail.overview.keyReviewers.joinToString(",").ifBlank { "暂无关键评审人员" }
-        keyReviewersField.toolTipText = detail.overview.keyReviewers.joinToString(",").ifBlank { null }
-        keyReviewerHint.text = "至少需要 ${detail.overview.needKeyReviewers} 名关键评审成员评审通过后可合并"
-
-        reviewersField.text = detail.overview.reviewers.joinToString(",").ifBlank { "暂无普通评审人员" }
-        reviewersField.toolTipText = detail.overview.reviewers.joinToString(",").ifBlank { null }
-        reviewerHint.text = "至少需要 ${detail.overview.needReviewers} 名普通评审成员评审通过后可合并"
         updateDetailTabCounters(0, 0)
+        resetOverviewScrollPosition()
+        refreshDetailTabDisplay()
 
 //        setupReviewAction(detail)
     }
@@ -4305,31 +4472,35 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         return PrListResult(totalSize, list, page, totalPage)
     }
 
-    private fun parseDetail(body: String, fallback: PrItem?): PrDetail {
+    private fun parseDetail(body: String): PrDetail {
         val root = objectMapper.readTree(body)
         val result = root.get("result") ?: root
         val data = result.get("data")
         val baseInfo = data?.get("pullRequestsBaseInfo") ?: data
+        val detailInfo = data?.get("pullRequestDetailsEntity") ?: data
 
-        val id = baseInfo?.get("id")?.asLong() ?: fallback?.id ?: -1L
-        val iid = baseInfo?.get("iid")?.asLong() ?: fallback?.iid ?: -1L
-        val title = baseInfo?.get("title")?.asText() ?: fallback?.title ?: ""
-        val status = baseInfo?.get("state")?.asText() ?: fallback?.state?.name?.lowercase() ?: ""
-        val sourceBranch = baseInfo?.get("sourceBranch")?.asText() ?: fallback?.sourceBranch ?: ""
-        val targetBranch = baseInfo?.get("targetBranch")?.asText() ?: fallback?.targetBranch ?: ""
-        val author = baseInfo?.get("userName")?.asText() ?: fallback?.author ?: ""
-        val createTime = baseInfo?.get("createdAt")?.asText() ?: ""
+        val id = detailInfo?.get("id")?.asLong() ?: baseInfo?.get("id")?.asLong() ?: -1L
+        val iid = detailInfo?.get("iid")?.asLong() ?: baseInfo?.get("iid")?.asLong() ?: -1L
+        val title = detailInfo?.readText("title").orEmpty().ifBlank { baseInfo?.readText("title").orEmpty() }
+        val status = detailInfo?.readText("state", "status").orEmpty().ifBlank { baseInfo?.readText("state", "status").orEmpty() }
+        val sourceBranch = detailInfo?.readText("source_branch", "sourceBranch").orEmpty().ifBlank { baseInfo?.readText("sourceBranch", "source_branch").orEmpty() }
+        val targetBranch = detailInfo?.readText("target_branch", "targetBranch").orEmpty().ifBlank { baseInfo?.readText("targetBranch", "target_branch").orEmpty() }
+        val author = detailInfo?.get("author")?.readText("name", "username", "login", "userName").orEmpty()
+            .ifBlank { baseInfo?.readText("userName").orEmpty() }
+        val createTime = detailInfo?.readText("created_at", "createdAt").orEmpty().ifBlank { baseInfo?.readText("createdAt").orEmpty() }
         val headCommitSha = baseInfo?.get("headCommitSha")?.asText() ?: ""
         val baseCommitSha = baseInfo?.get("baseCommitSha")?.asText() ?: ""
+        val primaryReviewerInfos = parseDetailReviewerUsers(detailInfo?.get("primary_reviewers"))
+        val generalReviewerInfos = parseDetailReviewerUsers(detailInfo?.get("general_reviewers"))
 
         val overview = PrOverview(
-            desc = title,
-            keyReviewers = fallback?.keyReviewers ?: emptyList(),
-            needKeyReviewers = fallback?.needKeyReviewers ?: 0,
-            reviewers = fallback?.generalReviewers ?: emptyList(),
-            needReviewers = fallback?.needReviewers ?: 0,
-            mergedType = "",
-            deleteBranchAfterMerged = false
+            desc = detailInfo?.readText("body", "description", "desc").orEmpty(),
+            keyReviewers = primaryReviewerInfos.map { it.username },
+            needKeyReviewers = detailInfo?.get("primary_reviewer_num")?.asInt() ?: 0,
+            reviewers = generalReviewerInfos.map { it.username },
+            needReviewers = detailInfo?.get("general_reviewer_num")?.asInt() ?: 0,
+            mergedType = detailInfo?.readText("default_merge_type", "defaultMergeType").orEmpty(),
+            deleteBranchAfterMerged = detailInfo?.get("prune_branch")?.asBoolean() ?: false
         )
 
         val commitNode = data?.get("pullRequestCommit") ?: data?.get("commits")
@@ -4353,11 +4524,24 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             createTime = createTime,
             headCommitSha = headCommitSha,
             baseCommitSha = baseCommitSha,
-            reviewPass = fallback?.canBeMerge ?: false,
+            reviewPass = detailInfo?.get("can_be_merge")?.asBoolean() ?: false,
             overview = overview,
-            reviewerInfos = fallback?.reviewers ?: emptyList(),
+            primaryReviewerInfos = primaryReviewerInfos,
+            generalReviewerInfos = generalReviewerInfos,
             commits = commits
         )
+    }
+
+    private fun parseDetailReviewerUsers(node: JsonNode?): List<ReviewerInfo> {
+        if (node == null || !node.isArray) return emptyList()
+        return node.mapNotNull { reviewerNode ->
+            val username = reviewerNode.readText("name", "username", "login", "userName")
+            if (username.isBlank()) return@mapNotNull null
+            ReviewerInfo(
+                username = username,
+                approveStatus = reviewerNode.readText("approve_status", "approveStatus", "approval_status")
+            )
+        }
     }
 
     private fun parseNoteList(body: String): NoteListResult {
@@ -5069,6 +5253,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 override fun mousePressed(e: MouseEvent) {
                     if (!SwingUtilities.isLeftMouseButton(e)) return
                     dismissSearchFieldFocus()
+                    if (!confirmCloseCreatePrViewIfNeeded()) return
                     selectPrCard(item.id)
                     showDetail(item.id)
                 }
@@ -5413,7 +5598,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         val baseCommitSha: String,
         val reviewPass: Boolean,
         val overview: PrOverview,
-        val reviewerInfos: List<ReviewerInfo>,
+        val primaryReviewerInfos: List<ReviewerInfo>,
+        val generalReviewerInfos: List<ReviewerInfo>,
         val commits: List<CommitItem>
     )
 
@@ -6251,12 +6437,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     isOpaque = false
                     alignmentX = Component.LEFT_ALIGNMENT
                     add(JBLabel(title).apply {
-                        font = font.deriveFont(Font.BOLD, globalUiFontSize - 1f)
+                        font = font.deriveFont(Font.BOLD, overviewSectionTitleFontSize())
                         foreground = createPrPrimaryTextColor()
                     })
                     if (required) {
                         add(JBLabel(" *").apply {
-                            font = font.deriveFont(Font.BOLD, globalUiFontSize - 1f)
+                            font = font.deriveFont(Font.BOLD, overviewSectionTitleFontSize())
                             foreground = JBColor(Color(0xC75450), Color(0xF47067))
                         })
                     }

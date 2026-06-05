@@ -75,20 +75,33 @@ class PrApiService(
         return executeApi("resolveNote", resolveUrl, objectMapper.writeValueAsString(payload))
     }
 
-    fun reviewPass(id: Long): HttpResponse<String> {
-        val payload = mapOf("id" to id)
-        return executeApi("reviewPass", reviewUrl, objectMapper.writeValueAsString(payload))
+    fun submitPrReview(sshPath: String, iid: Long, comment: String, state: String): HttpResponse<String> {
+        val payload = linkedMapOf<String, Any>(
+            "sshPath" to sshPath,
+            "iId" to iid,
+            "comment" to comment,
+            "state" to state
+        )
+        return executeApi("submitPrReview", reviewUrl, objectMapper.writeValueAsString(payload))
     }
 
-    fun mergePr(id: Long, commitMsg: String, extMsg: String, deleteBranchAfterMerged: Boolean): HttpResponse<String> {
-        val payload = mapOf(
-            "id" to id,
-            "action" to "delete",
-            "commitMsg" to commitMsg,
-            "extMsg" to extMsg,
-            "deleteBranchAfterMerged" to deleteBranchAfterMerged
+    fun mergePrByUser(
+        sshPath: String,
+        number: Long,
+        mergeMethod: String,
+        commitMessage: String,
+        extMessage: String,
+        pruneBranch: Boolean
+    ): HttpResponse<String> {
+        val payload = linkedMapOf<String, Any>(
+            "sshPath" to sshPath,
+            "number" to number,
+            "mergeMethod" to mergeMethod,
+            "commitMessage" to commitMessage,
+            "extMessage" to extMessage,
+            "pruneBranch" to pruneBranch
         )
-        return executeApi("mergePr", mergeUrl, objectMapper.writeValueAsString(payload))
+        return executeApi("mergePrByUser", mergeUrl, objectMapper.writeValueAsString(payload))
     }
 
     fun fetchNoteList(sshPath: String, iid: Long): HttpResponse<String> {

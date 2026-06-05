@@ -601,7 +601,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         add(Box.createHorizontalStrut(JBUI.scale(8)))
         add(aiReviewBadgeLabel)
     }
-    private val reviewActionButton = JButton()
+    private val detailReviewButton = createPrimaryActionButton("评审", compact = true).apply {
+        isEnabled = false
+    }
+    private val detailAcceptButton = createPrimaryActionButton("接受PR", compact = true).apply {
+        isEnabled = false
+    }
     private val detailTabs = JBTabbedPane()
     private val fileChangeTabTitleLabel = JBLabel("文件改动")
     private val fileChangeTabCountLabel = OutlinedPillLabel(JBUI.scale(16)).apply {
@@ -642,6 +647,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private var fileChangeWarningBalloon: Balloon? = null
 
     private var detailOverviewScrollPaneRef: JBScrollPane? = null
+    private var detailOverviewDescScrollPaneRef: JBScrollPane? = null
     private val overviewDesc = JBTextArea()
     private val reviewStatusCardsPanel = JPanel().apply {
         isOpaque = false
@@ -807,7 +813,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun createPrimaryActionButton(text: String, compact: Boolean = false): JButton {
-        val padding = if (compact) JBUI.insets(4, 8) else JBUI.insets(6, 14)
+        val padding = if (compact) JBUI.insets(2, 2) else JBUI.insets(5, 12)
         return createRoundedActionButton(
             text = text,
             fillColorProvider = { JBColor(Color(0x1A73E8), Color(0x3574F0)) },
@@ -853,7 +859,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         listOf(detailAuthorLabel, detailCreateTimeLabel, detailBranchLabel, issueCountLabel, aiReviewBadgeLabel, fileChangeTabCountLabel, commitTabCountLabel).forEach {
             it.font = it.font.deriveFont(Font.PLAIN, globalUiFontSize - 1f)
         }
-        reviewActionButton.font = reviewActionButton.font.deriveFont(Font.PLAIN, globalUiFontSize)
+        val compactActionFontSize = (globalUiFontSize - 1f).coerceAtLeast(11f)
+        listOf(createPrButton, detailReviewButton, detailAcceptButton).forEach {
+            it.font = it.font.deriveFont(Font.BOLD, compactActionFontSize)
+        }
 
         detailTabs.font = detailTabs.font.deriveFont(Font.PLAIN, globalUiFontSize)
         overviewDesc.font = overviewDesc.font.deriveFont(Font.PLAIN, globalUiFontSize)
@@ -1290,6 +1299,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             add(Box.createHorizontalStrut(JBUI.scale(10)))
             add(detailStatus)
             add(Box.createHorizontalGlue())
+            add(detailReviewButton)
+            add(Box.createHorizontalStrut(JBUI.scale(8)))
+            add(detailAcceptButton)
+            add(Box.createHorizontalStrut(JBUI.scale(8)))
             add(detailRefreshButton)
         }
         detailHeaderTitle.font = detailHeaderTitle.font.deriveFont(Font.BOLD, globalUiFontSize + 2f)
@@ -1667,6 +1680,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER,
             fillColorProvider = ::detailSurfaceFill
         ).apply {
+            detailOverviewDescScrollPaneRef = this
             val descLineHeight = overviewDesc.getFontMetrics(overviewDesc.font).height
             val descHeight = descLineHeight * 6 + JBUI.scale(20)
             preferredSize = Dimension(JBUI.scale(320), descHeight)
@@ -1845,8 +1859,14 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun detailMergeTypeDisplayText(value: String): String = when (value.trim().lowercase()) {
-        "merge" -> "merge"
-        "squash" -> "squash"
+        "merge" -> "Merge"
+        "squash" -> "Squash"
+        else -> "合并时选择"
+    }
+
+    private fun mergeMethodOptionText(value: String): String = when (value.trim().lowercase()) {
+        "merge" -> "Merge(总是创建一个合并节点，记录合并信息)"
+        "squash" -> "Squash(扁平化分支合并)"
         else -> "合并时选择"
     }
 
@@ -1964,6 +1984,269 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         wrapper.add(component, BorderLayout.CENTER)
         wrapper.border = JBUI.Borders.emptyBottom(12)
         return wrapper
+    }
+
+    private fun dialogTitleLabel(title: String): JComponent {
+        return JBLabel(title).apply {
+            alignmentX = Component.LEFT_ALIGNMENT
+            font = font.deriveFont(Font.BOLD, 13f)
+            foreground = detailPrimaryTextColor()
+        }
+    }
+
+    private fun dialogSectionLabel(title: String): JComponent {
+        return JBLabel(title).apply {
+            alignmentX = Component.LEFT_ALIGNMENT
+            font = font.deriveFont(Font.BOLD, 12f)
+            foreground = detailMutedColor()
+            border = JBUI.Borders.emptyBottom(8)
+        }
+    }
+
+    private fun dialogCard(
+        content: JComponent,
+        fillColorProvider: () -> Color = ::detailPanelFill,
+        outlineColorProvider: () -> Color = ::detailOutlineColor,
+        padding: Insets = JBUI.insets(10)
+    ): RoundedOutlinePanel {
+        return RoundedOutlinePanel(
+            fillColor = fillColorProvider(),
+            outlineColor = outlineColorProvider(),
+            arc = JBUI.scale(10)
+        ).bindTheme(fillColorProvider, outlineColorProvider).apply {
+            layout = BorderLayout()
+            border = JBUI.Borders.empty(padding.top, padding.left, padding.bottom, padding.right)
+            alignmentX = Component.LEFT_ALIGNMENT
+            add(content, BorderLayout.CENTER)
+        }
+    }
+
+    private fun dialogInputFill(): Color = JBColor(Color(0xFFFFFF), Color(0x2F3337))
+
+    private fun dialogInputOutlineColor(): Color = JBColor(withAlpha(detailAccentColor, 110), withAlpha(detailAccentColor, 168))
+
+    private fun createDialogRootPanel(title: String?, preferredWidth: Int, preferredHeight: Int? = null, body: JComponent): JComponent {
+        val headerHeight = JBUI.scale(40)
+        val headerPanel = title?.takeIf { it.isNotBlank() }?.let { headerTitle ->
+            JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.X_AXIS)
+                isOpaque = true
+                background = detailSurfaceFill()
+                border = javax.swing.BorderFactory.createCompoundBorder(
+                    JBUI.Borders.customLine(detailOutlineColor(), 0, 0, 1, 0),
+                    JBUI.Borders.empty(0, 12)
+                )
+                val size = Dimension(0, headerHeight)
+                preferredSize = size
+                minimumSize = size
+                maximumSize = Dimension(Int.MAX_VALUE, headerHeight)
+                isFocusable = true
+                add(dialogTitleLabel(headerTitle))
+                add(Box.createHorizontalGlue())
+            }
+        }
+
+        val bodyWrapper = JPanel(BorderLayout()).apply {
+            isOpaque = true
+            background = detailSurfaceFill()
+            border = JBUI.Borders.empty(12)
+            isFocusable = true
+            add(body, BorderLayout.CENTER)
+        }
+
+        val focusTransferListener = object : MouseAdapter() {
+            override fun mousePressed(e: MouseEvent) {
+                (e.component as? JComponent)?.requestFocusInWindow()
+            }
+        }
+
+        val targetHeight = preferredHeight ?: (
+            (headerPanel?.preferredSize?.height ?: 0) +
+                bodyWrapper.preferredSize.height
+            ).coerceAtLeast(JBUI.scale(120))
+
+        return RoundedOutlinePanel(
+            fillColor = detailSurfaceFill(),
+            outlineColor = detailOutlineColor(),
+            arc = JBUI.scale(8)
+        ).bindTheme(::detailSurfaceFill, ::detailOutlineColor).apply {
+            layout = BorderLayout()
+            preferredSize = Dimension(preferredWidth, targetHeight)
+            minimumSize = preferredSize
+            maximumSize = preferredSize
+            isFocusable = true
+            addMouseListener(focusTransferListener)
+            bodyWrapper.addMouseListener(focusTransferListener)
+            headerPanel?.addMouseListener(focusTransferListener)
+            if (headerPanel != null) {
+                add(headerPanel, BorderLayout.NORTH)
+            }
+            add(bodyWrapper, BorderLayout.CENTER)
+        }
+    }
+
+    private fun createDialogTextArea(placeholder: String, rows: Int): JBTextArea {
+        return object : JBTextArea() {
+            override fun paintComponent(g: Graphics) {
+                super.paintComponent(g)
+                if (text.isNotEmpty()) return
+                val g2 = g.create() as Graphics2D
+                try {
+                    g2.color = detailMutedColor()
+                    g2.font = font
+                    val x = insets.left + JBUI.scale(2)
+                    val y = insets.top + g2.fontMetrics.ascent
+                    g2.drawString(placeholder, x, y)
+                } finally {
+                    g2.dispose()
+                }
+            }
+        }.apply {
+            lineWrap = true
+            wrapStyleWord = true
+            this.rows = rows
+            isOpaque = false
+            background = dialogInputFill()
+            foreground = detailPrimaryTextColor()
+            caretColor = detailPrimaryTextColor()
+            font = font.deriveFont(13f)
+            border = JBUI.Borders.empty()
+            margin = JBUI.emptyInsets()
+        }
+    }
+
+    private fun createDialogTextAreaCard(area: JBTextArea, preferredHeight: Int): JComponent {
+        val scrollPane = JBScrollPane(area).apply {
+            isOpaque = false
+            border = JBUI.Borders.empty()
+            viewport.isOpaque = false
+            viewport.background = dialogInputFill()
+            horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+            verticalScrollBar.unitIncrement = JBUI.scale(16)
+            preferredSize = Dimension(0, preferredHeight)
+            minimumSize = Dimension(0, preferredHeight)
+        }
+        return dialogCard(
+            scrollPane,
+            fillColorProvider = ::dialogInputFill,
+            outlineColorProvider = ::dialogInputOutlineColor,
+            padding = JBUI.insets(8)
+        )
+    }
+
+    private fun createDialogChoiceCard(
+        description: String,
+        radioButton: javax.swing.JRadioButton,
+        alignTop: Boolean = true,
+        padding: Insets = JBUI.insets(12)
+    ): JComponent {
+        val descriptionLabel = JBLabel("<html>${description}</html>").apply {
+            alignmentX = Component.LEFT_ALIGNMENT
+            font = font.deriveFont(12f)
+            foreground = detailMutedColor()
+            verticalAlignment = SwingConstants.CENTER
+        }
+        val textPanel = if (alignTop) {
+            JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                isOpaque = false
+                alignmentY = Component.TOP_ALIGNMENT
+                border = JBUI.Borders.emptyTop(3)
+                add(descriptionLabel)
+            }
+        } else {
+            JPanel(BorderLayout()).apply {
+                isOpaque = false
+                alignmentY = Component.CENTER_ALIGNMENT
+                add(descriptionLabel, BorderLayout.CENTER)
+            }
+        }
+
+        radioButton.isOpaque = false
+        radioButton.foreground = detailPrimaryTextColor()
+        radioButton.font = radioButton.font.deriveFont(13f)
+        radioButton.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+        radioButton.alignmentY = if (alignTop) Component.TOP_ALIGNMENT else Component.CENTER_ALIGNMENT
+        if (!alignTop) {
+            radioButton.margin = JBUI.emptyInsets()
+            radioButton.border = JBUI.Borders.empty()
+        }
+
+        val row = JPanel().apply {
+            layout = if (alignTop) BoxLayout(this, BoxLayout.X_AXIS) else BorderLayout(JBUI.scale(10), 0)
+            isOpaque = false
+            if (alignTop) {
+                add(radioButton)
+                add(Box.createHorizontalStrut(JBUI.scale(10)))
+                add(textPanel)
+                add(Box.createHorizontalGlue())
+            } else {
+                add(radioButton, BorderLayout.WEST)
+                add(textPanel, BorderLayout.CENTER)
+            }
+        }
+
+        val card = dialogCard(row, padding = padding).apply {
+            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+        }
+        SwingUtilities.invokeLater {
+            val compactHeight = card.preferredSize.height
+            card.maximumSize = Dimension(Int.MAX_VALUE, compactHeight)
+            if (!alignTop) {
+                card.minimumSize = Dimension(0, compactHeight)
+            }
+            card.revalidate()
+        }
+        fun updateCardColors(hovered: Boolean) {
+            val fill = when {
+                radioButton.isSelected -> JBColor(withAlpha(detailAccentColor, 18), withAlpha(detailAccentColor, 72))
+                hovered -> JBColor(Color(0xFCFDFF), Color(0x3A3F45))
+                else -> detailPanelFill()
+            }
+            val outline = when {
+                radioButton.isSelected -> dialogInputOutlineColor()
+                hovered -> JBColor(Color(0xC8D2E1), Color(0x5B6470))
+                else -> detailOutlineColor()
+            }
+            card.updateColors(fill, outline)
+        }
+        card.addMouseListener(object : MouseAdapter() {
+            override fun mousePressed(e: MouseEvent) {
+                radioButton.isSelected = true
+            }
+
+            override fun mouseEntered(e: MouseEvent) {
+                updateCardColors(true)
+            }
+
+            override fun mouseExited(e: MouseEvent) {
+                updateCardColors(false)
+            }
+        })
+        radioButton.addItemListener {
+            updateCardColors(card.mousePosition != null)
+        }
+        updateCardColors(false)
+        return card
+    }
+
+    private fun createDialogInfoCard(title: String, description: String): JComponent {
+        val content = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            isOpaque = false
+            add(JBLabel(title).apply {
+                alignmentX = Component.LEFT_ALIGNMENT
+                font = font.deriveFont(Font.BOLD, 13f)
+                foreground = detailPrimaryTextColor()
+            })
+            add(Box.createVerticalStrut(JBUI.scale(4)))
+            add(JBLabel("<html>${description}</html>").apply {
+                alignmentX = Component.LEFT_ALIGNMENT
+                font = font.deriveFont(12f)
+                foreground = detailMutedColor()
+            })
+        }
+        return dialogCard(content, padding = JBUI.insets(12))
     }
 
     private fun buildFileChangePanel(): JComponent {
@@ -3294,7 +3577,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         detailBranchLabel.setPill("")
         issueCountLabel.setPill("")
         issueCountLabel.toolTipText = null
-        reviewActionButton.isVisible = false
+        resetDetailActionButtons()
 
         overviewDesc.text = ""
         renderReviewStatusCards(null)
@@ -3366,12 +3649,17 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun resetOverviewScrollPosition() {
-        val scrollPane = detailOverviewScrollPaneRef ?: return
-        scrollPane.viewport?.viewPosition = Point(0, 0)
-        scrollPane.verticalScrollBar?.value = 0
-        scrollPane.horizontalScrollBar?.value = 0
-        scrollPane.viewport?.revalidate()
-        scrollPane.viewport?.repaint()
+        fun resetScrollPane(scrollPane: JBScrollPane?) {
+            val target = scrollPane ?: return
+            target.viewport?.viewPosition = Point(0, 0)
+            target.verticalScrollBar?.value = 0
+            target.horizontalScrollBar?.value = 0
+            target.viewport?.revalidate()
+            target.viewport?.repaint()
+        }
+
+        resetScrollPane(detailOverviewDescScrollPaneRef)
+        resetScrollPane(detailOverviewScrollPaneRef)
     }
 
     private fun showDetail(prId: Long) {
@@ -3400,7 +3688,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         currentDiffFilePath = null
         mockAiIssueStatusOverrides.clear()
         updateAiReviewBadge(AiReviewBadgeState.NO_DATA)
-        reviewActionButton.isVisible = false
+        resetDetailActionButtons()
         changeSearchField.text = ""
         overviewDesc.text = ""
         overviewDesc.caretPosition = 0
@@ -3471,90 +3759,193 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         overviewDesc.caretPosition = 0
         renderReviewStatusCards(detail)
         updateDetailTabCounters(0, 0)
+        updateDetailActionButtons(detail)
         resetOverviewScrollPosition()
         refreshDetailTabDisplay()
-
-//        setupReviewAction(detail)
     }
 
-    private fun setupReviewAction(detail: PrDetail) {
-        val currentUser = System.getenv("USERID").orEmpty()
-        val isAuthor = currentUser.isNotBlank() && currentUser == detail.author
-        val isReviewer = detail.overview.keyReviewers.contains(currentUser) || detail.overview.reviewers.contains(currentUser)
+    private fun resetDetailActionButtons() {
+        detailReviewButton.isEnabled = false
+        detailReviewButton.toolTipText = "当前 PR 不可评审"
+        detailReviewButton.actionListeners.forEach { detailReviewButton.removeActionListener(it) }
 
-        reviewActionButton.isVisible = false
-        reviewActionButton.actionListeners.forEach { reviewActionButton.removeActionListener(it) }
+        detailAcceptButton.isEnabled = false
+        detailAcceptButton.toolTipText = "当前 PR 不可接受"
+        detailAcceptButton.actionListeners.forEach { detailAcceptButton.removeActionListener(it) }
+    }
 
-        when {
-            isAuthor && detail.reviewPass -> {
-                reviewActionButton.text = "接受PR"
-                reviewActionButton.isVisible = true
-                reviewActionButton.addActionListener { openMergeDialog(detail) }
-            }
-            isReviewer -> {
-                reviewActionButton.text = "评审通过"
-                reviewActionButton.isVisible = true
-                reviewActionButton.addActionListener { confirmReviewPass(detail.id) }
-            }
+    private fun updateDetailActionButtons(detail: PrDetail) {
+        resetDetailActionButtons()
+
+        detailReviewButton.isEnabled = detail.canReview
+        detailReviewButton.toolTipText = if (detail.canReview) "评审当前 PR" else "当前 PR 不可评审"
+        detailReviewButton.addActionListener { openReviewDialog(detail) }
+
+        val canAccept = detail.canBeMerge && detail.canMerge
+        detailAcceptButton.isEnabled = canAccept
+        detailAcceptButton.toolTipText = if (canAccept) "接受当前 PR" else "当前 PR 不可接受"
+        detailAcceptButton.addActionListener { openAcceptPrDialog(detail) }
+    }
+
+    private fun openReviewDialog(detail: PrDetail) {
+        val dialog = ReviewDialog(project) { reviewState, comment ->
+            submitPrReview(detail, reviewState, comment)
         }
+        dialog.show()
     }
 
-    private fun confirmReviewPass(prId: Long) {
-        val ok = Messages.showYesNoDialog(project, "确认通过此PR？", "评审通过", "确定", "取消", null)
-        if (ok != Messages.YES) return
+    private fun submitPrReview(detail: PrDetail, reviewState: String, comment: String) {
         if (mockEnabled) {
-            updateStatus("Mock模式：评审通过")
+            updateStatus("Mock模式：评审成功")
+            refreshPrListAndCurrentDetail(detail.id)
             return
         }
+
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
-                val response = apiService.reviewPass(prId)
-                if (response.statusCode() !in 200..299) {
-                    PrManagerFileLogger.warn("Review pass failed: prId=$prId status=${response.statusCode()}")
-                    updateStatus("评审失败: ${response.statusCode()}")
+                val response = apiService.submitPrReview(
+                    sshPath = resolveGitAddress(),
+                    iid = detail.iid,
+                    comment = comment,
+                    state = reviewState
+                )
+                if (response.statusCode() !in 200..299 || !isBooleanSuccessResponse(response.body())) {
+                    val message = extractApiMessage(response.body(), "评审失败")
+                    PrManagerFileLogger.warn("Submit review failed: prId=${detail.id} iid=${detail.iid} status=${response.statusCode()} message=$message")
+                    updateStatus(message)
                     return@executeOnPooledThread
                 }
-                PrManagerFileLogger.info("Review pass success: prId=$prId")
-                updateStatus("评审通过")
+                PrManagerFileLogger.info("Submit review success: prId=${detail.id} iid=${detail.iid} state=$reviewState")
+                updateStatus("评审成功")
+                SwingUtilities.invokeLater { refreshPrListAndCurrentDetail(detail.id) }
             } catch (e: Exception) {
-                PrManagerFileLogger.error("Review pass error: prId=$prId", e)
+                PrManagerFileLogger.error("Submit review error: prId=${detail.id} iid=${detail.iid}", e)
                 updateStatus("评审失败: ${e.message ?: "未知错误"}")
             }
         }
     }
 
-    private fun openMergeDialog(detail: PrDetail) {
-        val dialog = MergeDialog(project, detail.overview.deleteBranchAfterMerged) { commitMsg, extMsg, deleteBranch ->
-            requestMerge(detail.id, commitMsg, extMsg, deleteBranch)
+    private fun openAcceptPrDialog(detail: PrDetail) {
+        val mergeMethod = detail.overview.mergedType.trim().lowercase()
+        if (mergeMethod.isNotBlank()) {
+            showMergeConfirmDialog(detail, mergeMethod)
+            return
+        }
+
+        val picker = MergeMethodPickerDialog(project)
+        if (!picker.showAndGet()) return
+        val selectedMethod = picker.selectedMethod ?: return
+        showMergeConfirmDialog(detail, selectedMethod)
+    }
+
+    private fun showMergeConfirmDialog(detail: PrDetail, mergeMethod: String) {
+        val dialog = MergeConfirmDialog(
+            project = project,
+            mergeMethod = mergeMethod,
+            defaultDelete = detail.overview.deleteBranchAfterMerged
+        ) { commitMessage, extMessage, pruneBranch ->
+            submitPrMerge(detail, mergeMethod, commitMessage, extMessage, pruneBranch)
         }
         dialog.show()
     }
 
-    private fun requestMerge(prId: Long, commitMsg: String, extMsg: String, deleteBranch: Boolean) {
+    private fun submitPrMerge(
+        detail: PrDetail,
+        mergeMethod: String,
+        commitMessage: String,
+        extMessage: String,
+        pruneBranch: Boolean
+    ) {
         if (mockEnabled) {
-            updateStatus("Mock模式：已提交合并")
+            updateStatus("Mock模式：合并成功")
+            refreshPrListAndCurrentDetail(detail.id)
             return
         }
+
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
-                val response = apiService.mergePr(
-                    id = prId,
-                    commitMsg = commitMsg,
-                    extMsg = extMsg,
-                    deleteBranchAfterMerged = deleteBranch
+                val response = apiService.mergePrByUser(
+                    sshPath = resolveGitAddress(),
+                    number = detail.iid,
+                    mergeMethod = mergeMethod,
+                    commitMessage = commitMessage,
+                    extMessage = extMessage,
+                    pruneBranch = pruneBranch
                 )
-                if (response.statusCode() !in 200..299) {
-                    PrManagerFileLogger.warn("Merge failed: prId=$prId status=${response.statusCode()}")
-                    updateStatus("合并失败: ${response.statusCode()}")
+                if (response.statusCode() !in 200..299 || !isBooleanSuccessResponse(response.body())) {
+                    val message = extractApiMessage(response.body(), "接受PR失败")
+                    PrManagerFileLogger.warn("Merge PR failed: prId=${detail.id} iid=${detail.iid} status=${response.statusCode()} message=$message")
+                    updateStatus(message)
                     return@executeOnPooledThread
                 }
-                PrManagerFileLogger.info("Merge submitted: prId=$prId deleteBranch=$deleteBranch")
-                updateStatus("已提交合并")
+                PrManagerFileLogger.info("Merge PR success: prId=${detail.id} iid=${detail.iid} mergeMethod=$mergeMethod pruneBranch=$pruneBranch")
+                updateStatus("接受PR成功")
+                SwingUtilities.invokeLater { refreshPrListAndCurrentDetail(detail.id) }
             } catch (e: Exception) {
-                PrManagerFileLogger.error("Merge error: prId=$prId", e)
-                updateStatus("合并失败: ${e.message ?: "未知错误"}")
+                PrManagerFileLogger.error("Merge PR error: prId=${detail.id} iid=${detail.iid}", e)
+                updateStatus("接受PR失败: ${e.message ?: "未知错误"}")
             }
         }
+    }
+
+    private fun refreshPrListAndCurrentDetail(prId: Long) {
+        refreshPrListPreservingDetail(prId)
+        showDetail(prId)
+    }
+
+    private fun refreshPrListPreservingDetail(prIdToKeep: Long?) {
+        createPrPermissionLoaded = false
+        canCreatePr = false
+        applyCreatePrButtonState()
+        prListQueryVersion += 1
+        activePrListLoadId = 0L
+        isLoading = false
+        currentPage = 1
+        totalPage = 0
+        totalCount = 0
+        userTriggeredListScroll = false
+        lastListScrollValue = 0
+        hasMorePrs = false
+        updateLoadMoreState(loading = false, hasMore = false)
+        tableModel.setRows(emptyList(), append = false)
+        prListSupplementCache.clear()
+        prListSupplementLoading.clear()
+        prCardMap.clear()
+        selectedPrId = prIdToKeep
+        rebuildPrListCards()
+        SwingUtilities.invokeLater {
+            prListScrollPane?.verticalScrollBar?.value = 0
+        }
+        loadPrs(append = false)
+    }
+
+    private fun isBooleanSuccessResponse(body: String?): Boolean {
+        if (body.isNullOrBlank()) return false
+        return runCatching {
+            val root = objectMapper.readTree(body)
+            val result = root.get("result")
+            when {
+                result?.isBoolean == true -> result.asBoolean()
+                result?.get("success")?.asBoolean() == true -> true
+                result?.get("result")?.asBoolean() == true -> true
+                root.get("success")?.asBoolean() == true -> true
+                root.get("result")?.asBoolean() == true -> true
+                root.get("type")?.asText()?.equals("S", ignoreCase = true) == true -> true
+                result?.get("type")?.asText()?.equals("S", ignoreCase = true) == true -> true
+                else -> false
+            }
+        }.getOrDefault(false)
+    }
+
+    private fun extractApiMessage(body: String?, fallback: String): String {
+        if (body.isNullOrBlank()) return fallback
+        return runCatching {
+            val root = objectMapper.readTree(body)
+            val result = root.get("result")
+            result?.readText("message", "msg", "code").orEmpty()
+                .ifBlank { root.readText("message", "msg", "code") }
+                .ifBlank { fallback }
+        }.getOrDefault(fallback)
     }
 
     private fun loadNotes(detail: PrDetail) {
@@ -4524,7 +4915,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             createTime = createTime,
             headCommitSha = headCommitSha,
             baseCommitSha = baseCommitSha,
-            reviewPass = detailInfo?.get("can_be_merge")?.asBoolean() ?: false,
+            canReview = detailInfo?.get("can_review")?.asBoolean() ?: false,
+            canMerge = detailInfo?.get("can_merge")?.asBoolean() ?: false,
+            canBeMerge = detailInfo?.get("can_be_merge")?.asBoolean() ?: false,
             overview = overview,
             primaryReviewerInfos = primaryReviewerInfos,
             generalReviewerInfos = generalReviewerInfos,
@@ -5596,7 +5989,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         val createTime: String,
         val headCommitSha: String,
         val baseCommitSha: String,
-        val reviewPass: Boolean,
+        val canReview: Boolean,
+        val canMerge: Boolean,
+        val canBeMerge: Boolean,
         val overview: PrOverview,
         val primaryReviewerInfos: List<ReviewerInfo>,
         val generalReviewerInfos: List<ReviewerInfo>,
@@ -9592,40 +9987,147 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
     }
 
-    private inner class MergeDialog(
+    private inner class ReviewDialog(
         project: Project,
-        defaultDelete: Boolean,
-        private val onSubmit: (String, String, Boolean) -> Unit
+        private val onSubmit: (String, String) -> Unit
     ) : com.intellij.openapi.ui.DialogWrapper(project) {
-        private val commitField = JBTextArea()
-        private val extField = JBTextArea()
-        private val deleteCheck = JBCheckBox("是否删除源分支", defaultDelete)
+        private val commentRadio = javax.swing.JRadioButton("评论", true)
+        private val approveRadio = javax.swing.JRadioButton("允许合并")
+        private val rejectRadio = javax.swing.JRadioButton("拒绝")
+        private val commentField = createDialogTextArea("请输入评审说明", 4)
 
         init {
-            title = "Merge"
+            title = "评审"
+            setOKButtonText("提交")
+            setCancelButtonText("取消")
             init()
         }
 
         override fun createCenterPanel(): JComponent {
-            val panel = JPanel()
-            panel.layout = BoxLayout(panel, BoxLayout.Y_AXIS)
+            ButtonGroup().apply {
+                add(commentRadio)
+                add(approveRadio)
+                add(rejectRadio)
+            }
 
-            commitField.lineWrap = true
-            commitField.rows = 3
-            extField.lineWrap = true
-            extField.rows = 3
+            val content = JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                isOpaque = false
+                add(dialogSectionLabel("评审操作"))
+                add(createDialogChoiceCard("仅发表评论说明，不改变当前评审结论。", commentRadio))
+                add(Box.createVerticalStrut(JBUI.scale(8)))
+                add(createDialogChoiceCard("标记当前 PR 审查通过。", approveRadio))
+                add(Box.createVerticalStrut(JBUI.scale(8)))
+                add(createDialogChoiceCard("标记当前 PR 审查不通过。", rejectRadio))
+                add(Box.createVerticalStrut(JBUI.scale(12)))
+                add(dialogSectionLabel("评审说明"))
+                add(createDialogTextAreaCard(commentField, JBUI.scale(88)))
+            }
+            return createDialogRootPanel(null, JBUI.scale(500), JBUI.scale(360), content)
+        }
 
-            panel.add(section("提交信息", JBScrollPane(commitField)))
-            panel.add(section("扩展信息", JBScrollPane(extField)))
-            panel.add(deleteCheck)
-            return panel
+        override fun doOKAction() {
+            val comment = commentField.text.trim()
+            val state = when {
+                approveRadio.isSelected -> "approved"
+                rejectRadio.isSelected -> "rejected"
+                else -> "commented"
+            }
+            if (state == "commented" && comment.isBlank()) {
+                Messages.showErrorDialog(project, "选择“评论”时，输入框内容不能为空", "评审")
+                return
+            }
+            onSubmit(state, comment)
+            super.doOKAction()
+        }
+    }
+
+    private inner class MergeMethodPickerDialog(project: Project) : com.intellij.openapi.ui.DialogWrapper(project) {
+        private val mergeRadio = javax.swing.JRadioButton("Merge", true)
+        private val squashRadio = javax.swing.JRadioButton("Squash")
+
+        val selectedMethod: String?
+            get() = when {
+                mergeRadio.isSelected -> "merge"
+                squashRadio.isSelected -> "squash"
+                else -> null
+            }
+
+        init {
+            title = "选择合并方式"
+            setOKButtonText("确定")
+            setCancelButtonText("取消")
+            init()
+        }
+
+        override fun createCenterPanel(): JComponent {
+            ButtonGroup().apply {
+                add(mergeRadio)
+                add(squashRadio)
+            }
+
+            val content = JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                isOpaque = false
+                add(createDialogChoiceCard("总是创建一个合并节点，记录合并信息。", mergeRadio, alignTop = false, padding = JBUI.insets(6, 12)))
+                add(Box.createVerticalStrut(JBUI.scale(8)))
+                add(createDialogChoiceCard("扁平化分支合并。", squashRadio, alignTop = false, padding = JBUI.insets(6, 12)))
+            }
+            return createDialogRootPanel("选择合并方式", JBUI.scale(520), body = content)
+        }
+    }
+
+    private inner class MergeConfirmDialog(
+        project: Project,
+        private val mergeMethod: String,
+        defaultDelete: Boolean,
+        private val onSubmit: (String, String, Boolean) -> Unit
+    ) : com.intellij.openapi.ui.DialogWrapper(project) {
+        private val commitField = createDialogTextArea("请输入提交信息", 3)
+        private val extField = createDialogTextArea("请输入扩展信息（可选）", 3)
+        private val deleteCheck = JBCheckBox("合并后是否删除源分支", defaultDelete)
+
+        init {
+            title = "接受PR"
+            setOKButtonText("提交")
+            setCancelButtonText("取消")
+            init()
+        }
+
+        override fun createCenterPanel(): JComponent {
+            deleteCheck.isOpaque = false
+            deleteCheck.foreground = detailPrimaryTextColor()
+            deleteCheck.font = deleteCheck.font.deriveFont(13f)
+            val deleteRow = JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.X_AXIS)
+                isOpaque = false
+                add(deleteCheck)
+                add(Box.createHorizontalGlue())
+            }
+            val content = JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                isOpaque = false
+                add(dialogSectionLabel("合并方式"))
+                add(createDialogInfoCard(detailMergeTypeDisplayText(mergeMethod), mergeMethodOptionText(mergeMethod)))
+                add(Box.createVerticalStrut(JBUI.scale(12)))
+                add(dialogSectionLabel("提交信息"))
+                add(createDialogTextAreaCard(commitField, JBUI.scale(72)))
+                add(Box.createVerticalStrut(JBUI.scale(12)))
+                add(dialogSectionLabel("扩展信息"))
+                add(createDialogTextAreaCard(extField, JBUI.scale(72)))
+                add(Box.createVerticalStrut(JBUI.scale(12)))
+                add(deleteRow.apply {
+                    alignmentX = Component.LEFT_ALIGNMENT
+                })
+            }
+            return createDialogRootPanel(null, JBUI.scale(520), JBUI.scale(432), content)
         }
 
         override fun doOKAction() {
             val commitMsg = commitField.text.trim()
             val extMsg = extField.text.trim()
-            if (commitMsg.isBlank() || extMsg.isBlank()) {
-                Messages.showErrorDialog("提交信息和扩展信息不能为空", "提示")
+            if (commitMsg.isBlank()) {
+                Messages.showErrorDialog(project, "提交信息不能为空", "接受PR")
                 return
             }
             onSubmit(commitMsg, extMsg, deleteCheck.isSelected)

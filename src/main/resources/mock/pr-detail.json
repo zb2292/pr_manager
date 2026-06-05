@@ -68,9 +68,11 @@
         ],
         "general_reviewer_num": 1,
         "primary_reviewer_num": 2,
-        "can_be_merge": false,
+        "can_be_merge": true,
+        "can_review": true,
+        "can_merge": true,
         "body": "本次 PR 主要优化登录流程，并补充异常提示。",
-        "default_merge_type": "squash",
+        "default_merge_type": "",
         "author": {
           "id": 1001,
           "username": "alice",

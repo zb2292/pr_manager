@@ -242,7 +242,7 @@ class RoundedOutlinePanel(
             g2.color = resolvedFillColor
             g2.fill(shape)
             val originalClip = g2.clip
-            g2.clip = shape
+            g2.clip(shape)
             super.paint(g2)
             g2.clip = originalClip
             g2.color = resolvedOutlineColor
@@ -1286,7 +1286,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         val header = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
             isOpaque = false
-            border = JBUI.Borders.empty(8, 0, 12, 0)
+            border = JBUI.Borders.empty(10, 0, 16, 0)
         }
 
         val titleRow = JPanel().apply {
@@ -1294,7 +1294,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             isOpaque = false
             alignmentX = Component.LEFT_ALIGNMENT
             val inset = detailHeaderRowSideInset()
-            border = JBUI.Borders.empty(0, inset, 10, inset)
+            border = JBUI.Borders.empty(0, inset, 14, inset)
             add(detailHeaderTitle)
             add(Box.createHorizontalStrut(JBUI.scale(10)))
             add(detailStatus)
@@ -1319,8 +1319,14 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             override fun installDefaults() {
                 super.installDefaults()
                 tabAreaInsets = Insets(0, 0, 0, 0)
-                contentBorderInsets = Insets(0, 0, 0, 0)
+                contentBorderInsets = Insets(JBUI.scale(4), 0, JBUI.scale(4), 0)
                 selectedTabPadInsets = Insets(0, 0, 0, 0)
+            }
+
+            override fun calculateTabHeight(tabPlacement: Int, tabIndex: Int, fontHeight: Int): Int {
+                val baseHeight = super.calculateTabHeight(tabPlacement, tabIndex, fontHeight)
+                val customHeight = tabPane.getTabComponentAt(tabIndex)?.preferredSize?.height ?: 0
+                return maxOf(baseHeight, customHeight)
             }
 
             override fun getTabInsets(tabPlacement: Int, tabIndex: Int): Insets = Insets(0, 0, 0, 0)
@@ -1552,7 +1558,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private fun updateDetailMetaRowIndent() {
         val inset = detailHeaderRowSideInset()
-        detailMetaRow.border = JBUI.Borders.empty(0, inset, 0, inset)
+        detailMetaRow.border = JBUI.Borders.empty(0, inset, 2, inset)
         detailMetaRow.revalidate()
         detailMetaRow.repaint()
     }
@@ -1592,17 +1598,19 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 super.updateUI()
                 border = JBUI.Borders.empty()
                 viewportBorder = null
-                isOpaque = false
+                isOpaque = true
                 viewport?.isOpaque = true
+                viewport?.scrollMode = JViewport.SIMPLE_SCROLL_MODE
                 background = fillColorProvider()
                 viewport?.background = fillColorProvider()
             }
         }.apply {
             border = JBUI.Borders.empty()
             viewportBorder = null
-            isOpaque = false
+            isOpaque = true
             minimumSize = Dimension(0, 0)
             viewport.isOpaque = true
+            viewport.scrollMode = JViewport.SIMPLE_SCROLL_MODE
             background = fillColorProvider()
             viewport.background = fillColorProvider()
             verticalScrollBar.unitIncrement = JBUI.scale(16)
@@ -1657,6 +1665,16 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
     }
 
+    private fun installDetailViewportRepaintSync(scrollPane: JBScrollPane) {
+        scrollPane.viewport.addChangeListener {
+            detailTabs.revalidate()
+            detailTabs.repaint()
+            detailPanel.revalidate()
+            detailPanel.repaint()
+            detailCard.repaint()
+        }
+    }
+
     private fun buildOverviewPanel(): JComponent {
         val panel = buildDetailTabBody().apply {
             isOpaque = true
@@ -1686,6 +1704,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             preferredSize = Dimension(JBUI.scale(320), descHeight)
             minimumSize = Dimension(0, descHeight)
             maximumSize = Dimension(Int.MAX_VALUE, descHeight)
+            installDetailViewportRepaintSync(this)
         }
 
         reviewStatusCardsPanel.alignmentX = Component.LEFT_ALIGNMENT
@@ -1702,7 +1721,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         panel.add(reviewStatusSectionBody)
         panel.add(Box.createVerticalGlue())
 
-        return createDetailScrollPane(
+        val overviewScroll = createDetailScrollPane(
             panel,
             ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
             ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER,
@@ -1710,6 +1729,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         ).apply {
             detailOverviewScrollPaneRef = this
             verticalScrollBar.unitIncrement = JBUI.scale(16)
+            installDetailViewportRepaintSync(this)
+        }
+        return JPanel(BorderLayout()).apply {
+            isOpaque = true
+            background = detailTabPaneFill()
+            add(overviewScroll, BorderLayout.CENTER)
         }
     }
 
@@ -2689,6 +2714,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         if (!detailTabHeaderListenerBound) {
             detailTabs.addChangeListener {
                 updateDetailTabHeaderStates()
+                SwingUtilities.invokeLater { refreshDetailTabDisplay() }
             }
             detailTabHeaderListenerBound = true
         }

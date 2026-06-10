@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "com.gitee.prviewer"
-version = "0.1.8.20260604"
+version = "0.1.9.test"
 
 repositories {
     maven("https://maven.aliyun.com/repository/public/")
@@ -29,6 +29,16 @@ intellij {
 
 tasks.withType<KotlinCompile>().configureEach {
     kotlinOptions.jvmTarget = "17"
+    doFirst {
+        delete(layout.buildDirectory.asFileTree.matching {
+            include("*.compiler.options")
+        })
+    }
+    doLast {
+        delete(layout.buildDirectory.asFileTree.matching {
+            include("*.compiler.options")
+        })
+    }
 }
 
 tasks.patchPluginXml {

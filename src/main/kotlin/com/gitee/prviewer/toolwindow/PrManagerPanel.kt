@@ -58,7 +58,9 @@ import java.awt.geom.RoundRectangle2D
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.LinkedHashMap
 import java.util.Properties
+import java.util.concurrent.CompletableFuture
 import javax.swing.Box
 import javax.swing.BoxLayout
 import javax.swing.ButtonGroup
@@ -164,6 +166,11 @@ class OutlinedPillLabel(
     override fun getPreferredSize(): Dimension {
         val size = super.getPreferredSize()
         return Dimension(size.width, size.height.coerceAtLeast(minHeight))
+    }
+
+    override fun getMinimumSize(): Dimension {
+        val size = preferredSize
+        return Dimension(0, size.height)
     }
 
     override fun paintComponent(g: Graphics) {
@@ -403,6 +410,13 @@ private class ResponsiveGridPanel(
     }
 }
 
+private class ShrinkableLabel(text: String = "") : JBLabel(text) {
+    override fun getMinimumSize(): Dimension {
+        val size = preferredSize
+        return Dimension(0, size.height)
+    }
+}
+
 class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true, true) {
     private val detailAuthorPillColor = JBColor(Color(0x1A73E8), Color(0x6EA8FF))
     private val detailCreateTimePillColor = JBColor(Color(0x8E24AA), Color(0xC77DFF))
@@ -447,16 +461,19 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private val noteUrl = buildUrl(config.getProperty("prviewer.api.note.path", "/pset/api/gitee/note"))
     private val replyUrl = buildUrl(config.getProperty("prviewer.api.reply.path", "/pset/api/gitee/replyNote"))
     private val resolveUrl = buildUrl(config.getProperty("prviewer.api.resolve.path", "/pset/api/gitee/resoveNote"))
-    private val reviewUrl = buildUrl(config.getProperty("prviewer.api.review.path", "/api/pr/review"))
+    private val reviewUrl = buildUrl(config.getProperty("prviewer.api.review.path", "/pset/api/gitee/reviewsPr"))
     private val mergeUrl = buildUrl(config.getProperty("prviewer.api.merge.path", "/api/pr/merge"))
+    private val deletePrUrl = buildUrl(config.getProperty("prviewer.api.deletePr.path", "/pset/api/gitee/deletePRByUser"))
+    private val closePrUrl = buildUrl(config.getProperty("prviewer.api.closePr.path", "/pset/api/gitee/closePRByUser"))
+    private val updatePrUrl = buildUrl(config.getProperty("prviewer.api.updatePr.path", "/pset/api/gitee/updatePRByUser"))
     private val aiReviewPrDetailUrl = buildUrl(config.getProperty("prviewer.api.aiReviewPrDetail.path", "/pset/api/gitee/queryAiReviewPrDetailData"))
     private val aiReviewFileDetailUrl = buildUrl(config.getProperty("prviewer.api.aiReviewFileDetail.path", "/pset/api/gitee/queryAiReviewFileIssueDetailData"))
     private val aiHandleIssueUrl = buildUrl(config.getProperty("prviewer.api.aiHandleIssue.path", "/pset/api/gitee/handleAiReviewIssue"))
+    private val triggerAiReviewUrl = buildUrl(config.getProperty("prviewer.api.triggerAiReview.path", "/pset/api/gitee/allPRllmStream.json"))
     private val createPrUrl = buildUrl(config.getProperty("prviewer.api.createPr.path", "/pset/api/gitee/createPRByUser"))
     private val developersUrl = buildUrl(config.getProperty("prviewer.api.developers.path", "/pset/api/gitee/getDevelopers"))
     private val repoMemberRoleUrl = buildUrl(config.getProperty("prviewer.api.repoMemberRole.path", "/pset/api/gitee/getRepoMemberRole"))
     private val canCreatePrUrl = buildUrl(config.getProperty("prviewer.api.canCreatePr.path", "/pset/api/gitee/canCreatePR"))
-    private val repoProjectId = config.getProperty("prviewer.repo.projectId", "").trim()
 
     private val apiService = PrApiService(
         httpClient = httpClient,
@@ -469,9 +486,13 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         resolveUrl = resolveUrl,
         reviewUrl = reviewUrl,
         mergeUrl = mergeUrl,
+        deletePrUrl = deletePrUrl,
+        closePrUrl = closePrUrl,
+        updatePrUrl = updatePrUrl,
         aiReviewPrDetailUrl = aiReviewPrDetailUrl,
         aiReviewFileDetailUrl = aiReviewFileDetailUrl,
         aiHandleIssueUrl = aiHandleIssueUrl,
+        triggerAiReviewUrl = triggerAiReviewUrl,
         createPrUrl = createPrUrl,
         developersUrl = developersUrl,
         repoMemberRoleUrl = repoMemberRoleUrl,
@@ -481,6 +502,18 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private val branchService = BranchCompareService(project)
     private val commentManager = LineCommentManager(project)
     private val diffBinder = DiffEditorBinder(project, commentManager)
+    private val commitLogMarker = "__PRVIEWER_COMMIT__"
+    private val pullRequestCacheTtlMillis = 30L * 60 * 1000
+    private val pullRequestCommitCache = object : LinkedHashMap<BranchSnapshotKey, TimedCommitList>(24, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<BranchSnapshotKey, TimedCommitList>?): Boolean {
+            return size > 24
+        }
+    }
+    private val missingCommitCache = object : LinkedHashMap<MissingCommitCacheKey, TimedMissingCommitSet>(24, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<MissingCommitCacheKey, TimedMissingCommitSet>?): Boolean {
+            return size > 24
+        }
+    }
 
     private val statusLabel = JBLabel("正在加载 PR 列表...")
     private val tableModel = PrTableModel()
@@ -496,6 +529,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private var selectedPrId: Long? = null
     private val loadMoreLabel = JBLabel("加载更多中...", SwingConstants.CENTER)
     private val searchField = JBTextField()
+    private var allowHomepageSearchFocus = false
     private val refreshButton = JButton()
     private val createPrButton = createPrimaryActionButton("+ 新建 PR", compact = true).apply {
         toolTipText = "创建新的 Pull Request"
@@ -551,7 +585,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private val detailPanel = JPanel(BorderLayout()).apply { isOpaque = true }
     private val detailCreatePanel = JPanel(BorderLayout()).apply { isOpaque = true }
     private var createPrView: CreatePrView? = null
-    private val detailHeaderTitle = JBLabel("-")
+    private val detailHeaderTitle = ShrinkableLabel("-")
     private val detailStatus: StatusBadgeLabel = StatusBadgeLabel()
     private val detailRefreshButton = JButton(AllIcons.Actions.Refresh).apply {
         text = ""
@@ -571,6 +605,24 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             currentDetailId?.let { showDetail(it) }
         }
     }
+    private val detailMoreButton = JButton(AllIcons.Actions.More).apply {
+        text = ""
+        toolTipText = "更多操作"
+        isOpaque = false
+        isContentAreaFilled = false
+        isBorderPainted = false
+        isFocusPainted = false
+        cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+        background = JBColor(Color(0, 0, 0, 0), Color(0, 0, 0, 0))
+        border = JBUI.Borders.empty(4)
+        val buttonSize = Dimension(JBUI.scale(28), JBUI.scale(28))
+        preferredSize = buttonSize
+        minimumSize = buttonSize
+        maximumSize = buttonSize
+        isEnabled = false
+        addActionListener { showDetailMoreActionMenu() }
+    }
+    private var detailMorePopup: com.intellij.openapi.ui.popup.JBPopup? = null
     private val detailAuthorLabel = OutlinedPillLabel()
     private val detailCreateTimeLabel = OutlinedPillLabel()
     private val detailBranchLabel = OutlinedPillLabel()
@@ -601,10 +653,42 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         add(Box.createHorizontalStrut(JBUI.scale(8)))
         add(aiReviewBadgeLabel)
     }
+    private val detailAiReviewButton = createRoundedActionButton(
+        text = "AI评审",
+        fillColorProvider = { JBColor(Color(0x1A73E8), Color(0x3574F0)) },
+        hoverFillColorProvider = { JBColor(Color(0x1557B0), Color(0x4682F2)) },
+        foregroundColorProvider = { Color.WHITE },
+        disabledFillColorProvider = {
+            JBColor(Color(0xE5E7EB), Color(0x3C3F41))
+        },
+        disabledForegroundColorProvider = {
+            JBColor(Color(0x9CA3AF), Color(0x7D8694))
+        },
+        padding = JBUI.insets(2, 2),
+        fontSize = (globalUiFontSize - 1f).coerceAtLeast(11f),
+        bold = true
+    ).apply {
+        isEnabled = false
+    }
     private val detailReviewButton = createPrimaryActionButton("评审", compact = true).apply {
         isEnabled = false
     }
-    private val detailAcceptButton = createPrimaryActionButton("接受PR", compact = true).apply {
+    private val detailAcceptButton = createPrimaryActionButton(
+        text = "接受PR",
+        compact = true,
+        fillColorProvider = { JBColor(Color(0xCFEFDC), Color(0x245C3B)) },
+        hoverFillColorProvider = { JBColor(Color(0xB8E5CC), Color(0x2D7148)) },
+        foregroundColorProvider = { JBColor(Color(0x166534), Color.WHITE) }
+    ).apply {
+        isEnabled = false
+    }
+    private val detailCloseButton = createPrimaryActionButton(
+        text = "关闭PR",
+        compact = true,
+        fillColorProvider = { JBColor(Color(0xFDE6D0), Color(0x6B3F1D)) },
+        hoverFillColorProvider = { JBColor(Color(0xFBD6B4), Color(0x84502A)) },
+        foregroundColorProvider = { JBColor(Color(0x9A3412), Color.WHITE) }
+    ).apply {
         isEnabled = false
     }
     private val detailTabs = JBTabbedPane()
@@ -812,13 +896,19 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         return button
     }
 
-    private fun createPrimaryActionButton(text: String, compact: Boolean = false): JButton {
+    private fun createPrimaryActionButton(
+        text: String,
+        compact: Boolean = false,
+        fillColorProvider: () -> Color = { JBColor(Color(0x1A73E8), Color(0x3574F0)) },
+        hoverFillColorProvider: () -> Color = { JBColor(Color(0x1557B0), Color(0x4682F2)) },
+        foregroundColorProvider: () -> Color = { Color.WHITE }
+    ): JButton {
         val padding = if (compact) JBUI.insets(2, 2) else JBUI.insets(5, 12)
         return createRoundedActionButton(
             text = text,
-            fillColorProvider = { JBColor(Color(0x1A73E8), Color(0x3574F0)) },
-            hoverFillColorProvider = { JBColor(Color(0x1557B0), Color(0x4682F2)) },
-            foregroundColorProvider = { Color.WHITE },
+            fillColorProvider = fillColorProvider,
+            hoverFillColorProvider = hoverFillColorProvider,
+            foregroundColorProvider = foregroundColorProvider,
             disabledFillColorProvider = { JBColor(Color(0xE5E7EB), Color(0x3C3F41)) },
             disabledForegroundColorProvider = { JBColor(Color(0x9CA3AF), Color(0x7D8694)) },
             padding = padding,
@@ -860,7 +950,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             it.font = it.font.deriveFont(Font.PLAIN, globalUiFontSize - 1f)
         }
         val compactActionFontSize = (globalUiFontSize - 1f).coerceAtLeast(11f)
-        listOf(createPrButton, detailReviewButton, detailAcceptButton).forEach {
+        listOf(createPrButton, detailAiReviewButton, detailReviewButton, detailAcceptButton, detailCloseButton).forEach {
             it.font = it.font.deriveFont(Font.BOLD, compactActionFontSize)
         }
 
@@ -888,16 +978,20 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         val root = JPanel(BorderLayout())
         root.border = JBUI.Borders.empty(8)
         root.isOpaque = false
-        val content = buildContentPanel()
+        val content = ViewportWidthPanel(tracksViewportWidth = true).apply {
+            layout = BorderLayout()
+            isOpaque = false
+            minimumSize = Dimension(0, 0)
+            add(buildContentPanel(), BorderLayout.CENTER)
+        }
         val contentScroll = JBScrollPane(
             content,
             ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER,
-            ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED
+            ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
         ).apply {
             border = JBUI.Borders.empty()
             viewportBorder = null
             isWheelScrollingEnabled = false
-            horizontalScrollBar.unitIncrement = JBUI.scale(24)
         }
         root.add(contentScroll, BorderLayout.CENTER)
         root.add(buildStatusPanel(), BorderLayout.SOUTH)
@@ -906,19 +1000,28 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun buildContentPanel(): JPanel {
-        val leftPanel = JPanel(BorderLayout())
+        val leftPanel = JPanel(BorderLayout()).apply {
+            minimumSize = Dimension(0, 0)
+        }
         leftPanel.add(buildTopBar(), BorderLayout.NORTH)
         leftPanel.add(buildTablePanel(), BorderLayout.CENTER)
 
         buildDetailPanel()
-        val rightPanel = JPanel(BorderLayout())
+        val rightPanel = JPanel(BorderLayout()).apply {
+            minimumSize = Dimension(0, 0)
+        }
         rightPanel.border = JBUI.Borders.emptyLeft(8)
         rightPanel.add(detailCard, BorderLayout.CENTER)
 
         val splitter = OnePixelSplitter(false, 0.45f)
+        splitter.minimumSize = Dimension(0, 0)
         splitter.firstComponent = leftPanel
         splitter.secondComponent = rightPanel
-        return JPanel(BorderLayout()).apply { add(splitter, BorderLayout.CENTER) }
+        return JPanel(BorderLayout()).apply {
+            isOpaque = false
+            minimumSize = Dimension(0, 0)
+            add(splitter, BorderLayout.CENTER)
+        }
     }
 
     private fun buildTopBar(): JPanel {
@@ -937,6 +1040,34 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         searchField.emptyText.text = "搜索 PR 标题..."
         searchField.isOpaque = false
         searchField.border = JBUI.Borders.empty(0, 0, 0, 0)
+        searchField.isRequestFocusEnabled = false
+        searchField.addMouseListener(object : MouseAdapter() {
+            override fun mousePressed(e: MouseEvent) {
+                if (!SwingUtilities.isLeftMouseButton(e)) return
+                if (searchField.hasFocus()) return
+                allowHomepageSearchFocus = true
+                SwingUtilities.invokeLater {
+                    searchField.requestFocusInWindow()
+                }
+            }
+        })
+        searchField.addFocusListener(object : java.awt.event.FocusAdapter() {
+            override fun focusGained(e: java.awt.event.FocusEvent?) {
+                if (allowHomepageSearchFocus) {
+                    allowHomepageSearchFocus = false
+                    return
+                }
+                SwingUtilities.invokeLater {
+                    if (searchField.hasFocus()) {
+                        dismissSearchFieldFocus()
+                    }
+                }
+            }
+
+            override fun focusLost(e: java.awt.event.FocusEvent?) {
+                allowHomepageSearchFocus = false
+            }
+        })
 
         val searchWrapper = RoundedOutlinePanel(
             fillColor = searchFieldSurfaceFill(),
@@ -1205,6 +1336,16 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
     }
 
+    private fun updatePrListAiState(prId: Long, aiState: AiReviewBadgeState) {
+        val current = prListSupplementCache[prId]
+        val updated = PrListSupplement(
+            reviewStats = current?.reviewStats,
+            aiState = aiState
+        )
+        prListSupplementCache[prId] = updated
+        prCardMap[prId]?.applySupplement(updated)
+    }
+
     private fun resolveAiReviewState(overview: AiReviewOverview?): AiReviewBadgeState {
         return when (overview?.reviewFlag ?: AiReviewProgressFlag.NOT_STARTED) {
             AiReviewProgressFlag.NOT_STARTED -> AiReviewBadgeState.NO_DATA
@@ -1298,13 +1439,20 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             add(detailHeaderTitle)
             add(Box.createHorizontalStrut(JBUI.scale(10)))
             add(detailStatus)
+            add(Box.createHorizontalStrut(JBUI.scale(8)))
+            add(detailRefreshButton)
             add(Box.createHorizontalGlue())
+            add(detailAiReviewButton)
+            add(Box.createHorizontalStrut(JBUI.scale(8)))
             add(detailReviewButton)
             add(Box.createHorizontalStrut(JBUI.scale(8)))
             add(detailAcceptButton)
             add(Box.createHorizontalStrut(JBUI.scale(8)))
-            add(detailRefreshButton)
+            add(detailCloseButton)
+            add(Box.createHorizontalStrut(JBUI.scale(8)))
+            add(detailMoreButton)
         }
+        detailHeaderTitle.toolTipText = detailHeaderTitle.text
         detailHeaderTitle.font = detailHeaderTitle.font.deriveFont(Font.BOLD, globalUiFontSize + 2f)
 
         updateDetailMetaRowIndent()
@@ -1745,11 +1893,11 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         val primaryReviewers = detail?.primaryReviewerInfos.orEmpty()
         val generalReviewers = detail?.generalReviewerInfos.orEmpty()
 
-        keyReviewersField.text = primaryReviewers.joinToString(",").ifBlank { "暂无关键评审人员" }
+        keyReviewersField.text = primaryReviewers.joinToString(",").ifBlank { "无" }
         keyReviewersField.toolTipText = primaryReviewers.joinToString(",").ifBlank { null }
         keyReviewerHint.text = ""
 
-        reviewersField.text = generalReviewers.joinToString(",").ifBlank { "暂无普通评审人员" }
+        reviewersField.text = generalReviewers.joinToString(",").ifBlank { "无" }
         reviewersField.toolTipText = generalReviewers.joinToString(",").ifBlank { null }
         reviewerHint.text = ""
 
@@ -1784,6 +1932,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         reviewers: List<ReviewerInfo>,
         field: JBTextField
     ): JComponent {
+        val columnsPerRow = 4
         val content = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
             isOpaque = false
@@ -1792,23 +1941,21 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
         if (reviewers.isEmpty()) {
             content.add(
-                wrapDetailSurface(
-                    JPanel().apply {
-                        layout = BoxLayout(this, BoxLayout.Y_AXIS)
-                        isOpaque = false
-                        alignmentX = Component.LEFT_ALIGNMENT
-                        add(buildSingleFieldRow(field.apply { alignmentX = Component.LEFT_ALIGNMENT }))
-                    },
-                    padding = JBUI.insets(14)
-                ).apply { alignmentX = Component.LEFT_ALIGNMENT }
+                JBLabel(field.text).apply {
+                    alignmentX = Component.LEFT_ALIGNMENT
+                    font = font.deriveFont(Font.PLAIN, globalUiFontSize)
+                    foreground = detailMutedColor()
+                    border = JBUI.Borders.emptyTop(2)
+                }
             )
         } else {
-            val cards = JPanel(GridLayout((reviewers.size + 1) / 2, 2, JBUI.scale(12), JBUI.scale(12))).apply {
+            val rowCount = (reviewers.size + columnsPerRow - 1) / columnsPerRow
+            val cards = JPanel(GridLayout(rowCount, columnsPerRow, JBUI.scale(12), JBUI.scale(12))).apply {
                 isOpaque = false
                 alignmentX = Component.LEFT_ALIGNMENT
             }
             reviewers.forEach { cards.add(buildReviewStatusCard(it)) }
-            if (reviewers.size % 2 != 0) {
+            repeat((columnsPerRow - reviewers.size % columnsPerRow) % columnsPerRow) {
                 cards.add(JPanel().apply { isOpaque = false })
             }
             content.add(cards)
@@ -1885,13 +2032,13 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private fun detailMergeTypeDisplayText(value: String): String = when (value.trim().lowercase()) {
         "merge" -> "Merge"
-        "squash" -> "Squash"
+        "fast_forward", "squash" -> "Merge(Fast-Forward-Only)"
         else -> "合并时选择"
     }
 
     private fun mergeMethodOptionText(value: String): String = when (value.trim().lowercase()) {
         "merge" -> "Merge(总是创建一个合并节点，记录合并信息)"
-        "squash" -> "Squash(扁平化分支合并)"
+        "fast_forward", "squash" -> "Merge(Fast-Forward-Only)(不创建合并节点，采用Fast-Forward-Only方式合并)"
         else -> "合并时选择"
     }
 
@@ -2163,7 +2310,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         description: String,
         radioButton: javax.swing.JRadioButton,
         alignTop: Boolean = true,
-        padding: Insets = JBUI.insets(12)
+        padding: Insets = JBUI.insets(12),
+        minHeight: Int? = null
     ): JComponent {
         val descriptionLabel = JBLabel("<html>${description}</html>").apply {
             alignmentX = Component.LEFT_ALIGNMENT
@@ -2214,13 +2362,14 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         val card = dialogCard(row, padding = padding).apply {
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
         }
-        SwingUtilities.invokeLater {
-            val compactHeight = card.preferredSize.height
+        val preferredWidth = card.preferredSize.width
+        val compactHeight = card.preferredSize.height.coerceAtLeast(minHeight?.let(JBUI::scale) ?: 0)
+        card.preferredSize = Dimension(preferredWidth, compactHeight)
+        if (!alignTop) {
+            card.minimumSize = Dimension(0, compactHeight)
             card.maximumSize = Dimension(Int.MAX_VALUE, compactHeight)
-            if (!alignTop) {
-                card.minimumSize = Dimension(0, compactHeight)
-            }
-            card.revalidate()
+        } else {
+            card.maximumSize = Dimension(Int.MAX_VALUE, compactHeight)
         }
         fun updateCardColors(hovered: Boolean) {
             val fill = when {
@@ -3115,7 +3264,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     return@addActionListener
                 }
                 if (isCreatePrViewActive) {
-                    updateStatus("请先处理当前新建PR")
+                    updateStatus(if (createPrView?.activeMode == InlinePrMode.EDIT) "请先处理当前编辑PR" else "请先处理当前新建PR")
                     return@addActionListener
                 }
                 showCreatePrView()
@@ -3195,10 +3344,15 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private fun applyCreatePrButtonState() {
         SwingUtilities.invokeLater {
             val enabled = createPrPermissionLoaded && canCreatePr && !isCreatePrViewActive
+            val activeViewHint = if (createPrView?.activeMode == InlinePrMode.EDIT) {
+                "请先处理当前编辑PR"
+            } else {
+                "请先处理当前新建PR"
+            }
             createPrButton.isEnabled = enabled
             createPrButton.toolTipText = when {
                 !createPrPermissionLoaded || !canCreatePr -> "无权限"
-                isCreatePrViewActive -> "请先处理当前新建PR"
+                isCreatePrViewActive -> activeViewHint
                 else -> "创建新的 Pull Request"
             }
             createPrButton.repaint()
@@ -3263,6 +3417,19 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 }
             }
         }
+        Toolkit.getDefaultToolkit().addAWTEventListener({ event ->
+            val mouseEvent = event as? MouseEvent ?: return@addAWTEventListener
+            if (mouseEvent.id != MouseEvent.MOUSE_PRESSED || !SwingUtilities.isLeftMouseButton(mouseEvent)) {
+                return@addAWTEventListener
+            }
+            if (!isShowing) return@addAWTEventListener
+            val sourceComponent = mouseEvent.component ?: return@addAWTEventListener
+            if (!SwingUtilities.isDescendingFrom(sourceComponent, this)) return@addAWTEventListener
+            val focusOwner = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
+            if (focusOwner !== searchField) return@addAWTEventListener
+            if (SwingUtilities.isDescendingFrom(sourceComponent, searchField)) return@addAWTEventListener
+            dismissSearchFieldFocus()
+        }, AWTEvent.MOUSE_EVENT_MASK)
     }
 
     private fun scrollPrListByWheel(event: MouseWheelEvent) {
@@ -3412,7 +3579,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         loadPrs(append = false)
     }
 
-    private fun loadPrs(append: Boolean = false) {
+    private fun loadPrs(append: Boolean = false, keywordOverride: String? = null) {
         val queryVersion = prListQueryVersion
         if (isLoading) return
         if (append && totalPage > 0 && currentPage >= totalPage) return
@@ -3432,10 +3599,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     if (mockJson.isBlank()) {
                         PrListResult(0, emptyList(), 0, 0)
                     } else {
-                        buildMockPrListResult(mockJson, append)
+                        buildMockPrListResult(mockJson, append, keywordOverride)
                     }
                 } else {
-                    val requestBody = buildListRequestBody(append, sshPath)
+                    val requestBody = buildListRequestBody(append, sshPath, keywordOverride)
                     val response = apiService.fetchPrList(requestBody)
                     if (response.statusCode() !in 200..299) {
                         PrManagerFileLogger.warn("Load PR list failed, status=${response.statusCode()}")
@@ -3492,9 +3659,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
     }
 
-    private fun buildMockPrListResult(mockJson: String, append: Boolean): PrListResult {
+    private fun buildMockPrListResult(mockJson: String, append: Boolean, keywordOverride: String? = null): PrListResult {
         val parsed = parsePrList(mockJson)
-        val keyword = searchField.text?.trim().orEmpty().lowercase()
+        val keyword = keywordOverride?.trim().orEmpty().ifBlank { searchField.text?.trim().orEmpty() }.lowercase()
         val currentUser = System.getenv("USERID").orEmpty().trim()
 
         val filtered = parsed.items.filter { item ->
@@ -3540,7 +3707,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         )
     }
 
-    private fun buildListRequestBody(append: Boolean, sshPath: String): String {
+    private fun buildListRequestBody(append: Boolean, sshPath: String, keywordOverride: String? = null): String {
         val status = when (activeFilter) {
             PrFilter.OPEN -> "opened"
             PrFilter.CLOSED -> "closed"
@@ -3556,7 +3723,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             "states" to listOf(status),
             "sourceBranch" to "",
             "targetBranch" to "",
-            "keywords" to (searchField.text?.trim() ?: "")
+            "keywords" to (keywordOverride?.trim().orEmpty().ifBlank { searchField.text?.trim().orEmpty() })
         )
         if (currentUser.isNotBlank()) {
             when (activeRoleFilter) {
@@ -3631,7 +3798,13 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private fun showCreatePrView() {
         setCreatePrViewActive(true)
-        createPrView?.prepareForDisplay()
+        createPrView?.prepareForCreate()
+        (detailCard.layout as java.awt.CardLayout).show(detailCard, "create")
+    }
+
+    private fun showEditPrView(detail: PrDetail) {
+        setCreatePrViewActive(true)
+        createPrView?.prepareForEdit(detail)
         (detailCard.layout as java.awt.CardLayout).show(detailCard, "create")
     }
 
@@ -3646,15 +3819,114 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private fun confirmCloseCreatePrViewIfNeeded(): Boolean {
         if (!isCreatePrViewActive) return true
+        val activeMode = createPrView?.activeMode ?: InlinePrMode.CREATE
+        val contentText = if (activeMode == InlinePrMode.EDIT) {
+            "当前存在 PR 编辑页面，确认关闭后继续查看该 PR 吗？"
+        } else {
+            "当前存在新建 PR 页面，确认关闭后继续查看该 PR 吗？"
+        }
+        val titleText = if (activeMode == InlinePrMode.EDIT) "关闭 PR 编辑页面" else "关闭新建 PR 页面"
         val choice = Messages.showYesNoDialog(
             project,
-            "当前存在新建 PR 页面，确认关闭后继续查看该 PR 吗？",
-            "关闭新建 PR 页面",
+            contentText,
+            titleText,
             "确认",
             "取消",
             null
         )
         return choice == Messages.YES
+    }
+
+    private fun showDetailMoreActionMenu() {
+        val detail = currentDetail ?: return
+        detailMorePopup?.cancel()
+
+        val popupContent = RoundedOutlinePanel(
+            fillColor = detailSurfaceFill(),
+            outlineColor = detailOutlineColor(),
+            arc = JBUI.scale(12)
+        ).bindTheme(::detailSurfaceFill, ::detailOutlineColor).apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            border = JBUI.Borders.empty(10)
+            add(createDetailMoreActionCard(
+                title = "编辑",
+                enabled = detail.canEdit,
+                destructive = false
+            ) {
+                detailMorePopup?.cancel()
+                showEditPrView(detail)
+            })
+            add(Box.createVerticalStrut(JBUI.scale(8)))
+            add(createDetailMoreActionCard(
+                title = "删除",
+                enabled = detail.canDelete,
+                destructive = true
+            ) {
+                detailMorePopup?.cancel()
+                confirmAndDeletePr(detail)
+            })
+        }
+
+        detailMorePopup = JBPopupFactory.getInstance()
+            .createComponentPopupBuilder(popupContent, null)
+            .setRequestFocus(false)
+            .setResizable(false)
+            .setMovable(false)
+            .setCancelOnClickOutside(true)
+            .setCancelOnWindowDeactivation(true)
+            .setShowBorder(false)
+            .setShowShadow(true)
+            .createPopup()
+        detailMorePopup?.addListener(object : JBPopupListener {
+            override fun onClosed(event: LightweightWindowEvent) {
+                detailMorePopup = null
+            }
+        })
+        detailMorePopup?.show(RelativePoint.getSouthWestOf(detailMoreButton))
+    }
+
+    private fun createDetailMoreActionCard(
+        title: String,
+        enabled: Boolean,
+        destructive: Boolean,
+        onClick: () -> Unit
+    ): JComponent {
+        val button = createRoundedActionButton(
+            text = title,
+            fillColorProvider = {
+                if (destructive) JBColor(Color(0xF9D2C2), Color(0x6E2F1A))
+                else JBColor(Color(0x1A73E8), Color(0x3574F0))
+            },
+            hoverFillColorProvider = {
+                if (destructive) JBColor(Color(0xF4B8A0), Color(0x8A3A20))
+                else JBColor(Color(0x1557B0), Color(0x4682F2))
+            },
+            foregroundColorProvider = {
+                if (destructive) JBColor(Color(0xA63118), Color.WHITE)
+                else Color.WHITE
+            },
+            disabledFillColorProvider = { JBColor(Color(0xE5E7EB), Color(0x3C3F41)) },
+            disabledForegroundColorProvider = { JBColor(Color(0x9CA3AF), Color(0x7D8694)) },
+            outlineColorProvider = if (destructive) {
+                { JBColor(Color(0xE99C7F), Color(0xA65435)) }
+            } else {
+                null
+            },
+            padding = JBUI.insets(2, 2),
+            fontSize = detailCloseButton.font.size2D,
+            bold = detailCloseButton.font.isBold,
+            arc = JBUI.scale(8)
+        ).apply {
+            isEnabled = enabled
+            addActionListener { onClick() }
+            alignmentX = Component.LEFT_ALIGNMENT
+            horizontalAlignment = SwingConstants.CENTER
+        }
+        val targetSize = detailCloseButton.preferredSize
+        button.preferredSize = targetSize
+        button.minimumSize = targetSize
+        button.maximumSize = targetSize
+        return button
     }
 
     private fun refreshDetailTabDisplay() {
@@ -3765,6 +4037,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private fun renderDetail(detail: PrDetail) {
         val number = if (detail.iid > 0) detail.iid else detail.id
         detailHeaderTitle.text = "#${number} ${detail.title}"
+        detailHeaderTitle.toolTipText = detailHeaderTitle.text
         val badge = statusBadge(detail.status)
         detailStatus.isVisible = true
         detailStatus.setBadge(badge.text, badge.color)
@@ -3791,6 +4064,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     }
 
     private fun resetDetailActionButtons() {
+        detailAiReviewButton.isEnabled = false
+        detailAiReviewButton.toolTipText = "当前 PR 不可发起AI评审"
+        detailAiReviewButton.actionListeners.forEach { detailAiReviewButton.removeActionListener(it) }
+
         detailReviewButton.isEnabled = false
         detailReviewButton.toolTipText = "当前 PR 不可评审"
         detailReviewButton.actionListeners.forEach { detailReviewButton.removeActionListener(it) }
@@ -3798,10 +4075,19 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         detailAcceptButton.isEnabled = false
         detailAcceptButton.toolTipText = "当前 PR 不可接受"
         detailAcceptButton.actionListeners.forEach { detailAcceptButton.removeActionListener(it) }
+
+        detailCloseButton.isEnabled = false
+        detailCloseButton.toolTipText = "当前 PR 不可关闭"
+        detailCloseButton.actionListeners.forEach { detailCloseButton.removeActionListener(it) }
+
+        detailMoreButton.isEnabled = false
+        detailMoreButton.toolTipText = "无更多可用操作"
     }
 
     private fun updateDetailActionButtons(detail: PrDetail) {
         resetDetailActionButtons()
+
+        updateAiReviewActionButton(detail)
 
         detailReviewButton.isEnabled = detail.canReview
         detailReviewButton.toolTipText = if (detail.canReview) "评审当前 PR" else "当前 PR 不可评审"
@@ -3811,6 +4097,31 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         detailAcceptButton.isEnabled = canAccept
         detailAcceptButton.toolTipText = if (canAccept) "接受当前 PR" else "当前 PR 不可接受"
         detailAcceptButton.addActionListener { openAcceptPrDialog(detail) }
+
+        detailCloseButton.isEnabled = detail.canClose
+        detailCloseButton.toolTipText = if (detail.canClose) "关闭当前 PR" else "当前 PR 不可关闭"
+        detailCloseButton.addActionListener { confirmAndClosePr(detail) }
+
+        val hasMoreActions = detail.canEdit || detail.canDelete
+        detailMoreButton.isEnabled = hasMoreActions
+        detailMoreButton.toolTipText = if (hasMoreActions) "更多操作" else "无更多可用操作"
+    }
+
+    private fun updateAiReviewActionButton(detail: PrDetail) {
+        val prOpened = parseState(detail.status) == PrState.OPEN
+        val inProgress = aiReviewBadgeState == AiReviewBadgeState.IN_PROGRESS
+        val canTrigger = prOpened && !inProgress
+
+        detailAiReviewButton.isEnabled = canTrigger
+        detailAiReviewButton.toolTipText = when {
+            inProgress -> "AI评审进行中"
+            !prOpened -> "仅开启状态的 PR 可发起AI评审"
+            else -> "发起AI评审"
+        }
+        if (canTrigger) {
+            detailAiReviewButton.addActionListener { triggerAiReview(detail) }
+        }
+        detailAiReviewButton.repaint()
     }
 
     private fun openReviewDialog(detail: PrDetail) {
@@ -3849,6 +4160,127 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 updateStatus("评审失败: ${e.message ?: "未知错误"}")
             }
         }
+    }
+
+    private fun triggerAiReview(detail: PrDetail) {
+        val currentUser = System.getenv(pluginAuthorUsernameEnv).orEmpty().trim()
+        if (currentUser.isBlank()) {
+            updateStatus("AI评审失败: 未获取到当前用户")
+            return
+        }
+        if (currentFileChanges.isEmpty()) {
+            updateStatus("AI评审失败: 当前未加载到文件改动")
+            return
+        }
+
+        detailAiReviewButton.isEnabled = false
+        detailAiReviewButton.toolTipText = "AI评审发起中"
+        detailAiReviewButton.repaint()
+
+        ApplicationManager.getApplication().executeOnPooledThread {
+            try {
+                if (mockEnabled) {
+                    PrManagerFileLogger.info("Trigger AI review in mock mode: prId=${detail.id}")
+                    updateStatus("Mock模式：AI评审已发起")
+                    SwingUtilities.invokeLater {
+                        markAiReviewInProgress(detail)
+                    }
+                    return@executeOnPooledThread
+                }
+
+                val fileDiffInfos = buildAiReviewFileDiffInfos(detail)
+                if (fileDiffInfos.isEmpty()) {
+                    SwingUtilities.invokeLater {
+                        updateDetailActionButtons(detail)
+                    }
+                    updateStatus("AI评审失败: 当前没有可提交的文件改动")
+                    return@executeOnPooledThread
+                }
+
+                val response = apiService.triggerAiReview(
+                    prId = detail.id,
+                    userOA = currentUser,
+                    userName = currentUser,
+                    fileDiffInfos = fileDiffInfos
+                )
+                if (response.statusCode() !in 200..299 || !isBooleanSuccessResponse(response.body())) {
+                    val message = extractApiMessage(response.body(), "AI评审发起失败")
+                    PrManagerFileLogger.warn("Trigger AI review failed: prId=${detail.id} status=${response.statusCode()} message=$message")
+                    SwingUtilities.invokeLater {
+                        updateDetailActionButtons(detail)
+                    }
+                    updateStatus(message)
+                    return@executeOnPooledThread
+                }
+
+                PrManagerFileLogger.info("Trigger AI review success: prId=${detail.id} files=${fileDiffInfos.size}")
+                updateStatus(extractApiMessage(response.body(), "AI评审已发起"))
+                SwingUtilities.invokeLater {
+                    markAiReviewInProgress(detail)
+                }
+                loadAiReviewOverview(detail)
+            } catch (e: Exception) {
+                PrManagerFileLogger.error("Trigger AI review error: prId=${detail.id}", e)
+                SwingUtilities.invokeLater {
+                    updateDetailActionButtons(detail)
+                }
+                updateStatus("AI评审发起失败: ${e.message ?: "未知错误"}")
+            }
+        }
+    }
+
+    private fun buildAiReviewFileDiffInfos(detail: PrDetail): List<Map<String, String>> {
+        val targetRef = ensureOriginBranch(detail.targetBranch)
+        val sourceRef = ensureOriginBranch(detail.sourceBranch)
+        if (targetRef.isBlank() || sourceRef.isBlank()) {
+            throw IllegalStateException("源分支或目标分支为空")
+        }
+
+        return currentFileChanges.mapNotNull { change ->
+            val filePath = change.filePath.trim().replace('\\', '/')
+            if (filePath.isBlank()) {
+                null
+            } else {
+                val diffResult = branchService.loadFileDiff(targetRef, sourceRef, filePath)
+                if (diffResult.error != null) {
+                    throw IllegalStateException("获取文件diff失败: $filePath, ${diffResult.error}")
+                }
+                mapOf(
+                    "filePath" to filePath,
+                    "diff" to diffResult.text
+                )
+            }
+        }
+    }
+
+    private fun markAiReviewInProgress(detail: PrDetail) {
+        currentAiOverview = (currentAiOverview?.takeIf { it.prId == detail.id } ?: AiReviewOverview(
+            prId = detail.id,
+            reviewFlag = AiReviewProgressFlag.NOT_STARTED,
+            validFlag = false,
+            errorCount = 0,
+            warnCount = 0,
+            unhandledCount = 0,
+            adoptedCount = 0,
+            ignoredCount = 0,
+            misreportedCount = 0,
+            fileTreeNodes = emptyList()
+        )).copy(
+            reviewFlag = AiReviewProgressFlag.IN_PROGRESS,
+            validFlag = false,
+            errorCount = 0,
+            warnCount = 0,
+            unhandledCount = 0,
+            adoptedCount = 0,
+            ignoredCount = 0,
+            misreportedCount = 0,
+            fileTreeNodes = emptyList()
+        )
+        aiIssueCountByFileMap = emptyMap()
+        updateAiReviewBadge(AiReviewBadgeState.IN_PROGRESS)
+        updatePrListAiState(detail.id, AiReviewBadgeState.IN_PROGRESS)
+        updateDetailActionButtons(detail)
+        changeTree.repaint()
     }
 
     private fun openAcceptPrDialog(detail: PrDetail) {
@@ -3914,12 +4346,107 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
     }
 
-    private fun refreshPrListAndCurrentDetail(prId: Long) {
-        refreshPrListPreservingDetail(prId)
+    private fun confirmAndClosePr(detail: PrDetail) {
+        val choice = Messages.showYesNoDialog(
+            project,
+            "确认关闭当前 PR 吗？",
+            "关闭 PR",
+            "确认",
+            "取消",
+            null
+        )
+        if (choice != Messages.YES) return
+        submitClosePr(detail)
+    }
+
+    private fun submitClosePr(detail: PrDetail) {
+        if (mockEnabled) {
+            updateStatus("Mock模式：关闭PR成功")
+            switchToClosedFilterAndRefresh(detail.id)
+            return
+        }
+
+        ApplicationManager.getApplication().executeOnPooledThread {
+            try {
+                val response = apiService.closePrByUser(
+                    sshPath = resolveGitAddress(),
+                    iid = detail.iid
+                )
+                if (response.statusCode() !in 200..299 || !isBooleanSuccessResponse(response.body())) {
+                    val message = extractApiMessage(response.body(), "关闭PR失败")
+                    PrManagerFileLogger.warn("Close PR failed: prId=${detail.id} iid=${detail.iid} status=${response.statusCode()} message=$message")
+                    updateStatus(message)
+                    return@executeOnPooledThread
+                }
+                PrManagerFileLogger.info("Close PR success: prId=${detail.id} iid=${detail.iid}")
+                updateStatus("关闭PR成功")
+                SwingUtilities.invokeLater { switchToClosedFilterAndRefresh(detail.id) }
+            } catch (e: Exception) {
+                PrManagerFileLogger.error("Close PR error: prId=${detail.id} iid=${detail.iid}", e)
+                updateStatus("关闭PR失败: ${e.message ?: "未知错误"}")
+            }
+        }
+    }
+
+    private fun switchToClosedFilterAndRefresh(prId: Long) {
+        val preservedKeyword = searchField.text?.trim()
+        activeFilter = PrFilter.CLOSED
+        updateFilterButtonStyles()
+        refreshPrListAndCurrentDetail(prId, preservedKeyword)
+    }
+
+    private fun confirmAndDeletePr(detail: PrDetail) {
+        val choice = Messages.showYesNoDialog(
+            project,
+            "确认删除当前 PR 吗？",
+            "删除 PR",
+            "确认",
+            "取消",
+            null
+        )
+        if (choice != Messages.YES) return
+        submitDeletePr(detail)
+    }
+
+    private fun submitDeletePr(detail: PrDetail) {
+        if (mockEnabled) {
+            updateStatus("Mock模式：删除PR成功")
+            renderEmptyDetail()
+            resetAndLoad()
+            return
+        }
+
+        ApplicationManager.getApplication().executeOnPooledThread {
+            try {
+                val response = apiService.deletePrByUser(
+                    sshPath = resolveGitAddress(),
+                    iid = detail.iid
+                )
+                if (response.statusCode() !in 200..299 || !isBooleanSuccessResponse(response.body())) {
+                    val message = extractApiMessage(response.body(), "删除PR失败")
+                    PrManagerFileLogger.warn("Delete PR failed: prId=${detail.id} iid=${detail.iid} status=${response.statusCode()} message=$message")
+                    updateStatus(message)
+                    return@executeOnPooledThread
+                }
+                PrManagerFileLogger.info("Delete PR success: prId=${detail.id} iid=${detail.iid}")
+                SwingUtilities.invokeLater {
+                    updateStatus("删除PR成功")
+                    renderEmptyDetail()
+                    resetAndLoad()
+                }
+            } catch (e: Exception) {
+                PrManagerFileLogger.error("Delete PR error: prId=${detail.id} iid=${detail.iid}", e)
+                updateStatus("删除PR失败: ${e.message ?: "未知错误"}")
+            }
+        }
+    }
+
+    private fun refreshPrListAndCurrentDetail(prId: Long, keywordOverride: String? = null) {
+        refreshPrListPreservingDetail(prId, keywordOverride)
         showDetail(prId)
     }
 
-    private fun refreshPrListPreservingDetail(prIdToKeep: Long?) {
+    private fun refreshPrListPreservingDetail(prIdToKeep: Long?, keywordOverride: String? = null) {
         createPrPermissionLoaded = false
         canCreatePr = false
         applyCreatePrButtonState()
@@ -3942,7 +4469,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         SwingUtilities.invokeLater {
             prListScrollPane?.verticalScrollBar?.value = 0
         }
-        loadPrs(append = false)
+        loadPrs(append = false, keywordOverride = keywordOverride)
     }
 
     private fun isBooleanSuccessResponse(body: String?): Boolean {
@@ -4026,6 +4553,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     currentAiOverview = overview
                     aiIssueCountByFileMap = overview?.takeIf { isAiReviewResultAvailable(it) }?.let { flattenAiTreeIssueCount(it.fileTreeNodes) }.orEmpty()
                     updateAiReviewBadge(resolveAiReviewState(overview))
+                    currentDetail?.takeIf { it.id == detail.id }?.let { updateDetailActionButtons(it) }
                     changeTree.repaint()
                 }
             } catch (e: Exception) {
@@ -4034,6 +4562,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     currentAiOverview = null
                     aiIssueCountByFileMap = emptyMap()
                     updateAiReviewBadge(AiReviewBadgeState.NO_DATA)
+                    currentDetail?.takeIf { it.id == detail.id }?.let { updateDetailActionButtons(it) }
                     changeTree.repaint()
                 }
             }
@@ -4271,7 +4800,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 SwingUtilities.invokeLater {
                     commitTableModel.setRows(fallbackCommits)
                     renderCommitTimeline(fallbackCommits)
-                    changeTree.emptyText.text = "正在加载文件改动..."
+                    clearDetailChangeTree("正在加载文件改动...", fallbackCommits.size)
                     updateCommitWarning(false)
                 }
 
@@ -4279,17 +4808,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 if (repo == null) {
                     PrManagerFileLogger.warn("Load detail diff/commits fallback: repository not found")
                     SwingUtilities.invokeLater {
-                        currentFileChanges = emptyList()
-                        changeTreeRoot.removeAllChildren()
-                        changeSummaryLabel.text = "0 个文件变更"
-                        changeAdditionsLabel.text = "+0 additions"
-                        changeDeletionsLabel.text = "-0 deletions"
-                        changeTree.emptyText.text = "未找到 Git 仓库"
-                        changeTreeModel.reload()
+                        clearDetailChangeTree("未找到 Git 仓库", fallbackCommits.size)
                         commitTableModel.setRows(fallbackCommits)
                         renderCommitTimeline(fallbackCommits)
                         updateCommitWarning(false)
-                        updateDetailTabCounters(fileCount = 0, commitCount = fallbackCommits.size)
                     }
                     return@executeOnPooledThread
                 }
@@ -4299,33 +4821,28 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 if (sourceRef.isBlank() || targetRef.isBlank()) {
                     PrManagerFileLogger.warn("Load detail diff/commits fallback: invalid refs sourceRef=$sourceRef targetRef=$targetRef")
                     SwingUtilities.invokeLater {
-                        currentFileChanges = emptyList()
-                        changeTreeRoot.removeAllChildren()
-                        changeSummaryLabel.text = "0 个文件变更"
-                        changeAdditionsLabel.text = "+0 additions"
-                        changeDeletionsLabel.text = "-0 deletions"
-                        changeTree.emptyText.text = "分支引用无效"
-                        changeTreeModel.reload()
+                        clearDetailChangeTree("分支引用无效", fallbackCommits.size)
                         commitTableModel.setRows(fallbackCommits)
                         renderCommitTimeline(fallbackCommits)
                         updateCommitWarning(false)
-                        updateDetailTabCounters(fileCount = 0, commitCount = fallbackCommits.size)
                     }
                     return@executeOnPooledThread
                 }
 
-                val selection = loadSourceOnlyCommitSelection(repo, targetRef, sourceRef)
-                val commits = selection.commits.ifEmpty { fallbackCommits }
-                val changesResult = if (selection.touchedPaths.isEmpty()) {
-                    com.gitee.prviewer.model.CompareResult(emptyList())
-                } else {
-                    branchService.compareBetweenRefs(targetRef, sourceRef, selection.touchedPaths)
+                val prCommitsFuture = CompletableFuture.supplyAsync {
+                    loadPullRequestCommits(repo, targetRef, sourceRef)
                 }
+                val changesFuture = CompletableFuture.supplyAsync {
+                    branchService.comparePullRequest(targetRef, sourceRef)
+                }
+                val prCommits = prCommitsFuture.join()
+                val commits = prCommits.ifEmpty { fallbackCommits }
+                val changesResult = changesFuture.join()
                 val changes = if (changesResult.error == null) changesResult.changes else emptyList()
-                val missingHashes = if (selection.commits.isEmpty()) {
+                val missingHashes = if (prCommits.isEmpty()) {
                     emptySet()
                 } else {
-                    findMissingCommitsInCurrentBranch(repo, selection.commits)
+                    findMissingCommitsInCurrentBranch(repo, targetRef, sourceRef, prCommits)
                 }
 
                 PrManagerFileLogger.info(
@@ -4341,17 +4858,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 PrManagerFileLogger.error("Load detail diff/commits error: prId=${detail.id}", e)
                 SwingUtilities.invokeLater {
                     val fallbackCommits = detail.commits.sortedByDescending { it.time }
-                    currentFileChanges = emptyList()
-                    changeTreeRoot.removeAllChildren()
-                    changeSummaryLabel.text = "0 个文件变更"
-                    changeAdditionsLabel.text = "+0 additions"
-                    changeDeletionsLabel.text = "-0 deletions"
-                    changeTree.emptyText.text = "文件改动加载失败"
-                    changeTreeModel.reload()
+                    clearDetailChangeTree("文件改动加载失败", fallbackCommits.size)
                     commitTableModel.setRows(fallbackCommits)
                     renderCommitTimeline(fallbackCommits)
                     updateCommitWarning(false)
-                    updateDetailTabCounters(fileCount = 0, commitCount = fallbackCommits.size)
                 }
             }
         }
@@ -4361,6 +4871,19 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         currentFileChanges = changes
         changeTree.emptyText.text = if (changes.isEmpty()) "暂无对比结果" else "未找到匹配文件"
         applyChangeTreeFilter()
+    }
+
+    private fun clearDetailChangeTree(message: String, commitCount: Int = commitTableModel.rowCount) {
+        currentFileChanges = emptyList()
+        currentDiffFilePath = null
+        changeTree.clearSelection()
+        changeTreeRoot.removeAllChildren()
+        changeSummaryLabel.text = "0 个文件变更"
+        changeAdditionsLabel.text = "+0 additions"
+        changeDeletionsLabel.text = "-0 deletions"
+        changeTree.emptyText.text = message
+        changeTreeModel.reload()
+        updateDetailTabCounters(fileCount = 0, commitCount = commitCount)
     }
 
     private fun insertChangeNode(change: ChangeItem): Boolean {
@@ -4586,10 +5109,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private fun openDiff(change: ChangeItem) {
         val detail = currentDetail ?: return
-        val baseRef = detail.baseCommitSha.trim().takeIf { it.isNotBlank() }
-            ?: ensureOriginBranch(target = detail.targetBranch)
-        val headRef = detail.headCommitSha.trim().takeIf { it.isNotBlank() }
-            ?: ensureOriginBranch(target = detail.sourceBranch)
+        val repo = GitRepositoryManager.getInstance(project).repositories.firstOrNull()
+        val targetRef = ensureOriginBranch(target = detail.targetBranch)
+        val headRef = ensureOriginBranch(target = detail.sourceBranch)
+        val baseRef = repo?.let { resolveMergeBase(it, targetRef, headRef) }
+            ?: detail.baseCommitSha.trim().takeIf { it.isNotBlank() }
+            ?: targetRef
         PrManagerFileLogger.info("Open diff: file=${change.filePath} base=$baseRef head=$headRef")
 
         ApplicationManager.getApplication().executeOnPooledThread {
@@ -4658,18 +5183,53 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private fun findMissingCommitsInCurrentBranch(
         repo: git4idea.repo.GitRepository,
+        targetRef: String,
+        sourceRef: String,
         commits: List<CommitItem>
     ): Set<String> {
-        if (commits.isEmpty()) return emptySet()
-        val missing = mutableSetOf<String>()
-        commits.forEach { commit ->
-            val hash = commit.hash.trim()
-            if (hash.isBlank()) return@forEach
-            val handler = GitLineHandler(project, repo.root, GitCommand.MERGE_BASE)
-            handler.addParameters("--is-ancestor", hash, "HEAD")
-            val result = Git.getInstance().runCommand(handler)
-            if (!result.success()) {
-                missing.add(hash)
+        val prCommitHashes = commits
+            .map { it.hash.trim() }
+            .filter { it.isNotBlank() }
+            .toSet()
+        if (prCommitHashes.isEmpty()) return emptySet()
+
+        val cacheKey = buildMissingCommitCacheKey(repo, targetRef, sourceRef)
+        if (cacheKey != null) {
+            synchronized(missingCommitCache) {
+                val cacheEntry = missingCommitCache[cacheKey]
+                if (cacheEntry != null) {
+                    if (isPullRequestCacheExpired(cacheEntry.cachedAtMillis)) {
+                        missingCommitCache.remove(cacheKey)
+                    } else {
+                        return cacheEntry.missingHashes
+                    }
+                }
+            }
+        }
+
+        val handler = GitLineHandler(project, repo.root, GitCommand.LOG)
+        handler.addParameters(
+            "--right-only",
+            "--topo-order",
+            "--pretty=format:%H",
+            "HEAD...$sourceRef"
+        )
+        val result = Git.getInstance().runCommand(handler)
+        if (!result.success()) {
+            val error = result.errorOutput.joinToString("\n").ifBlank { "计算缺失提交失败" }
+            PrManagerFileLogger.warn("Load missing commits failed: source=$sourceRef error=$error")
+            return prCommitHashes
+        }
+
+        val missing = result.output
+            .asSequence()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .filter { it in prCommitHashes }
+            .toSet()
+        if (cacheKey != null) {
+            synchronized(missingCommitCache) {
+                missingCommitCache[cacheKey] = TimedMissingCommitSet(missing, System.currentTimeMillis())
             }
         }
         return missing
@@ -4701,91 +5261,139 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private fun loadCommitsByRange(repo: git4idea.repo.GitRepository, range: String): List<CommitItem> {
         val handler = GitLineHandler(project, repo.root, GitCommand.LOG)
         handler.addParameters(
-            "--pretty=format:%H%x09%an%x09%ad%x09%s",
+            "--topo-order",
+            "--numstat",
             "--date=iso",
+            "--pretty=format:${commitLogMarker}%H%x09%an%x09%ad%x09%s",
             range
         )
         val result = Git.getInstance().runCommand(handler)
         if (!result.success()) return emptyList()
-        val commits = result.output
-            .mapNotNull { parseCommitLine(it) }
-            .sortedByDescending { it.time }
-        return enrichCommitStats(repo, commits)
+        return parseCommitLogWithStats(result.output)
     }
 
-    private fun loadSourceOnlyCommitSelection(
+    private fun loadPullRequestCommits(
         repo: git4idea.repo.GitRepository,
         targetRef: String,
         sourceRef: String
-    ): SourceOnlyCommitSelection {
+    ): List<CommitItem> {
+        val cacheKey = buildBranchSnapshotKey(repo, targetRef, sourceRef)
+        if (cacheKey != null) {
+            synchronized(pullRequestCommitCache) {
+                val cacheEntry = pullRequestCommitCache[cacheKey]
+                if (cacheEntry != null) {
+                    if (isPullRequestCacheExpired(cacheEntry.cachedAtMillis)) {
+                        pullRequestCommitCache.remove(cacheKey)
+                    } else {
+                        return cacheEntry.commits
+                    }
+                }
+            }
+        }
+
+        val commits = loadPullRequestCommitsDirect(repo, targetRef, sourceRef) ?: return emptyList()
+        if (cacheKey != null) {
+            synchronized(pullRequestCommitCache) {
+                pullRequestCommitCache[cacheKey] = TimedCommitList(commits, System.currentTimeMillis())
+            }
+        }
+        return commits
+    }
+
+    private fun loadPullRequestCommitsDirect(
+        repo: git4idea.repo.GitRepository,
+        targetRef: String,
+        sourceRef: String
+    ): List<CommitItem>? {
         val handler = GitLineHandler(project, repo.root, GitCommand.LOG)
         handler.addParameters(
             "--right-only",
             "--cherry-pick",
-            "--name-status",
             "--topo-order",
+            "--numstat",
             "--date=iso",
-            "--pretty=format:__COMMIT__%x09%H%x09%an%x09%ad%x09%s",
+            "--pretty=format:${commitLogMarker}%H%x09%an%x09%ad%x09%s",
             "$targetRef...$sourceRef"
         )
         val result = Git.getInstance().runCommand(handler)
         if (!result.success()) {
             val error = result.errorOutput.joinToString("\n").ifBlank { "加载提交记录失败" }
-            PrManagerFileLogger.warn("Load source-only commits failed: target=$targetRef source=$sourceRef error=$error")
-            return SourceOnlyCommitSelection(emptyList(), emptySet())
+            PrManagerFileLogger.warn("Load PR commits failed: target=$targetRef source=$sourceRef error=$error")
+            return null
         }
+        return parseCommitLogWithStats(result.output)
+    }
+
+    private fun parseCommitLogWithStats(lines: List<String>): List<CommitItem> {
+        if (lines.isEmpty()) return emptyList()
 
         val commits = mutableListOf<CommitItem>()
-        val touchedPaths = linkedSetOf<String>()
-        result.output.forEach { line ->
+        var currentCommit: CommitItem? = null
+        var additions = 0
+        var deletions = 0
+
+        fun flushCurrentCommit() {
+            val commit = currentCommit ?: return
+            commits += if (additions == 0 && deletions == 0) {
+                commit
+            } else {
+                commit.copy(additions = additions, deletions = deletions)
+            }
+            currentCommit = null
+            additions = 0
+            deletions = 0
+        }
+
+        lines.forEach { line ->
             when {
-                line.startsWith("__COMMIT__\t") -> {
-                    parseCommitLine(line.removePrefix("__COMMIT__\t"))?.let(commits::add)
+                line.startsWith(commitLogMarker) -> {
+                    flushCurrentCommit()
+                    currentCommit = parseCommitLine(line.removePrefix(commitLogMarker))
                 }
+
                 line.isBlank() -> Unit
-                else -> collectTouchedPathsFromCommitLine(line, touchedPaths)
+
+                else -> {
+                    val stat = parseCommitStatLine(line) ?: return@forEach
+                    additions += stat.first
+                    deletions += stat.second
+                }
             }
         }
-        return SourceOnlyCommitSelection(
-            commits = enrichCommitStats(repo, commits).sortedByDescending { it.time },
-            touchedPaths = touchedPaths
-        )
+        flushCurrentCommit()
+        return commits.sortedByDescending { it.time }
     }
 
-    private fun collectTouchedPathsFromCommitLine(line: String, touchedPaths: MutableSet<String>) {
-        val columns = line.split('\t').map { it.trim() }.filter { it.isNotBlank() }
-        if (columns.size < 2) return
-        val status = columns[0]
-        when {
-            status.startsWith("R") || status.startsWith("C") -> {
-                columns.getOrNull(1)?.takeIf { it.isNotBlank() }?.let(touchedPaths::add)
-                columns.getOrNull(2)?.takeIf { it.isNotBlank() }?.let(touchedPaths::add)
-            }
-            else -> {
-                columns.getOrNull(1)?.takeIf { it.isNotBlank() }?.let(touchedPaths::add)
-            }
-        }
-    }
-
-    private fun enrichCommitStats(repo: git4idea.repo.GitRepository, commits: List<CommitItem>): List<CommitItem> {
-        if (commits.isEmpty()) return commits
-        return commits.map { commit ->
-            val (additions, deletions) = loadCommitStat(repo, commit.hash)
-            if (additions == 0 && deletions == 0) commit else commit.copy(additions = additions, deletions = deletions)
-        }
-    }
-
-    private fun loadCommitStat(repo: git4idea.repo.GitRepository, hash: String): Pair<Int, Int> {
-        if (hash.isBlank()) return 0 to 0
-        val handler = GitLineHandler(project, repo.root, GitCommand.SHOW)
-        handler.addParameters("--shortstat", "--format=", hash)
-        val result = Git.getInstance().runCommand(handler)
-        if (!result.success()) return 0 to 0
-        val summaryLine = result.output.firstOrNull { it.contains("insertion") || it.contains("deletion") || it.contains("changed") }
-            ?: return 0 to 0
-        val additions = Regex("(\\d+) insertion").find(summaryLine)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
-        val deletions = Regex("(\\d+) deletion").find(summaryLine)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+    private fun parseCommitStatLine(line: String): Pair<Int, Int>? {
+        val columns = line.split('\t')
+        if (columns.size < 3) return null
+        val additions = columns[0].toIntOrNull() ?: 0
+        val deletions = columns[1].toIntOrNull() ?: 0
         return additions to deletions
+    }
+
+    private fun buildBranchSnapshotKey(
+        repo: git4idea.repo.GitRepository,
+        targetRef: String,
+        sourceRef: String
+    ): BranchSnapshotKey? {
+        val targetCommitId = resolveRefHash(repo, targetRef) ?: return null
+        val sourceCommitId = resolveRefHash(repo, sourceRef) ?: return null
+        return BranchSnapshotKey(targetCommitId, sourceCommitId)
+    }
+
+    private fun buildMissingCommitCacheKey(
+        repo: git4idea.repo.GitRepository,
+        targetRef: String,
+        sourceRef: String
+    ): MissingCommitCacheKey? {
+        val branchSnapshot = buildBranchSnapshotKey(repo, targetRef, sourceRef) ?: return null
+        val currentHeadCommitId = resolveRefHash(repo, "HEAD") ?: return null
+        return MissingCommitCacheKey(branchSnapshot.targetCommitId, branchSnapshot.sourceCommitId, currentHeadCommitId)
+    }
+
+    private fun isPullRequestCacheExpired(cachedAtMillis: Long): Boolean {
+        return System.currentTimeMillis() - cachedAtMillis >= pullRequestCacheTtlMillis
     }
 
     private fun parseCommitLine(line: String): CommitItem? {
@@ -4838,7 +5446,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 val username = reviewerNode.readText("username", "login", "name", "userName")
                 if (username.isBlank()) return@mapNotNull null
                 val approveStatus = reviewerNode.readText("approve_status", "approveStatus", "approval_status")
-                ReviewerInfo(username = username, approveStatus = approveStatus)
+                ReviewerInfo(
+                    id = reviewerNode.get("id")?.asLong() ?: -1L,
+                    username = username,
+                    name = reviewerNode.readText("name", "username", "login", "userName").ifBlank { username },
+                    approveStatus = approveStatus
+                )
             }
         }
 
@@ -4886,7 +5499,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 )
             )
         }
-        return PrListResult(totalSize, list, page, totalPage)
+        return PrListResult(
+            total = totalSize,
+            items = list,
+            page = page,
+            totalPage = totalPage
+        )
     }
 
     private fun parseDetail(body: String): PrDetail {
@@ -4898,6 +5516,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
         val id = detailInfo?.get("id")?.asLong() ?: baseInfo?.get("id")?.asLong() ?: -1L
         val iid = detailInfo?.get("iid")?.asLong() ?: baseInfo?.get("iid")?.asLong() ?: -1L
+        val projectId = detailInfo?.get("project_id")?.asLong()
+            ?: detailInfo?.get("projectId")?.asLong()
+            ?: baseInfo?.get("projectId")?.asLong()
+            ?: baseInfo?.get("project_id")?.asLong()
         val title = detailInfo?.readText("title").orEmpty().ifBlank { baseInfo?.readText("title").orEmpty() }
         val status = detailInfo?.readText("state", "status").orEmpty().ifBlank { baseInfo?.readText("state", "status").orEmpty() }
         val sourceBranch = detailInfo?.readText("source_branch", "sourceBranch").orEmpty().ifBlank { baseInfo?.readText("sourceBranch", "source_branch").orEmpty() }
@@ -4941,8 +5563,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             createTime = createTime,
             headCommitSha = headCommitSha,
             baseCommitSha = baseCommitSha,
+            projectId = projectId,
             canReview = detailInfo?.get("can_review")?.asBoolean() ?: false,
             canMerge = detailInfo?.get("can_merge")?.asBoolean() ?: false,
+            canClose = detailInfo?.get("can_close")?.asBoolean() ?: false,
+            canEdit = detailInfo?.get("can_edit")?.asBoolean() ?: false,
+            canDelete = detailInfo?.get("can_delete")?.asBoolean() ?: false,
             canBeMerge = detailInfo?.get("can_be_merge")?.asBoolean() ?: false,
             overview = overview,
             primaryReviewerInfos = primaryReviewerInfos,
@@ -4954,10 +5580,15 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private fun parseDetailReviewerUsers(node: JsonNode?): List<ReviewerInfo> {
         if (node == null || !node.isArray) return emptyList()
         return node.mapNotNull { reviewerNode ->
-            val username = reviewerNode.readText("name", "username", "login", "userName")
-            if (username.isBlank()) return@mapNotNull null
+            val id = reviewerNode.get("id")?.asLong() ?: return@mapNotNull null
+            val username = reviewerNode.readText("username", "login", "userName", "name")
+            val name = reviewerNode.readText("name", "username", "login", "userName").ifBlank { username }
+            val finalUsername = username.ifBlank { name }
+            if (finalUsername.isBlank()) return@mapNotNull null
             ReviewerInfo(
-                username = username,
+                id = id,
+                username = finalUsername,
+                name = name,
                 approveStatus = reviewerNode.readText("approve_status", "approveStatus", "approval_status")
             )
         }
@@ -5089,20 +5720,21 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         val result = root.get("result") ?: root
         if (result.isMissingNode || result.isNull) return null
         if (result.isArray) return null
-        val prId = result.get("prId")?.asLong() ?: return null
-        val reviewFlag = AiReviewProgressFlag.fromCode(result.get("reviewFlag")?.asInt() ?: AiReviewProgressFlag.COMPLETED.code)
-        val validFlag = result.get("validFlag")?.asBoolean() == true
-        val fileTree = result.get("fileTreeNode")
+        val payload = result.get("data")?.takeIf { it.isObject } ?: result
+        val prId = payload.get("prId")?.asLong() ?: return null
+        val reviewFlag = AiReviewProgressFlag.fromCode(payload.get("reviewFlag")?.asInt() ?: AiReviewProgressFlag.NOT_STARTED.code)
+        val validFlag = payload.get("validFlag")?.asBoolean() == true
+        val fileTree = payload.get("fileTreeNode")
         return AiReviewOverview(
             prId = prId,
             reviewFlag = reviewFlag,
             validFlag = validFlag,
-            errorCount = result.get("aiCodeReviewIssueErrorCount")?.asInt() ?: 0,
-            warnCount = result.get("aiCodeReviewIssueWarnCount")?.asInt() ?: 0,
-            unhandledCount = result.get("aiCodeReviewIssueUnhandledCount")?.asInt() ?: 0,
-            adoptedCount = result.get("aiCodeReviewIssueAdoptedCount")?.asInt() ?: 0,
-            ignoredCount = result.get("aiCodeReviewIssueIgnoredCount")?.asInt() ?: 0,
-            misreportedCount = result.get("aiCodeReviewIssueMisreportedCount")?.asInt() ?: 0,
+            errorCount = payload.get("aiCodeReviewIssueErrorCount")?.asInt() ?: 0,
+            warnCount = payload.get("aiCodeReviewIssueWarnCount")?.asInt() ?: 0,
+            unhandledCount = payload.get("aiCodeReviewIssueUnhandledCount")?.asInt() ?: 0,
+            adoptedCount = payload.get("aiCodeReviewIssueAdoptedCount")?.asInt() ?: 0,
+            ignoredCount = payload.get("aiCodeReviewIssueIgnoredCount")?.asInt() ?: 0,
+            misreportedCount = payload.get("aiCodeReviewIssueMisreportedCount")?.asInt() ?: 0,
             fileTreeNodes = parseAiTreeNodes(fileTree)
         )
     }
@@ -5341,7 +5973,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }
         }.apply {
             isOpaque = false
-            border = JBUI.Borders.empty(3, 0, 3, 6)
+            border = JBUI.Borders.empty(4, 0, 4, 6)
         }
         private val infoPanel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
             isOpaque = false
@@ -5435,9 +6067,11 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             reviewIssueLabel.font = metaFont
             reviewIssueLabel.verticalAlignment = SwingConstants.CENTER
             reviewIssueLabel.horizontalAlignment = SwingConstants.LEFT
+            reviewIssueLabel.border = JBUI.Borders.empty(2, 8, 3, 8)
             aiIssueLabel.font = metaFont
             aiIssueLabel.verticalAlignment = SwingConstants.CENTER
             aiIssueLabel.horizontalAlignment = SwingConstants.LEFT
+            aiIssueLabel.border = JBUI.Borders.empty(2, 8, 3, 8)
             additionLabel.font = statFont
             deletionLabel.font = statFont
             additionLabel.verticalAlignment = SwingConstants.CENTER
@@ -5983,7 +6617,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     )
 
     private data class ReviewerInfo(
+        val id: Long,
         val username: String,
+        val name: String,
         val approveStatus: String
     )
 
@@ -6015,14 +6651,23 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         val createTime: String,
         val headCommitSha: String,
         val baseCommitSha: String,
+        val projectId: Long?,
         val canReview: Boolean,
         val canMerge: Boolean,
+        val canClose: Boolean,
+        val canEdit: Boolean,
+        val canDelete: Boolean,
         val canBeMerge: Boolean,
         val overview: PrOverview,
         val primaryReviewerInfos: List<ReviewerInfo>,
         val generalReviewerInfos: List<ReviewerInfo>,
         val commits: List<CommitItem>
     )
+
+    private enum class InlinePrMode {
+        CREATE,
+        EDIT
+    }
 
     private data class NoteListResult(
         val stats: IssueStats,
@@ -6048,9 +6693,25 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         val deletions: Int = 0
     )
 
-    private data class SourceOnlyCommitSelection(
+    private data class BranchSnapshotKey(
+        val targetCommitId: String,
+        val sourceCommitId: String
+    )
+
+    private data class TimedCommitList(
         val commits: List<CommitItem>,
-        val touchedPaths: Set<String>
+        val cachedAtMillis: Long
+    )
+
+    private data class MissingCommitCacheKey(
+        val targetCommitId: String,
+        val sourceCommitId: String,
+        val currentHeadCommitId: String
+    )
+
+    private data class TimedMissingCommitSet(
+        val missingHashes: Set<String>,
+        val cachedAtMillis: Long
     )
 
     private enum class PrState {
@@ -6175,12 +6836,14 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private inner class CreatePrView {
         private val mergeTypeChooseOption = "__merge_type_choose__"
+        var activeMode: InlinePrMode = InlinePrMode.CREATE
+            private set
         val rootPanel = JPanel(BorderLayout())
         private val scrollContentPanel = JPanel(BorderLayout())
         private val rootScrollPane = createDetailScrollPane(
             scrollContentPanel,
             ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
-            ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED,
+            ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER,
             ::createPrOuterFill
         ).apply {
             border = JBUI.Borders.empty()
@@ -6219,7 +6882,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         private val primaryNumSpinner = javax.swing.JSpinner(javax.swing.SpinnerNumberModel(0, 0, 999, 1))
         private val generalNumSpinner = javax.swing.JSpinner(javax.swing.SpinnerNumberModel(0, 0, 999, 1))
         private val deleteSourceBranchCheck = JBCheckBox("合并后删除源分支", false)
-        private val mergeTypeBox = javax.swing.JComboBox(arrayOf(mergeTypeChooseOption, "merge", "squash"))
+        private val mergeTypeBox = javax.swing.JComboBox(arrayOf(mergeTypeChooseOption, "merge", "fast_forward"))
         private val diffTabCountLabel = OutlinedPillLabel(JBUI.scale(16))
         private val commitTabCountLabel = OutlinedPillLabel(JBUI.scale(16))
         private val createFileChangeWarningButton = JBLabel(IconManager.getInstance().getIcon("/icons/file-change-warning.svg", javaClass)).apply {
@@ -6278,6 +6941,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         private var branchRefreshVersion = 0
         private var availableCreateBranches: List<String> = emptyList()
         private var updatingCreateBranchCombo = false
+        private var editingDetail: PrDetail? = null
 
         init {
             configureStaticComponents()
@@ -6290,7 +6954,19 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }
         }
 
-        fun prepareForDisplay() {
+        fun prepareForCreate() {
+            activeMode = InlinePrMode.CREATE
+            editingDetail = null
+            prepareForDisplay()
+        }
+
+        fun prepareForEdit(detail: PrDetail) {
+            activeMode = InlinePrMode.EDIT
+            editingDetail = detail
+            prepareForDisplay()
+        }
+
+        private fun prepareForDisplay() {
             branchRefreshVersion += 1
             developerByKey.clear()
             mandatoryPrimaryUsers = emptySet()
@@ -6307,20 +6983,25 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             updateCreateCommitWarning(false)
             precheckBlockedReason = "正在加载分支信息..."
             availableCreateBranches = emptyList()
+            applyModePresentation()
 
-            titleField.text = ""
-            descField.text = ""
+            val detail = editingDetail
+            titleField.text = if (activeMode == InlinePrMode.EDIT) detail?.title.orEmpty() else ""
+            descField.text = if (activeMode == InlinePrMode.EDIT) detail?.overview?.desc.orEmpty() else ""
             primaryReviewerPicker.clearSelection()
             generalReviewerPicker.clearSelection()
-            primaryNumSpinner.value = 0
-            generalNumSpinner.value = 0
-            deleteSourceBranchCheck.isSelected = false
-            mergeTypeBox.selectedIndex = -1
+            primaryNumSpinner.value = detail?.overview?.needKeyReviewers ?: 0
+            generalNumSpinner.value = detail?.overview?.needReviewers ?: 0
+            deleteSourceBranchCheck.isSelected = detail?.overview?.deleteBranchAfterMerged ?: false
+            val mergeType = detail?.overview?.mergedType.orEmpty()
+            mergeTypeBox.selectedItem = normalizeMergeTypeSelection(mergeType, mergeTypeChooseOption)
 
             sourceBranchBox.setAvailableBranches(emptyList())
             targetBranchBox.setAvailableBranches(emptyList())
             sourceBranchBox.setSelectedBranch(null)
             targetBranchBox.setSelectedBranch(null)
+            sourceBranchBox.isEnabled = activeMode == InlinePrMode.CREATE
+            targetBranchBox.isEnabled = activeMode == InlinePrMode.CREATE
             refreshReviewerRequirementControls()
             refreshDiffAndCommitView()
             refreshStatusBanner()
@@ -6330,7 +7011,35 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 updateCreateTabHeaderStates()
             }
             setSubmitEnabled(false)
-            loadInitialData()
+            loadInitialData(
+                initialSourceBranch = detail?.sourceBranch,
+                initialTargetBranch = detail?.targetBranch
+            )
+        }
+
+        private fun applyModePresentation() {
+            when (activeMode) {
+                InlinePrMode.CREATE -> {
+                    titleLabel.text = "创建 Pull Request"
+                    newBadge.setPill("NEW", createPrTabSelectedTextColor())
+                    submitButton.text = "提交"
+                }
+                InlinePrMode.EDIT -> {
+                    titleLabel.text = "编辑 Pull Request"
+                    newBadge.setPill("EDIT", detailAccentColor)
+                    submitButton.text = "提交"
+                }
+            }
+            listOf(cancelButton, submitButton).forEach { button ->
+                val metrics = button.getFontMetrics(button.font)
+                val width = metrics.stringWidth(button.text.orEmpty()) + JBUI.scale(32)
+                val height = maxOf(JBUI.scale(28), metrics.height + JBUI.scale(6))
+                val size = Dimension(width, height)
+                button.preferredSize = size
+                button.minimumSize = size
+                button.maximumSize = size
+                button.revalidate()
+            }
         }
 
         fun applyTheme() {
@@ -6747,7 +7456,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
 
         private fun buildOverviewTab(): JComponent {
-            val content = buildDetailTabBody(topInset = 24, bottomInset = 20, tracksViewportWidth = false).apply {
+            val content = buildDetailTabBody(topInset = 24, bottomInset = 20, tracksViewportWidth = true).apply {
                 isOpaque = true
                 background = createPrSectionFill()
             }
@@ -6760,7 +7469,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             content.add(Box.createVerticalGlue())
             bindCreateBackgroundClickDismiss(content)
             return wrapCreateTabContent(
-                createDetailScrollPane(content, ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED, ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED, ::createPrSectionFill)
+                createDetailScrollPane(content, ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED, ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER, ::createPrSectionFill),
+                showTopBorder = false
             )
         }
 
@@ -6881,11 +7591,11 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
         private fun buildCommitTab(): JComponent = wrapCreateTabContent(buildCreateCommitPanel())
 
-        private fun wrapCreateTabContent(component: JComponent): JComponent {
+        private fun wrapCreateTabContent(component: JComponent, showTopBorder: Boolean = true): JComponent {
             return JPanel(BorderLayout()).apply {
                 isOpaque = true
                 background = createPrSectionFill()
-                border = JBUI.Borders.customLineTop(detailTabUnderlineColor())
+                border = if (showTopBorder) JBUI.Borders.customLineTop(detailTabUnderlineColor()) else JBUI.Borders.empty()
                 add(component, BorderLayout.CENTER)
             }
         }
@@ -7005,8 +7715,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             return when (value?.trim().orEmpty()) {
                 "" -> if (inPopup) "合并时选择" else "请用户选择（非必填）"
                 mergeTypeChooseOption -> "合并时选择"
-                "merge" -> "Merge（合并所有提交）"
-                "squash" -> "Squash（扁平化分支合并）"
+                "merge" -> if (inPopup) "Merge（合并所有提交）" else "Merge"
+                "fast_forward", "squash" -> if (inPopup) {
+                    "Merge(Fast-Forward-Only)（不创建合并节点，采用Fast-Forward-Only方式合并）"
+                } else {
+                    "Merge(Fast-Forward-Only)"
+                }
                 else -> value.orEmpty()
             }
         }
@@ -7014,8 +7728,39 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         private fun resolveMergeTypeValue(selected: String?): String {
             return when (selected?.trim().orEmpty()) {
                 "", mergeTypeChooseOption -> ""
+                "squash", "fast_forward" -> "fast_forward"
                 else -> selected.orEmpty().trim()
             }
+        }
+
+        private fun normalizeMergeTypeSelection(value: String?, emptyValue: String): String {
+            return when (value?.trim().orEmpty().lowercase()) {
+                "" -> emptyValue
+                "squash", "fast_forward" -> "fast_forward"
+                else -> value.orEmpty().trim()
+            }
+        }
+
+        private fun mergeTypePopupWidth(): Int {
+            @Suppress("UNCHECKED_CAST")
+            val renderer = mergeTypeBox.renderer as? javax.swing.ListCellRenderer<Any?>
+            val measureList = javax.swing.JList<Any?>().apply {
+                font = mergeTypeBox.font
+            }
+            val maxRowWidth = sequenceOf(mergeTypeChooseOption, "merge", "fast_forward")
+                .mapIndexed { index, value ->
+                    val rendered = renderer?.getListCellRendererComponent(
+                        measureList,
+                        value,
+                        index,
+                        false,
+                        false
+                    ) as? JComponent
+                    rendered?.preferredSize?.width ?: 0
+                }
+                .maxOrNull()
+                ?: 0
+            return maxRowWidth + JBUI.scale(20)
         }
 
         private fun configureFlatComboBox(comboBox: javax.swing.JComboBox<String>) {
@@ -7169,6 +7914,15 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                             }
                         }
 
+                        override fun computePopupBounds(px: Int, py: Int, pw: Int, ph: Int): Rectangle {
+                            val targetWidth = if (comboBox === mergeTypeBox) {
+                                mergeTypePopupWidth().coerceAtLeast(comboBox.width)
+                            } else {
+                                pw
+                            }
+                            return super.computePopupBounds(px, py, targetWidth, ph)
+                        }
+
                         override fun show() {
                             val maxVisibleRows = if (comboBox === mergeTypeBox) {
                                 comboBox.itemCount.coerceAtLeast(1)
@@ -7179,7 +7933,11 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                             list.visibleRowCount = visibleRowCount
                             val popupHeight = (list.fixedCellHeight.takeIf { it > 0 } ?: popupRowHeight) * visibleRowCount +
                                 scroller.insets.top + scroller.insets.bottom + popupOutlineWidth * 2 + JBUI.scale(2)
-                            val popupWidth = comboBox.width.coerceAtLeast(preferredSize?.width ?: 0)
+                            val popupWidth = if (comboBox === mergeTypeBox) {
+                                mergeTypePopupWidth().coerceAtLeast(comboBox.width)
+                            } else {
+                                comboBox.width.coerceAtLeast(preferredSize?.width ?: 0)
+                            }
                             val popupSize = Dimension(popupWidth, popupHeight)
                             scroller.preferredSize = popupSize
                             scroller.minimumSize = popupSize
@@ -7189,7 +7947,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                             preferredSize = popupSize
                             size = popupSize
                             super.show()
-                            val adjustedSize = Dimension(comboBox.width, popupHeight)
+                            val adjustedWidth = if (comboBox === mergeTypeBox) popupWidth else comboBox.width
+                            val adjustedSize = Dimension(adjustedWidth, popupHeight)
                             scroller.preferredSize = adjustedSize
                             scroller.minimumSize = adjustedSize
                             if (comboBox === mergeTypeBox) {
@@ -7548,6 +8307,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
                 val openPopupListener = object : MouseAdapter() {
                     override fun mousePressed(e: MouseEvent) {
+                        if (!this@BranchSelectorField.isEnabled) return
                         if (!SwingUtilities.isLeftMouseButton(e)) return
                         val focusOwner = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
                         val switchingFromTextInput = focusOwner === titleField || focusOwner === descField
@@ -7589,7 +8349,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }
 
             fun applyTheme() {
-                valueLabel.foreground = if (selectedBranch.isBlank()) createPrSecondaryTextColor() else createPrPrimaryTextColor()
+                val enabled = isEnabled
+                valueLabel.foreground = when {
+                    !enabled -> createPrSecondaryTextColor()
+                    selectedBranch.isBlank() -> createPrSecondaryTextColor()
+                    else -> createPrPrimaryTextColor()
+                }
                 arrowLabel.icon = createArrowIcon()
                 searchField.background = searchFieldSurfaceFill()
                 searchField.foreground = createPrPrimaryTextColor()
@@ -7641,6 +8406,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }
 
             private fun openPopup() {
+                if (!isEnabled) return
                 clearSearchKeyword()
                 applyFilter("")
                 ensurePopupVisible()
@@ -7764,9 +8530,22 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
             private fun refreshDisplay() {
                 valueLabel.text = if (selectedBranch.isBlank()) placeholderText else selectedBranch
-                valueLabel.foreground = if (selectedBranch.isBlank()) createPrSecondaryTextColor() else createPrPrimaryTextColor()
+                valueLabel.foreground = when {
+                    !isEnabled -> createPrSecondaryTextColor()
+                    selectedBranch.isBlank() -> createPrSecondaryTextColor()
+                    else -> createPrPrimaryTextColor()
+                }
                 arrowLabel.icon = createArrowIcon()
+                cursor = if (isEnabled) Cursor.getPredefinedCursor(Cursor.HAND_CURSOR) else Cursor.getDefaultCursor()
                 repaint()
+            }
+
+            override fun setEnabled(enabled: Boolean) {
+                super.setEnabled(enabled)
+                if (!enabled) {
+                    hidePopup()
+                }
+                refreshDisplay()
             }
 
             private fun updatePopupSize() {
@@ -8474,6 +9253,11 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             val loadingDiff = createChangesLoading
             val loadingCommits = createCommitsLoading
             val loadingMissing = createMissingCommitLoading
+            if (activeMode == InlinePrMode.EDIT) {
+                branchStatusIconLabel.text = ""
+                branchStatusTextLabel.text = ""
+                return
+            }
             when {
                 reason == "正在加载分支信息..." || reason == "正在校验分支..." -> {
                     branchStatusIconLabel.text = "…"
@@ -9060,7 +9844,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }
         }
 
-        private fun loadInitialData() {
+        private fun loadInitialData(
+            initialSourceBranch: String? = null,
+            initialTargetBranch: String? = null
+        ) {
             ApplicationManager.getApplication().executeOnPooledThread {
                 try {
                     fetchRemoteBranches()
@@ -9069,8 +9856,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                         availableCreateBranches = branches
                         sourceBranchBox.setAvailableBranches(branches)
                         targetBranchBox.setAvailableBranches(branches)
-                        sourceBranchBox.setSelectedBranch(null)
-                        targetBranchBox.setSelectedBranch(null)
+                        sourceBranchBox.setSelectedBranch(initialSourceBranch)
+                        targetBranchBox.setSelectedBranch(initialTargetBranch)
                         precheckBlockedReason = null
                         triggerBranchRefresh()
                     }
@@ -9117,6 +9904,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 createMissingCommitLoading = false
                 refreshDiffAndCommitView()
                 setSubmitEnabled(false)
+                return
+            }
+            if (activeMode == InlinePrMode.EDIT) {
+                applyEditModeBranchState(source, target, refreshVersion)
                 return
             }
             if (source == target) {
@@ -9169,6 +9960,36 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }
         }
 
+        private fun applyEditModeBranchState(source: String, target: String, refreshVersion: Int) {
+            val detail = editingDetail
+            val primarySelection = detail?.primaryReviewerInfos?.map(::reviewerInfoToCandidate).orEmpty()
+            val generalSelection = detail?.generalReviewerInfos?.map(::reviewerInfoToCandidate).orEmpty()
+            latestPreCreateCheck = PreCreateCheck(
+                code = 200,
+                message = "",
+                canBeAutomerge = true,
+                primaryReviewers = primarySelection,
+                generalReviewers = generalSelection,
+                primaryReviewerNum = detail?.overview?.needKeyReviewers ?: 0,
+                generalReviewerNum = detail?.overview?.needReviewers ?: 0
+            )
+            mandatoryPrimaryUsers = emptySet()
+            minimumPrimary = detail?.overview?.needKeyReviewers ?: 0
+            minimumGeneral = detail?.overview?.needReviewers ?: 0
+            precheckBlockedReason = null
+            primaryReviewerPicker.setSelectedCandidates(primarySelection)
+            generalReviewerPicker.setSelectedCandidates(generalSelection)
+            refreshReviewerRequirementControls()
+            if (detail != null) {
+                primaryNumSpinner.value = detail.overview.needKeyReviewers
+                generalNumSpinner.value = detail.overview.needReviewers
+            }
+            indexDevelopers(primarySelection + generalSelection)
+            refreshDiffAndCommitView()
+            setSubmitEnabled(true)
+            startCreateDiffAndCommitRefresh(source, target, refreshVersion)
+        }
+
         private fun runPreCreateCheck(source: String, target: String): PreCreateCheck {
             if (mockEnabled) {
                 val mockJson = readMockJson(mockCanCreatePrFile)
@@ -9178,8 +9999,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             val response = apiService.canCreatePr(
                 sshPath = resolveGitAddress(),
                 sourceBranch = source,
-                targetBranch = target,
-                projectId = repoProjectId.ifBlank { null }
+                targetBranch = target
             )
             if (response.statusCode() !in 200..299) {
                 return PreCreateCheck(response.statusCode(), "分支校验失败", false, emptyList(), emptyList(), 0, 0)
@@ -9192,12 +10012,19 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             val result = root.get("result") ?: root
             val data = result.get("data")
             val code = data?.get("code")?.asInt() ?: result.get("code")?.asInt() ?: 500
-            val message = data?.readText("message", "warningMessage").orEmpty().ifBlank { result.readText("message") }
-            val canBeAutomerge = data?.get("canBeAutomerge")?.asBoolean() == true
-            val primary = parseDeveloperCandidates(data?.get("primaryReviewers"))
-            val general = parseDeveloperCandidates(data?.get("generalReviewers"))
-            val primaryNum = data?.get("primaryReviewerNum")?.asInt() ?: if (primary.isNotEmpty()) 1 else 0
-            val generalNum = data?.get("generalReviewerNum")?.asInt() ?: if (general.isNotEmpty()) 1 else 0
+            val message = data?.readText("message", "warningMessage", "warning_message").orEmpty()
+                .ifBlank { result.readText("message") }
+            val canBeAutomerge = data?.get("canBeAutomerge")?.asBoolean()
+                ?: data?.get("can_be_automerge")?.asBoolean()
+                ?: false
+            val primary = parseDeveloperCandidates(data?.get("primaryReviewers") ?: data?.get("primary_reviewers"))
+            val general = parseDeveloperCandidates(data?.get("generalReviewers") ?: data?.get("general_reviewers"))
+            val primaryNum = data?.get("primaryReviewerNum")?.asInt()
+                ?: data?.get("primary_reviewer_num")?.asInt()
+                ?: if (primary.isNotEmpty()) 1 else 0
+            val generalNum = data?.get("generalReviewerNum")?.asInt()
+                ?: data?.get("general_reviewer_num")?.asInt()
+                ?: if (general.isNotEmpty()) 1 else 0
             return PreCreateCheck(code, message, canBeAutomerge, primary, general, primaryNum, generalNum)
         }
 
@@ -9213,19 +10040,54 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }
         }
 
+        private fun reviewerInfoToCandidate(info: ReviewerInfo): DeveloperCandidate {
+            return DeveloperCandidate(
+                id = info.id,
+                username = info.username,
+                name = info.name.ifBlank { info.username }
+            )
+        }
+
+        private fun mergeCandidatesPreservingOrder(primary: List<DeveloperCandidate>, secondary: List<DeveloperCandidate>): List<DeveloperCandidate> {
+            return (primary + secondary).distinctBy { it.id }
+        }
+
         private fun applyPrecheckResult(check: PreCreateCheck, refreshVersion: Int) {
             mandatoryPrimaryUsers = check.primaryReviewers.map { it.username }.toSet()
             minimumPrimary = check.primaryReviewerNum.coerceAtLeast(if (check.primaryReviewers.isNotEmpty()) 1 else 0)
             minimumGeneral = check.generalReviewerNum.coerceAtLeast(if (check.generalReviewers.isNotEmpty()) 1 else 0)
             precheckBlockedReason = if (check.code == 200) null else check.message.ifBlank { "分支不满足创建条件，code=${check.code}" }
+            val editDetail = editingDetail
+            val primarySelection = if (activeMode == InlinePrMode.EDIT && editDetail != null) {
+                mergeCandidatesPreservingOrder(
+                    editDetail.primaryReviewerInfos.map(::reviewerInfoToCandidate),
+                    check.primaryReviewers
+                )
+            } else {
+                check.primaryReviewers
+            }
+            val generalSelection = if (activeMode == InlinePrMode.EDIT && editDetail != null) {
+                mergeCandidatesPreservingOrder(
+                    editDetail.generalReviewerInfos.map(::reviewerInfoToCandidate),
+                    check.generalReviewers
+                )
+            } else {
+                check.generalReviewers
+            }
             SwingUtilities.invokeLater {
                 if (refreshVersion != branchRefreshVersion) return@invokeLater
-                primaryReviewerPicker.setSelectedCandidates(check.primaryReviewers, check.primaryReviewers.map { it.id }.toSet())
-                generalReviewerPicker.setSelectedCandidates(check.generalReviewers)
+                primaryReviewerPicker.setSelectedCandidates(primarySelection, check.primaryReviewers.map { it.id }.toSet())
+                generalReviewerPicker.setSelectedCandidates(generalSelection)
                 refreshReviewerRequirementControls()
+                if (activeMode == InlinePrMode.EDIT && editDetail != null) {
+                    val primaryMinimum = (primaryNumSpinner.model as javax.swing.SpinnerNumberModel).minimum as? Int ?: 0
+                    val generalMinimum = (generalNumSpinner.model as javax.swing.SpinnerNumberModel).minimum as? Int ?: 0
+                    primaryNumSpinner.value = maxOf(editDetail.overview.needKeyReviewers, primaryMinimum)
+                    generalNumSpinner.value = maxOf(editDetail.overview.needReviewers, generalMinimum)
+                }
                 refreshStatusBanner()
             }
-            indexDevelopers(check.primaryReviewers + check.generalReviewers)
+            indexDevelopers(primarySelection + generalSelection)
         }
 
         private fun loadDevelopersFromApi(keywords: String): List<DeveloperCandidate> {
@@ -9240,8 +10102,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }
             val response = apiService.fetchDevelopers(
                 sshPath = resolveGitAddress(),
-                projectId = repoProjectId.ifBlank { null },
-                keywords = keywords
+                keyword = keywords
             )
             if (response.statusCode() !in 200..299) return emptyList()
             val root = objectMapper.readTree(response.body())
@@ -9291,29 +10152,31 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
                 val sourceRef = toRemoteBranchRef(repo, sourceBranch)
                 val targetRef = toRemoteBranchRef(repo, targetBranch)
-                val selection = loadSourceOnlyCommitSelection(repo, targetRef, sourceRef)
+                val prCommitsFuture = CompletableFuture.supplyAsync {
+                    loadPullRequestCommits(repo, targetRef, sourceRef)
+                }
+                val changesFuture = CompletableFuture.supplyAsync {
+                    branchService.comparePullRequest(targetRef, sourceRef)
+                }
+                val prCommits = prCommitsFuture.join()
                 SwingUtilities.invokeLater {
                     if (refreshVersion != branchRefreshVersion) return@invokeLater
-                    latestCommits = selection.commits
+                    latestCommits = prCommits
                     createCommitsLoading = false
-                    createMissingCommitLoading = selection.commits.isNotEmpty()
+                    createMissingCommitLoading = prCommits.isNotEmpty()
                     refreshDiffAndCommitView()
                 }
 
                 if (refreshVersion != branchRefreshVersion) return@executeOnPooledThread
 
-                val changesResult = if (selection.touchedPaths.isEmpty()) {
-                    com.gitee.prviewer.model.CompareResult(emptyList())
-                } else {
-                    branchService.compareBetweenRefs(targetRef, sourceRef, selection.touchedPaths)
-                }
+                val changesResult = changesFuture.join()
                 SwingUtilities.invokeLater {
                     if (refreshVersion != branchRefreshVersion) return@invokeLater
                     latestChanges = if (changesResult.error == null) changesResult.changes else emptyList()
                     createChangesLoading = false
                     refreshDiffAndCommitView()
                 }
-                if (selection.commits.isEmpty() || refreshVersion != branchRefreshVersion) {
+                if (prCommits.isEmpty() || refreshVersion != branchRefreshVersion) {
                     SwingUtilities.invokeLater {
                         if (refreshVersion != branchRefreshVersion) return@invokeLater
                         latestMissingCommitHashes = emptySet()
@@ -9323,7 +10186,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     return@executeOnPooledThread
                 }
 
-                val missingHashes = runCatching { findMissingCommitsInCurrentBranch(repo, selection.commits) }
+                val missingHashes = runCatching { findMissingCommitsInCurrentBranch(repo, targetRef, sourceRef, prCommits) }
                     .getOrElse {
                         PrManagerFileLogger.error("Load create PR missing commit hashes failed", it)
                         emptySet()
@@ -9340,23 +10203,24 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         private fun computeBranchDiffAndCommits(sourceBranch: String, targetBranch: String) {
             val sourceRef = ensureOriginBranch(sourceBranch)
             val targetRef = ensureOriginBranch(targetBranch)
-            val compare = branchService.compare(targetRef, sourceRef)
-            latestChanges = if (compare.error == null) compare.changes else emptyList()
-
             val repo = GitRepositoryManager.getInstance(project).repositories.firstOrNull()
-            latestCommits = if (repo == null) {
-                emptyList()
+            if (repo == null) {
+                latestChanges = emptyList()
+                latestCommits = emptyList()
+                latestMissingCommitHashes = emptySet()
             } else {
                 val source = toRemoteBranchRef(repo, sourceBranch)
                 val target = toRemoteBranchRef(repo, targetBranch)
-                val mergeBase = resolveMergeBase(repo, target, source)
-                val range = if (!mergeBase.isNullOrBlank()) "$mergeBase..$source" else "$target..$source"
-                loadCommitsByRange(repo, range)
-            }
-            latestMissingCommitHashes = if (repo == null || latestCommits.isEmpty()) {
-                emptySet()
-            } else {
-                findMissingCommitsInCurrentBranch(repo, latestCommits)
+                val commitFuture = CompletableFuture.supplyAsync {
+                    loadPullRequestCommits(repo, target, source)
+                }
+                val changeFuture = CompletableFuture.supplyAsync {
+                    branchService.comparePullRequest(targetRef, sourceRef)
+                }
+                val compare = changeFuture.join()
+                latestChanges = if (compare.error == null) compare.changes else emptyList()
+                latestCommits = commitFuture.join()
+                findMissingCommitsInCurrentBranch(repo, target, source, latestCommits)
             }
             SwingUtilities.invokeLater { refreshDiffAndCommitView() }
         }
@@ -9366,29 +10230,32 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             return candidates.map { it.username } to candidates.map { it.id }.distinct()
         }
 
+        private fun currentDialogTitle(): String = if (activeMode == InlinePrMode.EDIT) "编辑 PR" else "创建 PR"
+
         private fun submit() {
+            val dialogTitle = currentDialogTitle()
             val title = titleField.text.trim()
             if (title.isBlank()) {
-                Messages.showErrorDialog(project, "标题不能为空", "创建 PR")
+                Messages.showErrorDialog(project, "标题不能为空", dialogTitle)
                 return
             }
             val desc = descField.text.trim()
             if (desc.isBlank()) {
-                Messages.showErrorDialog(project, "描述不能为空", "创建 PR")
+                Messages.showErrorDialog(project, "描述不能为空", dialogTitle)
                 return
             }
             val source = selectedCreateBranch(sourceBranchBox)
             val target = selectedCreateBranch(targetBranchBox)
             if (source.isBlank() || target.isBlank()) {
-                Messages.showErrorDialog(project, "请选择源分支和目标分支", "创建 PR")
+                Messages.showErrorDialog(project, "请选择源分支和目标分支", dialogTitle)
                 return
             }
-            if (source == target) {
-                Messages.showErrorDialog(project, "源分支和目标分支不能相同", "创建 PR")
+            if (activeMode != InlinePrMode.EDIT && source == target) {
+                Messages.showErrorDialog(project, "源分支和目标分支不能相同", dialogTitle)
                 return
             }
-            if (!precheckBlockedReason.isNullOrBlank()) {
-                Messages.showErrorDialog(project, precheckBlockedReason, "创建 PR")
+            if (activeMode != InlinePrMode.EDIT && !precheckBlockedReason.isNullOrBlank()) {
+                Messages.showErrorDialog(project, precheckBlockedReason, dialogTitle)
                 return
             }
 
@@ -9398,7 +10265,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             if (mandatoryPrimaryUsers.isNotEmpty()) {
                 val missingPrimary = mandatoryPrimaryUsers.filterNot { primaryNames.contains(it) }
                 if (missingPrimary.isNotEmpty()) {
-                    Messages.showErrorDialog(project, "关键评审人不可删除，缺失: ${missingPrimary.joinToString(",")}", "创建 PR")
+                    Messages.showErrorDialog(project, "关键评审人不可删除，缺失: ${missingPrimary.joinToString(",")}", dialogTitle)
                     return
                 }
             }
@@ -9410,23 +10277,24 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             val finalMinPrimary = maxOf(minimumPrimary, if (primaryIds.isNotEmpty()) 1 else 0)
             val finalMinGeneral = maxOf(minimumGeneral, if (generalIds.isNotEmpty()) 1 else 0)
             if (primaryNum < finalMinPrimary) {
-                Messages.showErrorDialog(project, "关键评审最少通过人数不能小于 $finalMinPrimary", "创建 PR")
+                Messages.showErrorDialog(project, "关键评审最少通过人数不能小于 $finalMinPrimary", dialogTitle)
                 return
             }
             if (primaryNum > primaryIds.size) {
-                Messages.showErrorDialog(project, "关键评审最少通过人数不能大于当前已选关键评审人数", "创建 PR")
+                Messages.showErrorDialog(project, "关键评审最少通过人数不能大于当前已选关键评审人数", dialogTitle)
                 return
             }
             if (generalNum < finalMinGeneral) {
-                Messages.showErrorDialog(project, "普通评审最少通过人数不能小于 $finalMinGeneral", "创建 PR")
+                Messages.showErrorDialog(project, "普通评审最少通过人数不能小于 $finalMinGeneral", dialogTitle)
                 return
             }
             if (generalNum > generalIds.size) {
-                Messages.showErrorDialog(project, "普通评审最少通过人数不能大于当前已选评审人数", "创建 PR")
+                Messages.showErrorDialog(project, "普通评审最少通过人数不能大于当前已选评审人数", dialogTitle)
                 return
             }
 
             val mergeType = resolveMergeTypeValue(mergeTypeBox.selectedItem as? String)
+            val editDetailSnapshot = editingDetail
             setSubmitEnabled(false)
             ApplicationManager.getApplication().executeOnPooledThread {
                 try {
@@ -9434,23 +10302,44 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                         readMockJson(mockCreatePrFile)
                             ?: throw IllegalStateException("Mock文件不存在: $mockDir/$mockCreatePrFile")
                     } else {
-                        val response = apiService.createPr(
-                            sshPath = resolveGitAddress(),
-                            title = title,
-                            head = source,
-                            base = target,
-                            body = desc,
-                            assigneesIds = generalIds,
-                            assigneesNum = generalNum,
-                            primaryAssigneesIds = primaryIds,
-                            primaryAssigneesNum = primaryNum,
-                            pruneBranch = deleteSourceBranchCheck.isSelected,
-                            defaultMergeType = mergeType
-                        )
+                        val response = if (activeMode == InlinePrMode.EDIT) {
+                            val targetDetail = editDetailSnapshot
+                                ?: throw IllegalStateException("当前编辑 PR 信息缺失")
+                            apiService.updatePrByUser(
+                                sshPath = resolveGitAddress(),
+                                iid = targetDetail.iid,
+                                title = title,
+                                body = desc,
+                                assigneesIds = generalIds,
+                                assigneesNum = generalNum,
+                                primaryAssigneesIds = primaryIds,
+                                primaryAssigneesNum = primaryNum,
+                                pruneBranch = deleteSourceBranchCheck.isSelected,
+                                defaultMergeType = mergeType
+                            )
+                        } else {
+                            apiService.createPr(
+                                sshPath = resolveGitAddress(),
+                                title = title,
+                                head = source,
+                                base = target,
+                                body = desc,
+                                assigneesIds = generalIds,
+                                assigneesNum = generalNum,
+                                primaryAssigneesIds = primaryIds,
+                                primaryAssigneesNum = primaryNum,
+                                pruneBranch = deleteSourceBranchCheck.isSelected,
+                                defaultMergeType = mergeType
+                            )
+                        }
                         if (response.statusCode() !in 200..299) {
                             SwingUtilities.invokeLater {
                                 setSubmitEnabled(true)
-                                Messages.showErrorDialog(project, "创建失败: ${response.statusCode()}", "创建 PR")
+                                Messages.showErrorDialog(
+                                    project,
+                                    "${if (activeMode == InlinePrMode.EDIT) "编辑失败" else "创建失败"}: ${response.statusCode()}",
+                                    dialogTitle
+                                )
                             }
                             return@executeOnPooledThread
                         }
@@ -9464,23 +10353,34 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                         else -> false
                     }
                     if (!success) {
-                        val message = result.readText("message", "code").ifBlank { "创建失败" }
+                        val message = result.readText("message", "code").ifBlank {
+                            if (activeMode == InlinePrMode.EDIT) "编辑失败" else "创建失败"
+                        }
                         SwingUtilities.invokeLater {
                             setSubmitEnabled(true)
-                            Messages.showErrorDialog(project, message, "创建 PR")
+                            Messages.showErrorDialog(project, message, dialogTitle)
                         }
                         return@executeOnPooledThread
                     }
                     SwingUtilities.invokeLater {
-                        updateStatus("创建 PR 成功")
+                        val successMessage = if (activeMode == InlinePrMode.EDIT) "编辑 PR 成功" else "创建 PR 成功"
+                        updateStatus(successMessage)
                         exitCreatePrView()
-                        resetAndLoad()
+                        if (activeMode == InlinePrMode.EDIT) {
+                            editDetailSnapshot?.id?.let { refreshPrListAndCurrentDetail(it) } ?: resetAndLoad()
+                        } else {
+                            resetAndLoad()
+                        }
                     }
                 } catch (e: Exception) {
-                    PrManagerFileLogger.error("Create PR from inline view failed", e)
+                    PrManagerFileLogger.error("Submit inline PR view failed: mode=$activeMode", e)
                     SwingUtilities.invokeLater {
                         setSubmitEnabled(true)
-                        Messages.showErrorDialog(project, e.message ?: "创建失败", "创建 PR")
+                        Messages.showErrorDialog(
+                            project,
+                            e.message ?: if (activeMode == InlinePrMode.EDIT) "编辑失败" else "创建失败",
+                            dialogTitle
+                        )
                     }
                 }
             }
@@ -9497,7 +10397,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         private val primaryNumSpinner = javax.swing.JSpinner(javax.swing.SpinnerNumberModel(0, 0, 999, 1))
         private val generalNumSpinner = javax.swing.JSpinner(javax.swing.SpinnerNumberModel(0, 0, 999, 1))
         private val deleteSourceBranchCheck = JBCheckBox("合并后删除源分支", false)
-        private val mergeTypeBox = javax.swing.JComboBox(arrayOf("", "merge", "squash"))
+        private val mergeTypeBox = javax.swing.JComboBox(arrayOf("", "merge", "fast_forward"))
         private val autoMergeLabel = JBLabel("自动合并：-")
         private val validationLabel = JBLabel(" ")
         private val diffSummaryArea = JBTextArea()
@@ -9693,8 +10593,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             val response = apiService.canCreatePr(
                 sshPath = resolveGitAddress(),
                 sourceBranch = source,
-                targetBranch = target,
-                projectId = repoProjectId.ifBlank { null }
+                targetBranch = target
             )
             if (response.statusCode() !in 200..299) {
                 return PreCreateCheck(response.statusCode(), "分支校验失败", false, emptyList(), emptyList(), 0, 0)
@@ -9707,13 +10606,19 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             val result = root.get("result") ?: root
             val data = result.get("data")
             val code = data?.get("code")?.asInt() ?: result.get("code")?.asInt() ?: 500
-            val message = data?.readText("message", "warningMessage").orEmpty()
+            val message = data?.readText("message", "warningMessage", "warning_message").orEmpty()
                 .ifBlank { result.readText("message") }
-            val canBeAutomerge = data?.get("canBeAutomerge")?.asBoolean() == true
-            val primary = parseDeveloperCandidates(data?.get("primaryReviewers"))
-            val general = parseDeveloperCandidates(data?.get("generalReviewers"))
-            val primaryNum = data?.get("primaryReviewerNum")?.asInt() ?: if (primary.isNotEmpty()) 1 else 0
-            val generalNum = data?.get("generalReviewerNum")?.asInt() ?: if (general.isNotEmpty()) 1 else 0
+            val canBeAutomerge = data?.get("canBeAutomerge")?.asBoolean()
+                ?: data?.get("can_be_automerge")?.asBoolean()
+                ?: false
+            val primary = parseDeveloperCandidates(data?.get("primaryReviewers") ?: data?.get("primary_reviewers"))
+            val general = parseDeveloperCandidates(data?.get("generalReviewers") ?: data?.get("general_reviewers"))
+            val primaryNum = data?.get("primaryReviewerNum")?.asInt()
+                ?: data?.get("primary_reviewer_num")?.asInt()
+                ?: if (primary.isNotEmpty()) 1 else 0
+            val generalNum = data?.get("generalReviewerNum")?.asInt()
+                ?: data?.get("general_reviewer_num")?.asInt()
+                ?: if (general.isNotEmpty()) 1 else 0
             return PreCreateCheck(code, message, canBeAutomerge, primary, general, primaryNum, generalNum)
         }
 
@@ -9794,8 +10699,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }
             val response = apiService.fetchDevelopers(
                 sshPath = resolveGitAddress(),
-                projectId = repoProjectId.ifBlank { null },
-                keywords = keywords
+                keyword = keywords
             )
             if (response.statusCode() !in 200..299) return emptyList()
             val root = objectMapper.readTree(response.body())
@@ -9818,7 +10722,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         private fun computeBranchDiffAndCommits(sourceBranch: String, targetBranch: String) {
             val sourceRef = ensureOriginBranch(sourceBranch)
             val targetRef = ensureOriginBranch(targetBranch)
-            val compare = branchService.compare(targetRef, sourceRef)
+            val compare = branchService.comparePullRequest(targetRef, sourceRef)
             latestChanges = if (compare.error == null) compare.changes else emptyList()
 
             val repo = GitRepositoryManager.getInstance(project).repositories.firstOrNull()
@@ -9827,9 +10731,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             } else {
                 val source = toRemoteBranchRef(repo, sourceBranch)
                 val target = toRemoteBranchRef(repo, targetBranch)
-                val mergeBase = resolveMergeBase(repo, target, source)
-                val range = if (!mergeBase.isNullOrBlank()) "$mergeBase..$source" else "$target..$source"
-                loadCommitsByRange(repo, range)
+                loadPullRequestCommits(repo, target, source)
             }
             SwingUtilities.invokeLater { refreshDiffAndCommitText() }
         }
@@ -10070,12 +10972,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private inner class MergeMethodPickerDialog(project: Project) : com.intellij.openapi.ui.DialogWrapper(project) {
         private val mergeRadio = javax.swing.JRadioButton("Merge", true)
-        private val squashRadio = javax.swing.JRadioButton("Squash")
+        private val fastForwardRadio = javax.swing.JRadioButton("Merge(Fast-Forward-Only)")
 
         val selectedMethod: String?
             get() = when {
                 mergeRadio.isSelected -> "merge"
-                squashRadio.isSelected -> "squash"
+                fastForwardRadio.isSelected -> "fast_forward"
                 else -> null
             }
 
@@ -10089,17 +10991,17 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         override fun createCenterPanel(): JComponent {
             ButtonGroup().apply {
                 add(mergeRadio)
-                add(squashRadio)
+                add(fastForwardRadio)
             }
 
             val content = JPanel().apply {
                 layout = BoxLayout(this, BoxLayout.Y_AXIS)
                 isOpaque = false
-                add(createDialogChoiceCard("总是创建一个合并节点，记录合并信息。", mergeRadio, alignTop = false, padding = JBUI.insets(6, 12)))
+                add(createDialogChoiceCard("总是创建一个合并节点，记录合并信息。", mergeRadio, alignTop = false, padding = JBUI.insets(8, 12), minHeight = 58))
                 add(Box.createVerticalStrut(JBUI.scale(8)))
-                add(createDialogChoiceCard("扁平化分支合并。", squashRadio, alignTop = false, padding = JBUI.insets(6, 12)))
+                add(createDialogChoiceCard("不创建合并节点，采用Fast-Forward-Only方式合并。", fastForwardRadio, alignTop = false, padding = JBUI.insets(8, 12), minHeight = 58))
             }
-            return createDialogRootPanel("选择合并方式", JBUI.scale(520), body = content)
+            return createDialogRootPanel("选择合并方式", JBUI.scale(520), JBUI.scale(196), content)
         }
     }
 

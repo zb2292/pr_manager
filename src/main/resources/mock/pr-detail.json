@@ -51,26 +51,15 @@
           }
         ],
         "primary_reviewers": [
-          {
-            "id": 2001,
-            "username": "alice",
-            "name": "Alice",
-            "approve_status": "approved",
-            "primary": true
-          },
-          {
-            "id": 2002,
-            "username": "david",
-            "name": "David",
-            "approve_status": "",
-            "primary": true
-          }
         ],
         "general_reviewer_num": 1,
         "primary_reviewer_num": 2,
         "can_be_merge": true,
         "can_review": true,
         "can_merge": true,
+        "can_close": true,
+        "can_edit": true,
+        "can_delete": true,
         "body": "本次 PR 主要优化登录流程，并补充异常提示。",
         "default_merge_type": "",
         "author": {

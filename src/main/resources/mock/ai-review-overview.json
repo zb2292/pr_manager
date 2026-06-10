@@ -1,7 +1,7 @@
 {
   "result": {
     "prId": 101,
-    "reviewFlag": 2,
+    "reviewFlag": 0,
     "validFlag": true,
     "aiCodeReviewIssueErrorCount": 2,
     "aiCodeReviewIssueWarnCount": 1,

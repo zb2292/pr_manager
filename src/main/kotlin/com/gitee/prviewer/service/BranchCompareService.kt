@@ -8,8 +8,34 @@ import git4idea.commands.GitCommand
 import git4idea.commands.GitLineHandler
 import git4idea.repo.GitRepository
 import git4idea.repo.GitRepositoryManager
+import java.util.LinkedHashMap
+import java.util.concurrent.CompletableFuture
 
 class BranchCompareService(private val project: Project) {
+
+    private data class TimedCompareResult(
+        val result: CompareResult,
+        val cachedAtMillis: Long
+    )
+
+    private data class PullRequestCompareCacheKey(
+        val baseCommitId: String,
+        val headCommitId: String,
+        val pathFilters: List<String>
+    )
+
+    private val pullRequestCacheTtlMillis = 30L * 60 * 1000
+
+    private val pullRequestCompareCache = object : LinkedHashMap<PullRequestCompareCacheKey, TimedCompareResult>(24, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<PullRequestCompareCacheKey, TimedCompareResult>?): Boolean {
+            return size > 24
+        }
+    }
+
+    data class TextLoadResult(
+        val text: String,
+        val error: String? = null
+    )
 
     fun compare(sourceBranch: String, targetBranch: String): CompareResult {
         val repo = GitRepositoryManager.getInstance(project).repositories.firstOrNull()
@@ -56,6 +82,56 @@ class BranchCompareService(private val project: Project) {
         return CompareResult(changes)
     }
 
+    fun comparePullRequest(baseRef: String, headRef: String, pathFilters: Set<String> = emptySet()): CompareResult {
+        val repo = GitRepositoryManager.getInstance(project).repositories.firstOrNull()
+            ?: return CompareResult(emptyList(), "未找到 Git 仓库")
+
+        val cacheKey = buildPullRequestCompareCacheKey(repo, baseRef, headRef, pathFilters)
+        if (cacheKey != null) {
+            synchronized(pullRequestCompareCache) {
+                val cacheEntry = pullRequestCompareCache[cacheKey]
+                if (cacheEntry != null) {
+                    if (isPullRequestCacheExpired(cacheEntry)) {
+                        pullRequestCompareCache.remove(cacheKey)
+                    } else {
+                        return cacheEntry.result
+                    }
+                }
+            }
+        }
+
+        val diffBaseRef = resolveMergeBase(repo, baseRef, headRef) ?: baseRef
+        val nameStatusFuture = CompletableFuture.supplyAsync {
+            runDirectDiff(repo, diffBaseRef, headRef, pathFilters)
+        }
+        val numStatFuture = CompletableFuture.supplyAsync {
+            runDirectNumStat(repo, diffBaseRef, headRef, pathFilters)
+        }
+        val nameStatusResult = nameStatusFuture.join()
+        if (!nameStatusResult.success()) {
+            val message = nameStatusResult.errorOutput.joinToString("\n").ifBlank { "分支对比失败" }
+            return CompareResult(emptyList(), message)
+        }
+
+        val numStatResult = numStatFuture.join()
+        val numStatByPath = if (numStatResult.success()) {
+            numStatResult.output.mapNotNull { parseNumStatLine(it) }.toMap()
+        } else {
+            emptyMap()
+        }
+
+        val changes = nameStatusResult.output.mapNotNull { line ->
+            parseDiffLine(line, numStatByPath)
+        }
+        return CompareResult(changes).also { result ->
+            if (cacheKey != null) {
+                synchronized(pullRequestCompareCache) {
+                    pullRequestCompareCache[cacheKey] = TimedCompareResult(result, System.currentTimeMillis())
+                }
+            }
+        }
+    }
+
     fun loadFileContent(branch: String, filePath: String): String? {
         val repo = GitRepositoryManager.getInstance(project).repositories.firstOrNull() ?: return null
         val handler = GitLineHandler(project, repo.root, GitCommand.SHOW)
@@ -63,6 +139,27 @@ class BranchCompareService(private val project: Project) {
         val result = Git.getInstance().runCommand(handler)
         if (!result.success()) return null
         return result.output.joinToString("\n")
+    }
+
+    fun loadFileDiff(baseRef: String, headRef: String, filePath: String): TextLoadResult {
+        val repo = GitRepositoryManager.getInstance(project).repositories.firstOrNull()
+            ?: return TextLoadResult("", "未找到 Git 仓库")
+
+        val normalizedPath = filePath.trim().replace('\\', '/')
+        if (normalizedPath.isBlank()) {
+            return TextLoadResult("", "文件路径为空")
+        }
+
+        val result = Git.getInstance().runCommand(
+            GitLineHandler(project, repo.root, GitCommand.DIFF).apply {
+                addParameters(baseRef, headRef, "--", normalizedPath)
+            }
+        )
+        if (!result.success()) {
+            val message = result.errorOutput.joinToString("\n").ifBlank { "加载文件 diff 失败" }
+            return TextLoadResult("", message)
+        }
+        return TextLoadResult(result.output.joinToString("\n"))
     }
 
     private fun resolveDiffResults(
@@ -146,6 +243,36 @@ class BranchCompareService(private val project: Project) {
         val result = Git.getInstance().runCommand(handler)
         if (!result.success()) return null
         return result.output.firstOrNull()?.trim().takeUnless { it.isNullOrBlank() }
+    }
+
+    private fun buildPullRequestCompareCacheKey(
+        repo: GitRepository,
+        baseRef: String,
+        headRef: String,
+        pathFilters: Set<String>
+    ): PullRequestCompareCacheKey? {
+        val normalizedPathFilters = pathFilters
+            .map { it.trim().replace('\\', '/') }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .sorted()
+        val baseCommitId = resolveRefCommitId(repo, baseRef) ?: return null
+        val headCommitId = resolveRefCommitId(repo, headRef) ?: return null
+        return PullRequestCompareCacheKey(baseCommitId, headCommitId, normalizedPathFilters)
+    }
+
+    private fun resolveRefCommitId(repo: GitRepository, ref: String): String? {
+        val normalizedRef = ref.trim()
+        if (normalizedRef.isBlank()) return null
+        val handler = GitLineHandler(project, repo.root, GitCommand.REV_PARSE)
+        handler.addParameters("--verify", normalizedRef)
+        val result = Git.getInstance().runCommand(handler)
+        if (!result.success()) return null
+        return result.output.firstOrNull()?.trim().takeUnless { it.isNullOrBlank() }
+    }
+
+    private fun isPullRequestCacheExpired(entry: TimedCompareResult): Boolean {
+        return System.currentTimeMillis() - entry.cachedAtMillis >= pullRequestCacheTtlMillis
     }
 
     private fun parseDiffLine(line: String, numStatByPath: Map<String, Pair<Int, Int>>): ChangeItem? {

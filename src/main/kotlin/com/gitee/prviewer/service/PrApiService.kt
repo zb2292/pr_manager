@@ -14,9 +14,13 @@ class PrApiService(
     private val resolveUrl: String,
     private val reviewUrl: String,
     private val mergeUrl: String,
+    private val deletePrUrl: String,
+    private val closePrUrl: String,
+    private val updatePrUrl: String,
     private val aiReviewPrDetailUrl: String,
     private val aiHandleIssueUrl: String,
     private val aiReviewFileDetailUrl: String,
+    private val triggerAiReviewUrl: String,
     private val createPrUrl: String,
     private val developersUrl: String,
     private val repoMemberRoleUrl: String,
@@ -104,6 +108,49 @@ class PrApiService(
         return executeApi("mergePrByUser", mergeUrl, objectMapper.writeValueAsString(payload))
     }
 
+    fun closePrByUser(sshPath: String, iid: Long): HttpResponse<String> {
+        val payload = mapOf(
+            "sshPath" to sshPath,
+            "iId" to iid
+        )
+        return executeApi("closePrByUser", closePrUrl, objectMapper.writeValueAsString(payload))
+    }
+
+    fun deletePrByUser(sshPath: String, iid: Long): HttpResponse<String> {
+        val payload = mapOf(
+            "sshPath" to sshPath,
+            "iId" to iid
+        )
+        return executeApi("deletePrByUser", deletePrUrl, objectMapper.writeValueAsString(payload))
+    }
+
+    fun updatePrByUser(
+        sshPath: String,
+        iid: Long,
+        title: String,
+        body: String,
+        assigneesIds: List<Long>,
+        assigneesNum: Int,
+        primaryAssigneesIds: List<Long>,
+        primaryAssigneesNum: Int,
+        pruneBranch: Boolean,
+        defaultMergeType: String
+    ): HttpResponse<String> {
+        val payload = linkedMapOf<String, Any>(
+            "sshPath" to sshPath,
+            "iId" to iid,
+            "title" to title,
+            "body" to body,
+            "assigneesIds" to assigneesIds,
+            "assigneesNum" to assigneesNum,
+            "primaryAssigneesIds" to primaryAssigneesIds,
+            "primaryAssigneesNum" to primaryAssigneesNum,
+            "pruneBranch" to pruneBranch,
+            "defaultMergeType" to defaultMergeType
+        )
+        return executeApi("updatePrByUser", updatePrUrl, objectMapper.writeValueAsString(payload))
+    }
+
     fun fetchNoteList(sshPath: String, iid: Long): HttpResponse<String> {
         val payload = mapOf(
             "sshPath" to sshPath,
@@ -123,6 +170,23 @@ class PrApiService(
             "filePath" to filePath
         )
         return executeApi("fetchAiReviewDetail", aiReviewFileDetailUrl, objectMapper.writeValueAsString(payload))
+    }
+
+    fun triggerAiReview(
+        prId: Long,
+        userOA: String,
+        userName: String,
+        fileDiffInfos: List<Map<String, String>>
+    ): HttpResponse<String> {
+        val requestInfo = linkedMapOf<String, Any>(
+            "fileDiffInfos" to fileDiffInfos,
+            "PrId" to prId,
+            "userOA" to userOA,
+            "userName" to userName,
+            "dataIds" to listOf(67)
+        )
+        val payload = mapOf("prLLMRequestInfo" to requestInfo)
+        return executeApi("triggerAiReview", triggerAiReviewUrl, objectMapper.writeValueAsString(payload))
     }
 
     fun handleAiReviewIssue(issueId: Long, issueStatus: Int, issueHandleEmpOa: String, issueRemark: String? = null): HttpResponse<String> {
@@ -145,26 +209,20 @@ class PrApiService(
         return executeApi("fetchRepoMemberRole", repoMemberRoleUrl, objectMapper.writeValueAsString(payload))
     }
 
-    fun fetchDevelopers(sshPath: String, projectId: String? = null, keywords: String = ""): HttpResponse<String> {
+    fun fetchDevelopers(sshPath: String, keyword: String = ""): HttpResponse<String> {
         val payload = linkedMapOf<String, Any>(
             "sshPath" to sshPath,
-            "keywords" to keywords
+            "keyword" to keyword
         )
-        projectId?.trim()?.takeIf { it.isNotBlank() }?.let {
-            payload["projectId"] = it
-        }
         return executeApi("fetchDevelopers", developersUrl, objectMapper.writeValueAsString(payload))
     }
 
-    fun canCreatePr(sshPath: String, sourceBranch: String, targetBranch: String, projectId: String? = null): HttpResponse<String> {
+    fun canCreatePr(sshPath: String, sourceBranch: String, targetBranch: String): HttpResponse<String> {
         val payload = linkedMapOf<String, Any>(
             "sshPath" to sshPath,
             "sourceBranch" to sourceBranch,
             "targetBranch" to targetBranch
         )
-        projectId?.trim()?.takeIf { it.isNotBlank() }?.let {
-            payload["projectId"] = it
-        }
         return executeApi("canCreatePr", canCreatePrUrl, objectMapper.writeValueAsString(payload))
     }
 

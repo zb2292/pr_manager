@@ -10,6 +10,9 @@
       "state": "opened",
       "source_branch": "compatibility/2020-2",
       "target_branch": "origin/master",
+      "has_resolved_conflict_commits": true,
+      "show_conflict": true,
+      "can_be_merge": true,
       "author": {
         "username": "alice"
       },

@@ -3,14 +3,38 @@
     {
       "id": 197317,
       "issueSeverity": 1,
-      "issueDescription": "空指针风险，调用对象可能为空。空指针风险，调用对象可能为空。空指针风险，调用对象可能为空。空指针风险，调用对象可能为空。空指针风险，调用对象可能为空。空指针风险，调用对象可能为空。空指针风险，调用对象可能为空。空指针风险，调用对象可能为空。",
-      "issueFixSuggestion": "增加非空判断后再调用方法。增加非空判断后再调用方法。增加非空判断后再调用方法。增加非空判断后再调用方法。增加非空判断后再调用方法。增加非空判断后再调用方法。增加非空判断后再调用方法。增加非空判断后再调用方法。增加非空判断后再调用方法。增加非空判断后再调用方法。",
-      "issueFixCode": "if (obj != null) { \n obj.run(); \n}",
+      "issueDescription": "测试环境仍在使用 UAT 域名配置，容易导致本地联调时请求打到错误环境。",
+      "issueFixSuggestion": "为不同环境拆分独立配置，或在本地 mock/开发环境下切换为可控的 host。",
+      "issueFixCode": "prviewer.remote.host=localhost",
       "issueStatus": 0,
-      "issueCodeSnippetStartLine": 10,
-      "issueCodeSnippetEndLine": 14,
-      "issueCodeLine": 12,
-      "filePath": "merge-request-integration-core/src/main/kotlin/net/ntworld/mergeRequestIntegrationIde/compatibility/Version203Adapter.kt"
+      "issueCodeSnippetStartLine": 2,
+      "issueCodeSnippetEndLine": 4,
+      "issueCodeLine": 3,
+      "filePath": "/Users/zhangbo/IdeaProjects/prManager/src/main/resources/prviewer.properties"
+    },
+    {
+      "id": 197318,
+      "issueSeverity": 1,
+      "issueDescription": "接口地址全部集中在同一个 properties 文件中，缺少注释区分 AI 评审相关接口，后续维护时容易误改。",
+      "issueFixSuggestion": "对 AI 评审接口段落增加清晰注释，或拆分单独配置文件集中管理。",
+      "issueFixCode": "# AI review APIs\nprviewer.api.aiReviewPrDetail.path=/pset/api/gitee/queryAiReviewPrDetailData",
+      "issueStatus": 0,
+      "issueCodeSnippetStartLine": 15,
+      "issueCodeSnippetEndLine": 19,
+      "issueCodeLine": 16,
+      "filePath": "/Users/zhangbo/IdeaProjects/prManager/src/main/resources/prviewer.properties"
+    },
+    {
+      "id": 197319,
+      "issueSeverity": 2,
+      "issueDescription": "mock 开关默认开启，若打包前未切换，可能导致测试外环境继续读取本地 mock 数据。",
+      "issueFixSuggestion": "将 mock 开关下沉到开发环境配置，发布前由构建流程或环境变量统一控制。",
+      "issueFixCode": "prviewer.mock.enabled=false",
+      "issueStatus": 0,
+      "issueCodeSnippetStartLine": 24,
+      "issueCodeSnippetEndLine": 26,
+      "issueCodeLine": 25,
+      "filePath": "/Users/zhangbo/IdeaProjects/prManager/src/main/resources/prviewer.properties"
     }
   ],
   "type": "S"

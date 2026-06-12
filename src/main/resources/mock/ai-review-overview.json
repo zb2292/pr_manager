@@ -1,7 +1,7 @@
 {
   "result": {
     "prId": 101,
-    "reviewFlag": 0,
+    "reviewFlag": 2,
     "validFlag": true,
     "aiCodeReviewIssueErrorCount": 2,
     "aiCodeReviewIssueWarnCount": 1,
@@ -11,24 +11,65 @@
     "aiCodeReviewIssueMisreportedCount": 0,
     "fileTreeNode": [
       {
-        "nodeName": "merge-request-integration-core",
+        "nodeName": "Users",
         "type": "FOLDER",
         "issueErrorCount": 0,
         "issueWarnCount": 0,
         "children": [
           {
-            "nodeName": "src/main/kotlin/net/ntworld/mergeRequestIntegrationIde/compatibility/Version203Adapter.kt",
-            "type": "FILE",
-            "issueErrorCount": 1,
-            "issueWarnCount": 1,
-            "children": []
-          },
-          {
-            "nodeName": "src/main/kotlin/net/ntworld/mergeRequestIntegrationIde/compatibility/Version201Adapter.kt",
-            "type": "FILE",
-            "issueErrorCount": 1,
+            "nodeName": "zhangbo",
+            "type": "FOLDER",
+            "issueErrorCount": 0,
             "issueWarnCount": 0,
-            "children": []
+            "children": [
+              {
+                "nodeName": "IdeaProjects",
+                "type": "FOLDER",
+                "issueErrorCount": 0,
+                "issueWarnCount": 0,
+                "children": [
+                  {
+                    "nodeName": "prManager",
+                    "type": "FOLDER",
+                    "issueErrorCount": 0,
+                    "issueWarnCount": 0,
+                    "children": [
+                      {
+                        "nodeName": "src",
+                        "type": "FOLDER",
+                        "issueErrorCount": 0,
+                        "issueWarnCount": 0,
+                        "children": [
+                          {
+                            "nodeName": "main",
+                            "type": "FOLDER",
+                            "issueErrorCount": 0,
+                            "issueWarnCount": 0,
+                            "children": [
+                              {
+                                "nodeName": "resources",
+                                "type": "FOLDER",
+                                "issueErrorCount": 0,
+                                "issueWarnCount": 0,
+                                "children": [
+                                  {
+                                    "nodeName": "prviewer.properties",
+                                    "type": "FILE",
+                                    "issueErrorCount": 1,
+                                    "issueWarnCount": 1,
+                                    "children": []
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
           }
         ]
       }

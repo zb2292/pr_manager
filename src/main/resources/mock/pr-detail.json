@@ -34,6 +34,9 @@
         "source_branch": "dev",
         "target_branch": "main",
         "prune_branch": true,
+        "has_resolved_conflict_commits": true,
+        "show_conflict": true,
+        "can_be_merge": true,
         "general_reviewers": [
           {
             "id": 3001,

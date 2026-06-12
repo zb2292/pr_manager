@@ -30,6 +30,7 @@ import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import com.gitee.prviewer.toolwindow.OutlinedPillLabel
 import org.jetbrains.annotations.Nls
 import java.awt.*
 import kotlin.math.max
@@ -74,6 +75,7 @@ class LineCommentManager(private val project: Project) {
     private val remoteIssueCommentKeys = mutableSetOf<String>()
     private val aiIssuesByFileLine = mutableMapOf<String, Map<Int, AiIssue>>()
     private val aiFocusHighlighterByEditor = WeakHashMap<Editor, RangeHighlighter?>()
+    private var activeLineCommentPopup: com.intellij.openapi.ui.popup.JBPopup? = null
 
     init {
         LineCommentStore.addListener { refreshAllEditors() }
@@ -215,6 +217,9 @@ class LineCommentManager(private val project: Project) {
                 return
             }
             val editor = event.editor
+            if (event.area == EditorMouseEventArea.LINE_MARKERS_AREA && shouldDeferToGutterClickAction(editor, event.mouseEvent.point)) {
+                return
+            }
             val logical = editor.xyToLogicalPosition(event.mouseEvent.point)
             val line = logical.line
             val normalizedPath = normalizeFilePath(context.filePath)
@@ -225,17 +230,27 @@ class LineCommentManager(private val project: Project) {
                 if (event.area == EditorMouseEventArea.LINE_MARKERS_AREA &&
                     handleCombinedGutterClick(editor, context, line, aiIssue, event.mouseEvent)
                 ) {
+                    event.mouseEvent.consume()
                     return
                 }
                 showPopup(editor, context.filePath, line, context.side)
+                event.mouseEvent.consume()
                 return
             }
             if (aiIssue != null) {
                 showAiIssuePopup(editor, aiIssue, RelativePoint(event.mouseEvent.component, event.mouseEvent.point))
+                event.mouseEvent.consume()
                 return
             }
             showPopup(editor, context.filePath, line, context.side)
+            event.mouseEvent.consume()
         }
+    }
+
+    private fun shouldDeferToGutterClickAction(editor: Editor, point: Point): Boolean {
+        val editorEx = editor as? EditorEx ?: return false
+        val renderer = editorEx.gutterComponentEx.getGutterRenderer(point) as? GutterIconRenderer ?: return false
+        return renderer.clickAction != null
     }
 
     private fun handleCombinedGutterClick(
@@ -698,6 +713,14 @@ class LineCommentManager(private val project: Project) {
         val accentOrange = JBColor(Color(0xF29900), Color(0xF6C26B))
         val accentRed = JBColor(Color(0xD93025), Color(0xF47067))
         val borderColor = JBColor(Color(0xD0D7DE), Color(0x4B5563))
+        val falsePositiveButtonText = JBColor(Color(0x1557B0), Color(0xEAF2FF))
+        val falsePositiveButtonBorder = JBColor(Color(0xAECBFA), Color(0x6EA8FF))
+        val falsePositiveButtonFill = JBColor(Color(0xE8F0FE), Color(0x234A78))
+        val falsePositiveButtonHoverFill = JBColor(Color(0xDCE7FD), Color(0x2C5C93))
+        val ignoreButtonText = JBColor(Color(0x374151), Color(0xF3F4F6))
+        val ignoreButtonBorder = JBColor(Color(0xD1D5DB), Color(0x6B7280))
+        val ignoreButtonFill = JBColor(Color(0xF3F4F6), Color(0x4B5563))
+        val ignoreButtonHoverFill = JBColor(Color(0xE5E7EB), Color(0x5B6470))
         val popupWidth = JBUI.scale(520)
         val popupMinHeight = JBUI.scale(240)
         val popupMaxHeight = JBUI.scale(640)
@@ -804,6 +827,7 @@ class LineCommentManager(private val project: Project) {
                     val g2 = g.create() as Graphics2D
                     try {
                         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                        g2.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE)
                         g2.color = if (hovered) hoverFillColor else fillColor
                         g2.fillRoundRect(0, 0, width, height, JBUI.scale(8), JBUI.scale(8))
                         if (outlineColor != null) {
@@ -844,7 +868,8 @@ class LineCommentManager(private val project: Project) {
             foreground: Color = textMain,
             border: Color = borderColor,
             fill: Color = alpha(borderColor, 18),
-            hoverFill: Color = alpha(borderColor, 30)
+            hoverFill: Color = alpha(borderColor, 30),
+            fontSize: Float = 11f
         ): JButton {
             return createRoundedButton(
                 text = text,
@@ -852,59 +877,29 @@ class LineCommentManager(private val project: Project) {
                 hoverFillColor = hoverFill,
                 foregroundColor = foreground,
                 outlineColor = border,
-                padding = JBUI.insets(3, 10),
-                fontSize = 11f
+                padding = JBUI.insets(5, 12),
+                fontSize = fontSize,
+                bold = true
             )
         }
 
-        fun createPrimaryButton(text: String, fill: Color): JButton {
+        fun createPrimaryButton(text: String, fill: Color, fontSize: Float = 11f): JButton {
             return createRoundedButton(
                 text = text,
                 fillColor = fill,
                 hoverFillColor = fill.brighter(),
                 foregroundColor = Color.WHITE,
-                padding = JBUI.insets(3, 10),
+                padding = JBUI.insets(5, 12),
                 bold = true,
-                fontSize = 11f
+                fontSize = fontSize
             )
         }
 
         fun createStatusPill(text: String, textColor: Color): JComponent {
-            val horizontalPadding = JBUI.scale(8)
-            val verticalPadding = JBUI.scale(2)
-            val label = JBLabel(text, SwingConstants.CENTER).apply {
-                foreground = textColor
+            return OutlinedPillLabel(JBUI.scale(20)).apply {
                 font = font.deriveFont(11f)
-                horizontalAlignment = SwingConstants.CENTER
-                verticalAlignment = SwingConstants.CENTER
-            }
-            val labelSize = label.preferredSize
-            val size = Dimension(
-                labelSize.width + horizontalPadding * 2,
-                max(labelSize.height + verticalPadding * 2, JBUI.scale(20))
-            )
-            return object : JPanel(BorderLayout()) {
-                override fun paintComponent(g: Graphics) {
-                    val g2 = g.create() as Graphics2D
-                    try {
-                        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-                        val arc = JBUI.scale(16)
-                        g2.color = alpha(textColor, 38)
-                        g2.fillRoundRect(0, 0, width - 1, height - 1, arc, arc)
-                        g2.color = alpha(textColor, 90)
-                        g2.drawRoundRect(0, 0, width - 1, height - 1, arc, arc)
-                    } finally {
-                        g2.dispose()
-                    }
-                    super.paintComponent(g)
-                }
-            }.apply {
-                isOpaque = false
-                border = JBUI.Borders.empty(verticalPadding, horizontalPadding)
-                add(label, BorderLayout.CENTER)
-                preferredSize = size
-                minimumSize = size
-                maximumSize = size
+                setPill(text, textColor)
+                alignmentY = Component.CENTER_ALIGNMENT
             }
         }
 
@@ -1230,13 +1225,21 @@ class LineCommentManager(private val project: Project) {
 
                 val falsePositiveButton = createActionButton(
                     "误报",
-                    foreground = accentBlue,
-                    border = alpha(accentBlue, 90),
-                    fill = alpha(accentBlue, 18),
-                    hoverFill = alpha(accentBlue, 30)
+                    foreground = falsePositiveButtonText,
+                    border = falsePositiveButtonBorder,
+                    fill = falsePositiveButtonFill,
+                    hoverFill = falsePositiveButtonHoverFill,
+                    fontSize = 12f
                 )
-                val ignoreButton = createActionButton("忽略")
-                val acceptButton = createPrimaryButton("采纳", accentGreen)
+                val ignoreButton = createActionButton(
+                    "忽略",
+                    foreground = ignoreButtonText,
+                    border = ignoreButtonBorder,
+                    fill = ignoreButtonFill,
+                    hoverFill = ignoreButtonHoverFill,
+                    fontSize = 12f
+                )
+                val acceptButton = createPrimaryButton("采纳", accentGreen, fontSize = 12f)
 
                 actionButtons += falsePositiveButton
                 actionButtons += ignoreButton
@@ -1355,6 +1358,11 @@ class LineCommentManager(private val project: Project) {
     }
 
     private fun showPopup(editor: Editor, filePath: String, line: Int, side: Side, openComposerOnly: Boolean = false) {
+        activeLineCommentPopup?.let { existingPopup ->
+            activeLineCommentPopup = null
+            existingPopup.cancel()
+        }
+
         val currentUserName = System.getenv("USERID").orEmpty().ifBlank { "本地用户" }
         val isMac = System.getProperty("os.name").contains("mac", ignoreCase = true)
         val submitShortcutText = if (isMac) "⌘Enter" else "Ctrl+Enter"
@@ -1561,6 +1569,7 @@ class LineCommentManager(private val project: Project) {
                     val g2 = g.create() as Graphics2D
                     try {
                         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                        g2.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE)
                         g2.color = if (hovered) hoverFillColor else fillColor
                         g2.fillRoundRect(0, 0, width, height, arc, arc)
                         if (outlineColor != null) {
@@ -1610,7 +1619,8 @@ class LineCommentManager(private val project: Project) {
                 foregroundColor = foreground,
                 outlineColor = border,
                 fontSize = 11f,
-                padding = JBUI.insets(1, 0),
+                bold = true,
+                padding = JBUI.insets(5, 12),
                 arc = JBUI.scale(8)
             )
         }
@@ -1623,7 +1633,7 @@ class LineCommentManager(private val project: Project) {
                 foregroundColor = Color.WHITE,
                 fontSize = if (compact) 11f else 13f,
                 bold = true,
-                padding = if (compact) JBUI.insets(2, 0) else JBUI.insets(2, 0),
+                padding = if (compact) JBUI.insets(5, 12) else JBUI.insets(6, 14),
                 arc = JBUI.scale(8)
             )
         }
@@ -1643,25 +1653,15 @@ class LineCommentManager(private val project: Project) {
         }
 
         fun createStatusPill(text: String, textColor: Color): JComponent {
-            val label = JBLabel(text)
-            label.foreground = textColor
-            label.font = label.font.deriveFont(11f)
-            return RoundedBlockPanel(alpha(textColor, 38), JBUI.scale(20)).apply {
-                layout = BorderLayout()
-                border = javax.swing.BorderFactory.createCompoundBorder(
-                    JBUI.Borders.customLine(alpha(textColor, 90)),
-                    JBUI.Borders.empty(2, 8)
-                )
-                add(label, BorderLayout.CENTER)
-                preferredSize = Dimension(preferredSize.width, JBUI.scale(20))
+            return OutlinedPillLabel(JBUI.scale(20)).apply {
+                font = font.deriveFont(11f)
+                setPill(text, textColor)
+                alignmentY = Component.CENTER_ALIGNMENT
             }
         }
 
         fun createStatusText(text: String, textColor: Color): JComponent {
-            return JBLabel(text).apply {
-                foreground = textColor
-                font = font.deriveFont(11f)
-            }
+            return createStatusPill(text, textColor)
         }
 
         fun ensureRemoteIssueRoot() {
@@ -1826,12 +1826,6 @@ class LineCommentManager(private val project: Project) {
         val launchedComposerOnly = openComposerOnly
         val collapsedByRootId = mutableMapOf<String, Boolean>()
         lateinit var rebuild: () -> Unit
-
-        fun closePopupIfNeeded() {
-            if (launchedComposerOnly && !LineCommentStore.hasComments(filePath, line, side)) {
-                popup?.cancel()
-            }
-        }
 
         fun updatePopupWindowShape(window: Window) {
             window.shape = java.awt.geom.RoundRectangle2D.Double(
@@ -2071,7 +2065,7 @@ class LineCommentManager(private val project: Project) {
             val rightMeta = JPanel().apply {
                 layout = BoxLayout(this, BoxLayout.X_AXIS)
                 isOpaque = false
-                add(if (resolved) createStatusPill(statusText, statusColor) else createStatusText(statusText, statusColor))
+                add(createStatusPill(statusText, statusColor))
                 if (replies.isNotEmpty()) {
                     add(Box.createHorizontalStrut(JBUI.scale(8)))
                     add(createToggleButton(
@@ -2138,15 +2132,20 @@ class LineCommentManager(private val project: Project) {
             val roots = all.filter { it.parentId == null }.sortedBy { it.createdAt }
             val displayFloorMap = buildDisplayFloorMap(roots, all)
             countLabel.text = "${roots.size}个评论单元"
+            val composerOnlyEmptyState = launchedComposerOnly && roots.isEmpty() && preCommentVisible
 
             middlePanel.removeAll()
-            if (roots.isEmpty()) {
+            if (composerOnlyEmptyState) {
+                middlePanel.border = JBUI.Borders.empty()
+            } else if (roots.isEmpty()) {
+                middlePanel.border = JBUI.Borders.empty(12)
                 val empty = JBLabel(emptyCommentText, SwingConstants.CENTER)
                 empty.foreground = textDim
                 empty.border = JBUI.Borders.empty(12)
                 empty.alignmentX = Component.CENTER_ALIGNMENT
                 middlePanel.add(empty)
             } else {
+                middlePanel.border = JBUI.Borders.empty(12)
                 roots.forEachIndexed { index, root ->
                     middlePanel.add(buildCommentUnit(root, all, displayFloorMap))
                     if (index < roots.lastIndex) {
@@ -2179,7 +2178,7 @@ class LineCommentManager(private val project: Project) {
                 layout = BoxLayout(this, BoxLayout.X_AXIS)
                 isOpaque = false
             }
-            if (!preCommentVisible) {
+            if (!preCommentVisible && !composerOnlyEmptyState) {
                 val newCommentButton = createPrimaryButton("➕ 新建评论")
                 newCommentButton.addActionListener {
                     preCommentVisible = true
@@ -2193,21 +2192,30 @@ class LineCommentManager(private val project: Project) {
             if (footerRight.componentCount > 0) {
                 footerBar.add(footerRight, BorderLayout.EAST)
             }
-            footerPanel.add(footerBar, BorderLayout.NORTH)
+            if (!composerOnlyEmptyState) {
+                footerPanel.add(footerBar, BorderLayout.NORTH)
+            }
 
             if (preCommentVisible) {
                 val composerHost = JPanel(BorderLayout())
                 composerHost.isOpaque = true
                 composerHost.background = bgHeader
-                composerHost.border = javax.swing.BorderFactory.createCompoundBorder(
-                    JBUI.Borders.customLine(borderColor, 1, 0, 0, 0),
+                composerHost.border = if (composerOnlyEmptyState) {
                     JBUI.Borders.empty(12)
-                )
+                } else {
+                    javax.swing.BorderFactory.createCompoundBorder(
+                        JBUI.Borders.customLine(borderColor, 1, 0, 0, 0),
+                        JBUI.Borders.empty(12)
+                    )
+                }
                 composerHost.add(buildComposerPanel(
                     onCancel = {
+                        if (launchedComposerOnly && !LineCommentStore.hasComments(filePath, line, side)) {
+                            popup?.cancel()
+                            return@buildComposerPanel
+                        }
                         preCommentVisible = false
                         rebuild()
-                        closePopupIfNeeded()
                     },
                     onSubmit = { text ->
                         addRootComment(text)
@@ -2262,12 +2270,16 @@ class LineCommentManager(private val project: Project) {
             .setShowBorder(false)
             .setResizable(false)
             .createPopup()
+        activeLineCommentPopup = popup
 
         val storeListener: () -> Unit = { rebuild() }
         LineCommentStore.addListener(storeListener)
         popup.addListener(object : JBPopupListener {
             override fun onClosed(event: LightweightWindowEvent) {
                 LineCommentStore.removeListener(storeListener)
+                if (activeLineCommentPopup === popup) {
+                    activeLineCommentPopup = null
+                }
             }
         })
 

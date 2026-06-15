@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "com.gitee.prviewer"
-version = "0.1.9.test"
+version = "0.1.9"
 
 repositories {
     maven("https://maven.aliyun.com/repository/public/")
@@ -47,5 +47,5 @@ tasks.patchPluginXml {
 }
 
 tasks.runIde {
-    environment("USERID", "zhangbo1")
+    environment("USERID", "zhangbo")
 }

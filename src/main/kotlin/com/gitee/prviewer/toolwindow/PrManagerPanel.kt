@@ -4511,6 +4511,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
     private fun showMergeConfirmDialog(detail: PrDetail, mergeMethod: String) {
         val dialog = MergeConfirmDialog(
             project = project,
+            detail = detail,
             mergeMethod = mergeMethod,
             defaultDelete = detail.overview.deleteBranchAfterMerged
         ) { commitMessage, extMessage, pruneBranch ->
@@ -4556,6 +4557,25 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 updateStatus("接受PR失败: ${e.message ?: "未知错误"}")
             }
         }
+    }
+
+    private fun buildMergeDefaultCommitMessage(detail: PrDetail): String {
+        val number = if (detail.iid > 0) detail.iid else detail.id
+        return "!$number ${detail.title.trim()}".trim()
+    }
+
+    private fun buildMergeDefaultExtMessage(detail: PrDetail): String {
+        val number = if (detail.iid > 0) detail.iid else detail.id
+        val authorOa = detail.authorUsername.trim().ifBlank { detail.author.trim() }
+        val sourceBranch = detail.sourceBranch.trim()
+        return "Merge pull request !$number from $authorOa $sourceBranch".trim()
+    }
+
+    private fun fastForwardMergeNoticeHtml(): String {
+        return """
+            使用Fast-Forward-Only方式合并，在目标分支上不创建合并节点。<br>
+            当目标分支上有区别于源分支的差异Commit，不满足Fast-Forward-Only Merge条件时，会自动切换合并类型为Merge(创建合并节点）
+        """.trimIndent()
     }
 
     private fun confirmAndClosePr(detail: PrDetail) {
@@ -5804,6 +5824,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         val targetBranch = detailInfo?.readText("target_branch", "targetBranch").orEmpty().ifBlank { baseInfo?.readText("targetBranch", "target_branch").orEmpty() }
         val author = detailInfo?.get("author")?.readText("name", "username", "login", "userName").orEmpty()
             .ifBlank { baseInfo?.readText("userName").orEmpty() }
+        val authorUsername = detailInfo?.get("author")?.readText("username", "login", "userName").orEmpty()
+            .ifBlank { baseInfo?.readText("userName").orEmpty() }
         val createTime = detailInfo?.readText("created_at", "createdAt").orEmpty().ifBlank { baseInfo?.readText("createdAt").orEmpty() }
         val headCommitSha = baseInfo?.get("headCommitSha")?.asText() ?: ""
         val baseCommitSha = baseInfo?.get("baseCommitSha")?.asText() ?: ""
@@ -5838,6 +5860,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             sourceBranch = sourceBranch,
             targetBranch = targetBranch,
             author = author,
+            authorUsername = authorUsername,
             createTime = createTime,
             headCommitSha = headCommitSha,
             baseCommitSha = baseCommitSha,
@@ -6962,6 +6985,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         val sourceBranch: String,
         val targetBranch: String,
         val author: String,
+        val authorUsername: String,
         val createTime: String,
         val headCommitSha: String,
         val baseCommitSha: String,
@@ -7078,6 +7102,16 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private fun hasInitialGeneralReviewerSuggestion(check: PreCreateCheck): Boolean {
         return check.generalReviewers.isNotEmpty() && check.generalReviewerNumProvided && check.generalReviewerNum > 0
+    }
+
+    private fun currentPluginAuthorUsername(): String = System.getenv(pluginAuthorUsernameEnv).orEmpty().trim()
+
+    private fun excludeCreatorCandidates(
+        items: List<DeveloperCandidate>,
+        creatorUsername: String = currentPluginAuthorUsername()
+    ): List<DeveloperCandidate> {
+        if (creatorUsername.isBlank()) return items
+        return items.filterNot { it.username.trim().equals(creatorUsername, ignoreCase = true) }
     }
 
     private fun setReviewerCountSpinnerEnabled(spinner: javax.swing.JSpinner, enabled: Boolean) {
@@ -7294,6 +7328,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         private var updatingCreateBranchCombo = false
         private var editingDetail: PrDetail? = null
         private var pendingEditPrecheck: PreCreateCheck? = null
+        private var autoFilledCreateTitle: String? = null
+        private var autoFilledCreateDesc: String? = null
 
         init {
             configureStaticComponents()
@@ -7330,6 +7366,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             latestCommits = emptyList()
             latestPreCreateCheck = null
             latestMissingCommitHashes = emptySet()
+            autoFilledCreateTitle = null
+            autoFilledCreateDesc = null
             createChangesLoading = false
             createCommitsLoading = false
             createMissingCommitLoading = false
@@ -7373,6 +7411,33 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 initialSourceBranch = detail?.sourceBranch,
                 initialTargetBranch = detail?.targetBranch
             )
+        }
+
+        private fun applyCreateDefaultTitle(sourceBranch: String) {
+            if (activeMode != InlinePrMode.CREATE) return
+            val source = sourceBranch.trim()
+            if (source.isBlank()) return
+            val currentTitle = titleField.text.trim()
+            if (currentTitle.isNotBlank() && currentTitle != autoFilledCreateTitle) return
+            titleField.text = source
+            autoFilledCreateTitle = source
+        }
+
+        private fun buildCreateDefaultDesc(commits: List<CommitItem>): String {
+            return commits
+                .asReversed()
+                .map { it.message.trim() }
+                .filter { it.isNotBlank() }
+                .joinToString("\n")
+        }
+
+        private fun applyCreateDefaultDesc(commits: List<CommitItem>) {
+            if (activeMode != InlinePrMode.CREATE) return
+            val defaultDesc = buildCreateDefaultDesc(commits)
+            val currentDesc = descField.text.trim()
+            if (currentDesc.isNotBlank() && currentDesc != autoFilledCreateDesc) return
+            descField.text = defaultDesc
+            autoFilledCreateDesc = defaultDesc
         }
 
         private fun applyModePresentation() {
@@ -8996,6 +9061,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             private val mandatoryLockedCandidateIds = mutableSetOf<Long>()
             private var selectionEditable = true
             private var inputModeActive = false
+            private val searchOutlineColor = JBColor(Color(0x59B7FF), Color(0x59B7FF))
             private val editorField = JBTextField()
             private val inactiveInputHint = JBLabel()
             private val chipContainer = JPanel(object : FlowLayout(FlowLayout.LEFT, JBUI.scale(6), JBUI.scale(6)) {
@@ -9028,6 +9094,14 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 isOpaque = true
                 background = detailSurfaceFill()
             }
+            private val searchWrapper = RoundedOutlinePanel(
+                fillColor = searchFieldSurfaceFill(),
+                outlineColor = searchOutlineColor,
+                arc = JBUI.scale(12)
+            ).bindTheme(::searchFieldSurfaceFill, { searchOutlineColor }).apply {
+                layout = BorderLayout()
+                border = JBUI.Borders.empty(0)
+            }
             private val popupContent = JPanel(BorderLayout()).apply {
                 isOpaque = true
                 border = JBUI.Borders.empty(8)
@@ -9059,13 +9133,19 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 isDoubleBuffered = true
                 background = createPrInputFill()
                 editorField.isOpaque = false
-                editorField.border = JBUI.Borders.empty()
-                editorField.emptyText.text = placeholderText
+                editorField.border = JBUI.Borders.empty(6, 10)
+                editorField.emptyText.text = "输入姓名或 OA 搜索评审人"
                 editorField.columns = 12
                 inactiveInputHint.border = JBUI.Borders.empty(4, 2)
                 inactiveInputHint.cursor = Cursor.getPredefinedCursor(Cursor.TEXT_CURSOR)
                 add(chipContainer, BorderLayout.CENTER)
                 popupScrollPane.setViewportView(resultListPanel)
+                searchWrapper.add(editorField, BorderLayout.CENTER)
+                popupContent.add(JPanel(BorderLayout()).apply {
+                    isOpaque = false
+                    border = JBUI.Borders.emptyBottom(8)
+                    add(searchWrapper, BorderLayout.CENTER)
+                }, BorderLayout.NORTH)
                 popupContent.add(popupScrollPane, BorderLayout.CENTER)
                 popupContent.preferredSize = popupScrollPane.preferredSize
                 popupContent.minimumSize = popupScrollPane.preferredSize
@@ -9088,12 +9168,31 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                         openReviewerPopup()
                     }
                 }
-                editorField.addMouseListener(openPopupListener)
+                addMouseListener(openPopupListener)
+                chipContainer.addMouseListener(openPopupListener)
                 inactiveInputHint.addMouseListener(openPopupListener)
                 editorField.document.addDocumentListener(object : DocumentListener {
                     override fun insertUpdate(e: DocumentEvent?) = if (suppressEditorDocumentEvents) Unit else queueSearch()
                     override fun removeUpdate(e: DocumentEvent?) = if (suppressEditorDocumentEvents) Unit else queueSearch()
                     override fun changedUpdate(e: DocumentEvent?) = if (suppressEditorDocumentEvents) Unit else queueSearch()
+                })
+                editorField.addKeyListener(object : KeyAdapter() {
+                    override fun keyPressed(e: KeyEvent) {
+                        when (e.keyCode) {
+                            KeyEvent.VK_ENTER -> currentResults.firstOrNull()?.let { candidate ->
+                                if (!isCandidateLocked(candidate.id) && selectionEditable) {
+                                    localSelectedCandidates[candidate.id] = candidate
+                                    rebuildSelectedCandidates()
+                                    clearSearchKeyword()
+                                    renderChips()
+                                    refreshPopupResults()
+                                    onSelectionChanged()
+                                    editorField.requestFocusInWindow()
+                                }
+                            }
+                            KeyEvent.VK_ESCAPE -> hidePopup()
+                        }
+                    }
                 })
                 updateEditorInputMode()
             }
@@ -9119,11 +9218,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             fun applyTheme() {
                 background = createPrInputFill()
                 chipContainer.background = createPrInputFill()
-                editorField.background = createPrInputFill()
+                editorField.background = searchFieldSurfaceFill()
                 editorField.foreground = createPrPrimaryTextColor()
                 editorField.caretColor = createPrPrimaryTextColor()
                 inactiveInputHint.foreground = createPrSecondaryTextColor()
                 inactiveInputHint.font = editorField.font
+                searchWrapper.updateColors(searchFieldSurfaceFill(), searchOutlineColor)
                 updateInputComponentMetrics()
                 resultListPanel.background = detailSurfaceFill()
                 popupContent.background = detailSurfaceFill()
@@ -9189,7 +9289,10 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }
 
             fun containsFocus(component: Component?): Boolean {
-                return component != null && SwingUtilities.isDescendingFrom(component, this)
+                return component != null && (
+                    SwingUtilities.isDescendingFrom(component, this) ||
+                        SwingUtilities.isDescendingFrom(component, popupContent)
+                    )
             }
 
             fun hidePopup() {
@@ -9203,9 +9306,11 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }
 
             private fun openReviewerPopup() {
-                activateInputMode()
-                editorField.requestFocusInWindow()
                 ensurePopupVisible()
+                SwingUtilities.invokeLater {
+                    editorField.requestFocusInWindow()
+                    editorField.selectAll()
+                }
                 if (currentResults.isEmpty() && !loading) {
                     queueSearch(immediate = true)
                 }
@@ -9217,7 +9322,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 popupContent.repaint()
                 popup = JBPopupFactory.getInstance()
                     .createComponentPopupBuilder(popupContent, editorField)
-                    .setRequestFocus(false)
+                    .setRequestFocus(true)
                     .setResizable(false)
                     .setMovable(false)
                     .setCancelOnClickOutside(true)
@@ -9267,10 +9372,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                         loading = false
                         result.onSuccess { items ->
                             indexDevelopers(items)
-                            currentResults = (selectedCandidates.values + items).distinctBy { it.id }
+                            currentResults = excludeCreatorCandidates(
+                                (selectedCandidates.values + items).distinctBy { it.id }
+                            )
                             errorMessage = null
                         }.onFailure { throwable ->
-                            currentResults = selectedCandidates.values.toList()
+                            currentResults = excludeCreatorCandidates(selectedCandidates.values.toList())
                             errorMessage = throwable.message ?: "人员查询失败"
                         }
                         refreshPopupResults()
@@ -9362,6 +9469,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                         localSelectedCandidates.remove(candidate.id)
                     }
                     rebuildSelectedCandidates()
+                    clearSearchKeyword()
                     renderChips()
                     refreshPopupResults()
                     onSelectionChanged()
@@ -9430,14 +9538,9 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     chipContainer.add(chip)
                 }
                 if (selectionEditable) {
-                    if (inputModeActive) {
-                        editorField.alignmentY = Component.CENTER_ALIGNMENT
-                        chipContainer.add(editorField)
-                    } else {
-                        inactiveInputHint.alignmentY = Component.CENTER_ALIGNMENT
-                        inactiveInputHint.text = if (localSelectedCandidates.isEmpty()) placeholderText else ""
-                        chipContainer.add(inactiveInputHint)
-                    }
+                    inactiveInputHint.alignmentY = Component.CENTER_ALIGNMENT
+                    inactiveInputHint.text = if (localSelectedCandidates.isEmpty()) placeholderText else ""
+                    chipContainer.add(inactiveInputHint)
                 }
                 updateEditorInputMode()
                 chipContainer.revalidate()
@@ -9463,7 +9566,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }
 
             private fun updateEditorInputMode() {
-                val active = selectionEditable && inputModeActive
+                val active = selectionEditable
                 editorField.isEnabled = selectionEditable
                 editorField.isEditable = active
                 editorField.isFocusable = active
@@ -9477,7 +9580,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 val inputHeight = maxOf(editorField.preferredSize.height, JBUI.scale(24))
                 val inputSize = Dimension(inputWidth, inputHeight)
                 editorField.minimumSize = inputSize
-                editorField.preferredSize = inputSize
+                editorField.preferredSize = Dimension(JBUI.scale(280), inputHeight)
                 inactiveInputHint.minimumSize = inputSize
                 inactiveInputHint.preferredSize = inputSize
                 val containerHeight = inputHeight + JBUI.scale(6)
@@ -9509,12 +9612,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
             private fun updatePopupSize() {
                 val rowHeight = JBUI.scale(34)
-                val popupWidth = JBUI.scale(320)
+                val popupWidth = maxOf((width * 2) / 3, JBUI.scale(214))
                 val maxBodyHeight = JBUI.scale(220)
                 val bodyHeight = (maxOf(1, resultListPanel.componentCount) * rowHeight).coerceAtMost(maxBodyHeight)
                 popupScrollPane.preferredSize = Dimension(popupWidth, bodyHeight)
                 popupScrollPane.minimumSize = Dimension(popupWidth, rowHeight)
-                popupContent.preferredSize = Dimension(popupWidth, bodyHeight + JBUI.scale(16))
+                popupContent.preferredSize = Dimension(popupWidth, bodyHeight + editorField.preferredSize.height + JBUI.scale(24))
                 popupContent.minimumSize = popupContent.preferredSize
                 popup?.setSize(popupContent.preferredSize)
             }
@@ -10373,6 +10476,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             val refreshVersion = ++branchRefreshVersion
             val source = selectedCreateBranch(sourceBranchBox)
             val target = selectedCreateBranch(targetBranchBox)
+            applyCreateDefaultTitle(source)
             if (source.isBlank() || target.isBlank()) {
                 precheckBlockedReason = "请选择源分支和目标分支"
                 latestPreCreateCheck = null
@@ -10557,32 +10661,40 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         private fun applyPrecheckResult(check: PreCreateCheck, refreshVersion: Int) {
             if (refreshVersion != branchRefreshVersion) return
             val editDetail = editingDetail
-            val lockPrimaryReviewers = hasLockedPrimaryReviewerConstraint(check)
+            val filteredCheck = if (activeMode == InlinePrMode.CREATE) {
+                check.copy(
+                    primaryReviewers = excludeCreatorCandidates(check.primaryReviewers),
+                    generalReviewers = excludeCreatorCandidates(check.generalReviewers)
+                )
+            } else {
+                check
+            }
+            val lockPrimaryReviewers = hasLockedPrimaryReviewerConstraint(filteredCheck)
             val applyGeneralSuggestion = activeMode == InlinePrMode.CREATE &&
                 !initialGeneralReviewersApplied &&
-                hasInitialGeneralReviewerSuggestion(check)
+                hasInitialGeneralReviewerSuggestion(filteredCheck)
             if (applyGeneralSuggestion) {
                 initialGeneralReviewersApplied = true
             }
-            precheckBlockedReason = if (activeMode == InlinePrMode.CREATE && check.code != 200) {
-                check.message.ifBlank { "分支不满足创建条件，code=${check.code}" }
+            precheckBlockedReason = if (activeMode == InlinePrMode.CREATE && filteredCheck.code != 200) {
+                filteredCheck.message.ifBlank { "分支不满足创建条件，code=${filteredCheck.code}" }
             } else {
                 null
             }
             SwingUtilities.invokeLater {
                 if (refreshVersion != branchRefreshVersion) return@invokeLater
                 val primarySelection = when {
-                    lockPrimaryReviewers -> check.primaryReviewers
+                    lockPrimaryReviewers -> filteredCheck.primaryReviewers
                     activeMode == InlinePrMode.EDIT && editDetail != null -> editDetail.primaryReviewerInfos.map(::reviewerInfoToCandidate)
                     else -> primaryReviewerPicker.getSelectedCandidates()
                 }
                 val generalSelection = when {
                     activeMode == InlinePrMode.EDIT && editDetail != null -> editDetail.generalReviewerInfos.map(::reviewerInfoToCandidate)
-                    applyGeneralSuggestion -> check.generalReviewers
+                    applyGeneralSuggestion -> filteredCheck.generalReviewers
                     else -> generalReviewerPicker.getSelectedCandidates()
                 }
                 mandatoryPrimaryUsers = if (lockPrimaryReviewers) primarySelection.map { it.username }.toSet() else emptySet()
-                minimumPrimary = if (lockPrimaryReviewers) check.primaryReviewerNum.coerceAtLeast(1) else 0
+                minimumPrimary = if (lockPrimaryReviewers) filteredCheck.primaryReviewerNum.coerceAtLeast(1) else 0
                 minimumGeneral = 0
                 primaryReviewerPicker.setSelectionEditable(!lockPrimaryReviewers)
                 generalReviewerPicker.setSelectionEditable(true)
@@ -10595,12 +10707,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 this@PrManagerPanel.setReviewerCountSpinnerEnabled(generalNumSpinner, true)
                 refreshReviewerRequirementControls()
                 when {
-                    lockPrimaryReviewers -> primaryNumSpinner.value = check.primaryReviewerNum
+                    lockPrimaryReviewers -> primaryNumSpinner.value = filteredCheck.primaryReviewerNum
                     activeMode == InlinePrMode.EDIT && editDetail != null -> primaryNumSpinner.value = editDetail.overview.needKeyReviewers
                 }
                 when {
                     activeMode == InlinePrMode.EDIT && editDetail != null -> generalNumSpinner.value = editDetail.overview.needReviewers
-                    applyGeneralSuggestion -> generalNumSpinner.value = check.generalReviewerNum
+                    applyGeneralSuggestion -> generalNumSpinner.value = filteredCheck.generalReviewerNum
                 }
                 if (activeMode == InlinePrMode.EDIT) {
                     setSubmitEnabled(true)
@@ -10613,7 +10725,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             } else {
                 emptyList()
             }
-            indexDevelopers((check.primaryReviewers + check.generalReviewers + detailSelections).distinctBy { it.id })
+            indexDevelopers((filteredCheck.primaryReviewers + filteredCheck.generalReviewers + detailSelections).distinctBy { it.id })
         }
 
         private fun loadDevelopersFromApi(keywords: String): List<DeveloperCandidate> {
@@ -10624,7 +10736,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 val result = root.get("result") ?: root
                 val data = result.get("data")
                 val list = data?.get("developers")
-                return parseDeveloperCandidates(list)
+                val items = parseDeveloperCandidates(list)
+                return if (activeMode == InlinePrMode.CREATE) excludeCreatorCandidates(items) else items
             }
             val response = apiService.fetchDevelopers(
                 sshPath = resolveGitAddress(),
@@ -10635,7 +10748,8 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             val result = root.get("result") ?: root
             val data = result.get("data")
             val list = data?.get("developers")
-            return parseDeveloperCandidates(list)
+            val items = parseDeveloperCandidates(list)
+            return if (activeMode == InlinePrMode.CREATE) excludeCreatorCandidates(items) else items
         }
 
         private fun indexDevelopers(items: List<DeveloperCandidate>) {
@@ -10688,6 +10802,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 SwingUtilities.invokeLater {
                     if (refreshVersion != branchRefreshVersion) return@invokeLater
                     latestCommits = prCommits
+                    applyCreateDefaultDesc(prCommits)
                     createCommitsLoading = false
                     createMissingCommitLoading = prCommits.isNotEmpty()
                     refreshDiffAndCommitView()
@@ -10786,7 +10901,17 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }
 
             val (primaryNames, primaryIds) = resolveReviewerSelection(primaryReviewerPicker)
-            val (_, generalIds) = resolveReviewerSelection(generalReviewerPicker)
+            val (generalNames, generalIds) = resolveReviewerSelection(generalReviewerPicker)
+
+            if (activeMode == InlinePrMode.CREATE) {
+                val creatorUsername = currentPluginAuthorUsername()
+                val creatorSelected = creatorUsername.isNotBlank() &&
+                    (primaryNames + generalNames).any { it.equals(creatorUsername, ignoreCase = true) }
+                if (creatorSelected) {
+                    Messages.showErrorDialog(project, "创建人不能添加为评审人或关键评审人", dialogTitle)
+                    return
+                }
+            }
 
             if (mandatoryPrimaryUsers.isNotEmpty()) {
                 val missingPrimary = mandatoryPrimaryUsers.filterNot { primaryNames.contains(it) }
@@ -11175,18 +11300,22 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
 
         private fun applyPrecheckResult(check: PreCreateCheck) {
-            val lockPrimaryReviewers = hasLockedPrimaryReviewerConstraint(check)
-            val applyGeneralSuggestion = !initialGeneralReviewersApplied && hasInitialGeneralReviewerSuggestion(check)
+            val filteredCheck = check.copy(
+                primaryReviewers = excludeCreatorCandidates(check.primaryReviewers),
+                generalReviewers = excludeCreatorCandidates(check.generalReviewers)
+            )
+            val lockPrimaryReviewers = hasLockedPrimaryReviewerConstraint(filteredCheck)
+            val applyGeneralSuggestion = !initialGeneralReviewersApplied && hasInitialGeneralReviewerSuggestion(filteredCheck)
             if (applyGeneralSuggestion) {
                 initialGeneralReviewersApplied = true
             }
-            mandatoryPrimaryUsers = if (lockPrimaryReviewers) check.primaryReviewers.map { it.username }.toSet() else emptySet()
-            minimumPrimary = if (lockPrimaryReviewers) check.primaryReviewerNum.coerceAtLeast(1) else 0
+            mandatoryPrimaryUsers = if (lockPrimaryReviewers) filteredCheck.primaryReviewers.map { it.username }.toSet() else emptySet()
+            minimumPrimary = if (lockPrimaryReviewers) filteredCheck.primaryReviewerNum.coerceAtLeast(1) else 0
             minimumGeneral = 0
-            precheckBlockedReason = if (check.code == 200) null else check.message.ifBlank { "分支不满足创建条件，code=${check.code}" }
+            precheckBlockedReason = if (filteredCheck.code == 200) null else filteredCheck.message.ifBlank { "分支不满足创建条件，code=${filteredCheck.code}" }
             SwingUtilities.invokeLater {
-                autoMergeLabel.text = "自动合并：" + if (check.canBeAutomerge) "可自动合并" else "不可自动合并"
-                autoMergeLabel.foreground = if (check.canBeAutomerge) {
+                autoMergeLabel.text = "自动合并：" + if (filteredCheck.canBeAutomerge) "可自动合并" else "不可自动合并"
+                autoMergeLabel.foreground = if (filteredCheck.canBeAutomerge) {
                     JBColor(Color(0x1E8E3E), Color(0x57D163))
                 } else {
                     JBColor(Color(0xF29900), Color(0xF6C26B))
@@ -11196,19 +11325,19 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 generalReviewersField.isEditable = true
                 setReviewerCountSpinnerEnabled(generalNumSpinner, true)
                 if (lockPrimaryReviewers) {
-                    primaryReviewersField.text = check.primaryReviewers.joinToString(",") { it.username }
-                    primaryNumSpinner.value = check.primaryReviewerNum
+                    primaryReviewersField.text = filteredCheck.primaryReviewers.joinToString(",") { it.username }
+                    primaryNumSpinner.value = filteredCheck.primaryReviewerNum
                 }
                 if (applyGeneralSuggestion) {
-                    generalReviewersField.text = check.generalReviewers.joinToString(",") { it.username }
-                    generalNumSpinner.value = check.generalReviewerNum
+                    generalReviewersField.text = filteredCheck.generalReviewers.joinToString(",") { it.username }
+                    generalNumSpinner.value = filteredCheck.generalReviewerNum
                 }
                 (primaryNumSpinner.model as javax.swing.SpinnerNumberModel).minimum = minimumPrimary
                 (generalNumSpinner.model as javax.swing.SpinnerNumberModel).minimum = minimumGeneral
                 primaryNumSpinner.value = maxOf((primaryNumSpinner.value as? Int) ?: 0, minimumPrimary)
                 generalNumSpinner.value = maxOf((generalNumSpinner.value as? Int) ?: 0, minimumGeneral)
             }
-            indexDevelopers(check.primaryReviewers + check.generalReviewers)
+            indexDevelopers(filteredCheck.primaryReviewers + filteredCheck.generalReviewers)
         }
 
         private fun loadDevelopersByCurrentSelections(source: String, target: String) {
@@ -11242,7 +11371,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 val result = root.get("result") ?: root
                 val data = result.get("data")
                 val list = data?.get("developers")
-                return parseDeveloperCandidates(list)
+                return excludeCreatorCandidates(parseDeveloperCandidates(list))
             }
             val response = apiService.fetchDevelopers(
                 sshPath = resolveGitAddress(),
@@ -11253,7 +11382,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             val result = root.get("result") ?: root
             val data = result.get("data")
             val list = data?.get("developers")
-            return parseDeveloperCandidates(list)
+            return excludeCreatorCandidates(parseDeveloperCandidates(list))
         }
 
         private fun indexDevelopers(items: List<DeveloperCandidate>) {
@@ -11319,7 +11448,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 val missing = names.filterNot { resolvedKeys.contains(it.lowercase()) }
                 throw IllegalArgumentException("评审人未匹配到仓库成员: ${missing.joinToString(",")}")
             }
-            return names to resolved.map { it.id }.distinct()
+            return resolved.map { it.username }.distinct() to resolved.map { it.id }.distinct()
         }
 
         private fun updateValidationState() {
@@ -11361,10 +11490,20 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 Messages.showErrorDialog(project, e.message ?: "关键评审人解析失败", "创建 PR")
                 return
             }
-            val (_, generalIds) = try {
+            val (generalNames, generalIds) = try {
                 resolveReviewerIds(generalReviewersField.text)
             } catch (e: Exception) {
                 Messages.showErrorDialog(project, e.message ?: "普通评审人解析失败", "创建 PR")
+                return
+            }
+
+            val creatorUsername = currentPluginAuthorUsername()
+            val creatorSelected = creatorUsername.isNotBlank() &&
+                (primaryNames + generalNames).any {
+                    it.equals(creatorUsername, ignoreCase = true)
+                }
+            if (creatorSelected) {
+                Messages.showErrorDialog(project, "创建人不能添加为评审人或关键评审人", "创建 PR")
                 return
             }
 
@@ -11554,6 +11693,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     private inner class MergeConfirmDialog(
         project: Project,
+        detail: PrDetail,
         private val mergeMethod: String,
         defaultDelete: Boolean,
         private val onSubmit: (String, String, Boolean) -> Unit
@@ -11561,11 +11701,16 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
         private val commitField = createDialogTextArea("请输入提交信息", 3)
         private val extField = createDialogTextArea("请输入扩展信息（可选）", 3)
         private val deleteCheck = JBCheckBox("合并后是否删除源分支", defaultDelete)
+        private val usesFastForward = mergeMethod.trim().lowercase() in setOf("fast_forward", "squash")
 
         init {
             title = "接受PR"
             setOKButtonText("提交")
             setCancelButtonText("取消")
+            if (!usesFastForward) {
+                commitField.text = buildMergeDefaultCommitMessage(detail)
+                extField.text = buildMergeDefaultExtMessage(detail)
+            }
             init()
         }
 
@@ -11585,27 +11730,37 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                 add(dialogSectionLabel("合并方式"))
                 add(createDialogInfoCard(detailMergeTypeDisplayText(mergeMethod), mergeMethodOptionText(mergeMethod)))
                 add(Box.createVerticalStrut(JBUI.scale(12)))
-                add(dialogSectionLabel("提交信息"))
-                add(createDialogTextAreaCard(commitField, JBUI.scale(72)))
-                add(Box.createVerticalStrut(JBUI.scale(12)))
-                add(dialogSectionLabel("扩展信息"))
-                add(createDialogTextAreaCard(extField, JBUI.scale(72)))
-                add(Box.createVerticalStrut(JBUI.scale(12)))
+                if (usesFastForward) {
+                    add(createDialogInfoCard("说明", fastForwardMergeNoticeHtml()))
+                    add(Box.createVerticalStrut(JBUI.scale(12)))
+                } else {
+                    add(dialogSectionLabel("提交信息"))
+                    add(createDialogTextAreaCard(commitField, JBUI.scale(72)))
+                    add(Box.createVerticalStrut(JBUI.scale(12)))
+                    add(dialogSectionLabel("扩展信息"))
+                    add(createDialogTextAreaCard(extField, JBUI.scale(72)))
+                    add(Box.createVerticalStrut(JBUI.scale(12)))
+                }
                 add(deleteRow.apply {
                     alignmentX = Component.LEFT_ALIGNMENT
                 })
             }
-            return createDialogRootPanel(null, JBUI.scale(520), JBUI.scale(432), content)
+            val preferredHeight = if (usesFastForward) JBUI.scale(312) else JBUI.scale(432)
+            return createDialogRootPanel(null, JBUI.scale(520), preferredHeight, content)
         }
 
         override fun doOKAction() {
             val commitMsg = commitField.text.trim()
             val extMsg = extField.text.trim()
-            if (commitMsg.isBlank()) {
+            if (!usesFastForward && commitMsg.isBlank()) {
                 Messages.showErrorDialog(project, "提交信息不能为空", "接受PR")
                 return
             }
-            onSubmit(commitMsg, extMsg, deleteCheck.isSelected)
+            onSubmit(
+                if (usesFastForward) "" else commitMsg,
+                if (usesFastForward) "" else extMsg,
+                deleteCheck.isSelected
+            )
             super.doOKAction()
         }
     }

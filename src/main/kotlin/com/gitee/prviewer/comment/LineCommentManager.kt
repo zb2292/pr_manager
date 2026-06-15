@@ -730,8 +730,6 @@ class LineCommentManager(private val project: Project) {
         open class RoundedBlockPanel(
             private val fill: Color,
             private val arc: Int,
-            private val leftStripe: Color? = null,
-            private val leftStripeWidth: Int = JBUI.scale(4),
             private val outlineColor: Color? = null,
             private val outlineWidth: Float = JBUI.scale(1f)
         ) : JPanel() {
@@ -744,15 +742,18 @@ class LineCommentManager(private val project: Project) {
                 try {
                     g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
                     g2.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE)
-                    val clip = g2.clip
+                    g2.color = parent?.background ?: fill
+                    g2.fillRect(0, 0, width, height)
+                    val roundShape = java.awt.geom.RoundRectangle2D.Float(
+                        0f,
+                        0f,
+                        (width - 1).toFloat(),
+                        (height - 1).toFloat(),
+                        arc.toFloat(),
+                        arc.toFloat()
+                    )
                     g2.color = fill
                     g2.fillRoundRect(0, 0, width - 1, height - 1, arc, arc)
-                    if (leftStripe != null) {
-                        g2.clipRect(0, 0, leftStripeWidth, height)
-                        g2.color = leftStripe
-                        g2.fillRoundRect(0, 0, width - 1, height - 1, arc, arc)
-                        g2.clip = clip
-                    }
                     if (outlineColor != null) {
                         g2.color = outlineColor
                         g2.stroke = BasicStroke(outlineWidth)
@@ -769,7 +770,6 @@ class LineCommentManager(private val project: Project) {
                 } finally {
                     g2.dispose()
                 }
-                super.paintComponent(g)
             }
         }
 
@@ -908,7 +908,7 @@ class LineCommentManager(private val project: Project) {
                 isEditable = false
                 lineWrap = true
                 wrapStyleWord = true
-                isOpaque = false
+                isOpaque = true
                 foreground = textContent
                 font = font.deriveFont(13f)
                 border = JBUI.Borders.empty()
@@ -923,12 +923,46 @@ class LineCommentManager(private val project: Project) {
             }
         }
 
+        fun createReadOnlyScrollArea(
+            text: String,
+            wrapWidth: Int,
+            minHeight: Int,
+            maxHeight: Int,
+            backgroundColor: Color
+        ): JComponent {
+            val area = createReadOnlyArea(text, wrapWidth).apply {
+                background = backgroundColor
+            }
+            val measuredHeight = area.preferredSize.height
+            val viewportHeight = measuredHeight.coerceIn(minHeight, maxHeight)
+            return JBScrollPane(area).apply {
+                border = JBUI.Borders.empty()
+                isOpaque = true
+                background = backgroundColor
+                viewport.isOpaque = true
+                viewport.background = backgroundColor
+                horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+                verticalScrollBarPolicy = if (measuredHeight > maxHeight) {
+                    ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED
+                } else {
+                    ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER
+                }
+                preferredSize = Dimension(0, viewportHeight)
+                minimumSize = Dimension(0, viewportHeight)
+                maximumSize = Dimension(Int.MAX_VALUE, viewportHeight)
+            }
+        }
+
         fun createInfoCard(title: String, value: String, stripeColor: Color, codeBlock: Boolean = false): JComponent {
-            val card = RoundedBlockPanel(bgCard, JBUI.scale(8), stripeColor)
+            val stripeWidth = JBUI.scale(4)
+            val card = RoundedBlockPanel(bgCard, JBUI.scale(8))
             card.layout = BoxLayout(card, BoxLayout.Y_AXIS)
             card.border = javax.swing.BorderFactory.createCompoundBorder(
                 JBUI.Borders.customLine(alpha(borderColor, 140)),
-                JBUI.Borders.empty(10, 10, 10, 12)
+                javax.swing.BorderFactory.createCompoundBorder(
+                    javax.swing.BorderFactory.createMatteBorder(0, stripeWidth, 0, 0, stripeColor),
+                    JBUI.Borders.empty(10, 10, 10, 12)
+                )
             )
             card.alignmentX = Component.LEFT_ALIGNMENT
             val contentWrapWidth = popupWidth - JBUI.scale(76)
@@ -954,7 +988,7 @@ class LineCommentManager(private val project: Project) {
                 }
                 val codeLineCount = codeText.lineSequence().count().coerceAtLeast(1)
                 val codeLineHeight = codeArea.getFontMetrics(codeArea.font).height
-                val codeBlockHeight = (codeLineCount * codeLineHeight + JBUI.scale(18)).coerceIn(JBUI.scale(44), JBUI.scale(220))
+                val codeBlockHeight = (codeLineCount * codeLineHeight + JBUI.scale(18)).coerceIn(JBUI.scale(44), JBUI.scale(180))
                 val codeScroll = JBScrollPane(codeArea).apply {
                     border = JBUI.Borders.customLine(alpha(borderColor, 140))
                     viewport.background = bgCode
@@ -966,7 +1000,13 @@ class LineCommentManager(private val project: Project) {
                 }
                 card.add(codeScroll)
             } else {
-                card.add(createReadOnlyArea(value, contentWrapWidth))
+                card.add(createReadOnlyScrollArea(
+                    text = value,
+                    wrapWidth = contentWrapWidth,
+                    minHeight = JBUI.scale(24),
+                    maxHeight = JBUI.scale(120),
+                    backgroundColor = bgCard
+                ))
             }
 
             card.maximumSize = Dimension(Int.MAX_VALUE, card.preferredSize.height)
@@ -1428,8 +1468,6 @@ class LineCommentManager(private val project: Project) {
         open class RoundedBlockPanel(
             private val fill: Color,
             private val arc: Int,
-            private val leftStripe: Color? = null,
-            private val leftStripeWidth: Int = JBUI.scale(4),
             private val drawShadow: Boolean = false,
             private val outlineColor: Color? = null,
             private val outlineWidth: Float = JBUI.scale(1f)
@@ -1443,19 +1481,22 @@ class LineCommentManager(private val project: Project) {
                 try {
                     g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
                     g2.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE)
+                    g2.color = parent?.background ?: fill
+                    g2.fillRect(0, 0, width, height)
                     if (drawShadow) {
                         g2.color = alpha(Color.BLACK, 26)
                         g2.fillRoundRect(JBUI.scale(1), JBUI.scale(2), width - JBUI.scale(2), height - JBUI.scale(3), arc, arc)
                     }
-                    val clip = g2.clip
+                    val roundShape = java.awt.geom.RoundRectangle2D.Float(
+                        0f,
+                        0f,
+                        (width - 1).toFloat(),
+                        (height - 1).toFloat(),
+                        arc.toFloat(),
+                        arc.toFloat()
+                    )
                     g2.color = fill
                     g2.fillRoundRect(0, 0, width - 1, height - 1, arc, arc)
-                    if (leftStripe != null) {
-                        g2.clipRect(0, 0, leftStripeWidth, height)
-                        g2.color = leftStripe
-                        g2.fillRoundRect(0, 0, width - 1, height - 1, arc, arc)
-                        g2.clip = clip
-                    }
                     if (outlineColor != null) {
                         g2.color = outlineColor
                         g2.stroke = BasicStroke(outlineWidth)
@@ -1472,7 +1513,6 @@ class LineCommentManager(private val project: Project) {
                 } finally {
                     g2.dispose()
                 }
-                super.paintComponent(g)
             }
         }
 
@@ -1535,20 +1575,42 @@ class LineCommentManager(private val project: Project) {
             return avatar
         }
 
-        fun createTextArea(text: String, background: Color, foreground: Color): JComponent {
+        fun createTextArea(text: String, backgroundColor: Color, foregroundColor: Color): JComponent {
             val area = JBTextArea(text)
             area.isEditable = false
+            area.isEnabled = true
             area.lineWrap = true
             area.wrapStyleWord = true
             area.font = area.font.deriveFont(13f)
-            area.background = background
-            area.foreground = foreground
+            area.background = backgroundColor
+            area.foreground = foregroundColor
             area.border = JBUI.Borders.empty()
-            area.isOpaque = false
-            area.isFocusable = false
+            area.isOpaque = true
+            area.isFocusable = true
+            area.caretColor = foregroundColor
+            area.selectedTextColor = foregroundColor
             area.alignmentX = Component.LEFT_ALIGNMENT
-            area.maximumSize = Dimension(Int.MAX_VALUE, area.preferredSize.height)
-            return area
+            val measuredWidth = JBUI.scale(346).coerceAtLeast(JBUI.scale(180))
+            area.setSize(Dimension(measuredWidth, Int.MAX_VALUE))
+            val measuredHeight = area.preferredSize.height
+            val viewportHeight = measuredHeight.coerceIn(JBUI.scale(24), JBUI.scale(120))
+            return JBScrollPane(area).apply {
+                border = JBUI.Borders.empty()
+                isOpaque = true
+                background = backgroundColor
+                viewport.isOpaque = true
+                viewport.background = backgroundColor
+                horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+                verticalScrollBarPolicy = if (measuredHeight > JBUI.scale(120)) {
+                    ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED
+                } else {
+                    ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER
+                }
+                preferredSize = Dimension(0, viewportHeight)
+                minimumSize = Dimension(0, viewportHeight)
+                maximumSize = Dimension(Int.MAX_VALUE, viewportHeight)
+                alignmentX = Component.LEFT_ALIGNMENT
+            }
         }
 
         fun createRoundedButton(
@@ -1570,16 +1632,24 @@ class LineCommentManager(private val project: Project) {
                     try {
                         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
                         g2.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE)
+                    g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+                    g2.color = parent?.background ?: fillColor
+                    g2.fillRect(0, 0, width, height)
                         g2.color = if (hovered) hoverFillColor else fillColor
                         g2.fillRoundRect(0, 0, width, height, arc, arc)
                         if (outlineColor != null) {
                             g2.color = if (hovered) hoverFillColor.darker() else outlineColor
                             g2.drawRoundRect(0, 0, width - 1, height - 1, arc, arc)
                         }
+                    g2.font = font
+                    g2.color = foreground
+                    val fm = g2.fontMetrics
+                    val textX = ((width - fm.stringWidth(text)) / 2).coerceAtLeast(0)
+                    val textY = ((height - fm.height) / 2) + fm.ascent
+                    g2.drawString(text, textX, textY)
                     } finally {
                         g2.dispose()
                     }
-                    super.paintComponent(g)
                 }
             }
             button.font = button.font.deriveFont(if (bold) Font.BOLD else Font.PLAIN, fontSize)
@@ -1591,15 +1661,20 @@ class LineCommentManager(private val project: Project) {
             button.isBorderPainted = false
             button.margin = JBUI.emptyInsets()
             button.border = JBUI.Borders.empty(padding.top, padding.left, padding.bottom, padding.right)
+            fun repaintButtonAndParents() {
+                button.repaint()
+                (button.parent as? JComponent)?.repaint()
+                (button.parent?.parent as? JComponent)?.repaint()
+            }
             button.addMouseListener(object : MouseAdapter() {
                 override fun mouseEntered(e: MouseEvent) {
                     button.hovered = true
-                    button.repaint()
+                    repaintButtonAndParents()
                 }
 
                 override fun mouseExited(e: MouseEvent) {
                     button.hovered = false
-                    button.repaint()
+                    repaintButtonAndParents()
                 }
             })
             return button
@@ -2027,11 +2102,15 @@ class LineCommentManager(private val project: Project) {
             val isCollapsed = collapsedByRootId.getOrPut(root.id) { resolved }
             val fillColor = if (resolved) alpha(bgCard, 220) else bgCard
 
-            val card = RoundedBlockPanel(fillColor, JBUI.scale(6), statusColor)
+            val stripeWidth = JBUI.scale(4)
+            val card = RoundedBlockPanel(fillColor, JBUI.scale(6))
             card.layout = BoxLayout(card, BoxLayout.Y_AXIS)
             card.border = javax.swing.BorderFactory.createCompoundBorder(
                 JBUI.Borders.customLine(alpha(borderColor, 140)),
-                JBUI.Borders.empty(10, 6, 10, 10)
+                javax.swing.BorderFactory.createCompoundBorder(
+                    javax.swing.BorderFactory.createMatteBorder(0, stripeWidth, 0, 0, statusColor),
+                    JBUI.Borders.empty(10, 6, 10, 10)
+                )
             )
             card.alignmentX = Component.LEFT_ALIGNMENT
 
@@ -2265,9 +2344,10 @@ class LineCommentManager(private val project: Project) {
         }
 
         popup = JBPopupFactory.getInstance()
-            .createComponentPopupBuilder(container, focusAnchor)
+            .createComponentPopupBuilder(container, null)
             .setRequestFocus(true)
             .setShowBorder(false)
+            .setMovable(true)
             .setResizable(false)
             .createPopup()
         activeLineCommentPopup = popup
@@ -2289,6 +2369,32 @@ class LineCommentManager(private val project: Project) {
             focusAnchor.requestFocusInWindow()
             val window = SwingUtilities.getWindowAncestor(container) ?: return@invokeLater
             updatePopupWindowShape(window)
+
+            var lastScreenPoint: Point? = null
+            val dragHandler = object : MouseAdapter() {
+                override fun mousePressed(e: MouseEvent) {
+                    lastScreenPoint = e.locationOnScreen
+                }
+
+                override fun mouseDragged(e: MouseEvent) {
+                    val prev = lastScreenPoint ?: return
+                    val current = e.locationOnScreen
+                    window.setLocation(window.x + (current.x - prev.x), window.y + (current.y - prev.y))
+                    lastScreenPoint = current
+                }
+            }
+            headerPanel.cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
+            headerIconLabel.cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
+            titleLabel.cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
+            countLabel.cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
+            headerPanel.addMouseListener(dragHandler)
+            headerPanel.addMouseMotionListener(dragHandler)
+            headerIconLabel.addMouseListener(dragHandler)
+            headerIconLabel.addMouseMotionListener(dragHandler)
+            titleLabel.addMouseListener(dragHandler)
+            titleLabel.addMouseMotionListener(dragHandler)
+            countLabel.addMouseListener(dragHandler)
+            countLabel.addMouseMotionListener(dragHandler)
         }
     }
 

@@ -5,7 +5,7 @@
         { "id": 10001, "username": "alice", "name": "Alice" },
         { "id": 10002, "username": "bob", "name": "Bob" },
         { "id": 10003, "username": "carol", "name": "Carol" },
-        { "id": 10004, "username": "zhangbo1", "name": "张博" }
+        { "id": 10004, "username": "zhangbo", "name": "张博" }
       ]
     }
   }

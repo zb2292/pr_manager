@@ -8,8 +8,7 @@
         { "id": 10001, "username": "alice", "name": "Alice" }
       ],
       "generalReviewers": [
-        { "id": 10002, "username": "bob", "name": "Bob" },
-        { "id": 10003, "username": "carol", "name": "Carol" }
+
       ],
       "primaryReviewerNum": 1,
       "generalReviewerNum": 1

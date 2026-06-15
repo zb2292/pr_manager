@@ -9438,11 +9438,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     isSelected = selectedCandidates.containsKey(candidate.id)
                     isEnabled = selectionEditable && !isLocked
                 }
-                val displayName = if (candidate.name.isNotBlank() && candidate.name != candidate.username) {
-                    "${candidate.name}（${candidate.username}）"
-                } else {
-                    candidate.username
-                }
+                val displayName = candidate.name.ifBlank { candidate.username }
                 val nameLabel = JBLabel(displayName).apply {
                     foreground = createPrPrimaryTextColor()
                     font = font.deriveFont(Font.PLAIN, globalUiFontSize - 1f)
@@ -9490,11 +9486,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             private fun renderChips() {
                 chipContainer.removeAll()
                 localSelectedCandidates.values.forEach { candidate ->
-                    val displayName = if (candidate.name.isNotBlank() && candidate.name != candidate.username) {
-                        "${candidate.name}（${candidate.username}）"
-                    } else {
-                        candidate.username
-                    }
+                    val displayName = candidate.name.ifBlank { candidate.username }
                     val chip = RoundedOutlinePanel(
                         fillColor = withAlpha(detailAccentColor, if (UIUtil.isUnderDarcula()) 36 else 20),
                         outlineColor = withAlpha(detailAccentColor, if (UIUtil.isUnderDarcula()) 108 else 88),

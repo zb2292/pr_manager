@@ -8019,7 +8019,7 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
             return JPanel(BorderLayout()).apply {
                 isOpaque = true
                 background = createPrSectionFill()
-                border = if (showTopBorder) JBUI.Borders.customLineTop(detailTabUnderlineColor()) else JBUI.Borders.empty()
+                border = JBUI.Borders.empty()
                 add(component, BorderLayout.CENTER)
             }
         }
@@ -9624,6 +9624,12 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                     selectedTabPadInsets = Insets(0, 0, 0, 0)
                 }
 
+                override fun calculateTabHeight(tabPlacement: Int, tabIndex: Int, fontHeight: Int): Int {
+                    val baseHeight = super.calculateTabHeight(tabPlacement, tabIndex, fontHeight)
+                    val customHeight = tabPane.getTabComponentAt(tabIndex)?.preferredSize?.height ?: 0
+                    return maxOf(baseHeight, customHeight)
+                }
+
                 override fun getTabInsets(tabPlacement: Int, tabIndex: Int): Insets = Insets(0, 0, 0, 0)
 
                 override fun getTabLabelShiftX(tabPlacement: Int, tabIndex: Int, isSelected: Boolean): Int = 0
@@ -9640,6 +9646,18 @@ class PrManagerPanel(private val project: Project) : SimpleToolWindowPanel(true,
                         g2.dispose()
                     }
                     super.paintTabArea(g, tabPlacement, selectedIndex)
+                    if (tabPane.tabCount <= 0) return
+                    val underlineGraphics = g.create() as Graphics2D
+                    try {
+                        val (leftInset, rightInset) = createTabUnderlineSideInsets()
+                        val lineHeight = detailTabUnderlineHeight()
+                        val y = calculateTabAreaHeight(tabPlacement, runCount, maxTabHeight) - lineHeight
+                        val width = (tabPane.width - leftInset - rightInset).coerceAtLeast(0)
+                        underlineGraphics.color = detailTabUnderlineColor()
+                        underlineGraphics.fillRect(leftInset, y, width, lineHeight)
+                    } finally {
+                        underlineGraphics.dispose()
+                    }
                 }
 
                 override fun paintTabBackground(g: Graphics, tabPlacement: Int, tabIndex: Int, x: Int, y: Int, w: Int, h: Int, isSelected: Boolean) = Unit

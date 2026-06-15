@@ -44,10 +44,12 @@ import java.util.Locale
 import java.util.WeakHashMap
 import javax.swing.Box
 import javax.swing.BoxLayout
+import javax.swing.ButtonGroup
 import javax.swing.Icon
 import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JPanel
+import javax.swing.JRadioButton
 import javax.swing.ScrollPaneConstants
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
@@ -1102,6 +1104,7 @@ class LineCommentManager(private val project: Project) {
 
         var popup: com.intellij.openapi.ui.popup.JBPopup? = null
         var falsePositiveFormVisible = false
+        var falsePositiveReasonMode: String? = null
         var falsePositiveReasonDraft = ""
         var falsePositiveError: String? = null
         lateinit var renderIssueState: () -> Unit
@@ -1142,6 +1145,7 @@ class LineCommentManager(private val project: Project) {
                     if (success) {
                         currentIssue = currentIssue.copy(issueStatus = status)
                         falsePositiveFormVisible = false
+                        falsePositiveReasonMode = null
                         falsePositiveReasonDraft = ""
                         falsePositiveError = null
                         renderIssueState()
@@ -1151,17 +1155,47 @@ class LineCommentManager(private val project: Project) {
         }
 
         fun buildFalsePositiveComposerPanel(actionButtons: List<JButton>): JComponent {
-            val panel = RoundedBlockPanel(
-                fill = bgComposer,
-                arc = JBUI.scale(10),
-                outlineColor = accentBlue,
-                outlineWidth = JBUI.scale(1f)
-            )
-            panel.layout = BorderLayout(0, JBUI.scale(5))
-            panel.border = JBUI.Borders.empty(8)
-            panel.alignmentX = Component.LEFT_ALIGNMENT
+            val panel = JPanel(BorderLayout()).apply {
+                isOpaque = false
+                border = JBUI.Borders.empty()
+                alignmentX = Component.LEFT_ALIGNMENT
+            }
 
-            val reasonArea = PlaceholderTextArea("请输入误报说明（必填）").apply {
+            val notIssueRadio = JRadioButton("不是问题").apply {
+                isOpaque = false
+                foreground = textMain
+                font = font.deriveFont(12f)
+                isSelected = falsePositiveReasonMode == "not_issue"
+                cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            }
+            val otherRadio = JRadioButton("其他").apply {
+                isOpaque = false
+                foreground = textMain
+                font = font.deriveFont(12f)
+                isSelected = falsePositiveReasonMode == "other"
+                cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            }
+            ButtonGroup().apply {
+                add(notIssueRadio)
+                add(otherRadio)
+            }
+
+            val reasonLabel = JBLabel("误报原因：").apply {
+                foreground = textMain
+                font = font.deriveFont(12f)
+            }
+            val radioRow = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
+                isOpaque = false
+                alignmentX = Component.LEFT_ALIGNMENT
+                add(reasonLabel)
+                add(Box.createHorizontalStrut(JBUI.scale(14)))
+                add(notIssueRadio)
+                add(Box.createHorizontalStrut(JBUI.scale(14)))
+                add(otherRadio)
+                maximumSize = Dimension(Int.MAX_VALUE, preferredSize.height)
+            }
+
+            val reasonArea = PlaceholderTextArea("请输入其他原因（必填）").apply {
                 text = falsePositiveReasonDraft
                 lineWrap = true
                 wrapStyleWord = true
@@ -1180,7 +1214,7 @@ class LineCommentManager(private val project: Project) {
                 override fun changedUpdate(e: javax.swing.event.DocumentEvent?) = update()
                 private fun update() {
                     falsePositiveReasonDraft = reasonArea.text
-                    if (falsePositiveError != null && falsePositiveReasonDraft.trim().isNotEmpty()) {
+                    if (falsePositiveReasonMode == "other" && falsePositiveError != null && falsePositiveReasonDraft.trim().isNotEmpty()) {
                         falsePositiveError = null
                         footerHintLabel.foreground = textDim
                         footerHintLabel.text = ""
@@ -1198,6 +1232,28 @@ class LineCommentManager(private val project: Project) {
                 preferredSize = Dimension(0, JBUI.scale(60))
                 minimumSize = Dimension(0, JBUI.scale(60))
             }
+            val reasonInputWrapper = RoundedBlockPanel(
+                fill = bgComposer,
+                arc = JBUI.scale(10),
+                outlineColor = accentBlue,
+                outlineWidth = JBUI.scale(1f)
+            ).apply {
+                layout = BorderLayout()
+                border = JBUI.Borders.empty(8)
+                alignmentX = Component.LEFT_ALIGNMENT
+                add(scroll, BorderLayout.CENTER)
+                maximumSize = Dimension(Int.MAX_VALUE, preferredSize.height)
+            }
+
+            fun updateReasonMode(selectedMode: String) {
+                falsePositiveReasonMode = selectedMode
+                if (selectedMode == "not_issue" && falsePositiveError != null) {
+                    falsePositiveError = null
+                }
+                renderIssueState()
+            }
+            notIssueRadio.addActionListener { updateReasonMode("not_issue") }
+            otherRadio.addActionListener { updateReasonMode("other") }
 
             val cancelButton = JButton("取消").apply {
                 font = font.deriveFont(11f)
@@ -1209,6 +1265,7 @@ class LineCommentManager(private val project: Project) {
                 cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
                 addActionListener {
                     falsePositiveFormVisible = false
+                    falsePositiveReasonMode = null
                     falsePositiveReasonDraft = ""
                     falsePositiveError = null
                     renderIssueState()
@@ -1217,9 +1274,18 @@ class LineCommentManager(private val project: Project) {
             val submitButton = createPrimaryButton("提交", accentBlue)
             val submitControls = actionButtons + listOf(cancelButton, submitButton)
             submitButton.addActionListener {
-                val remark = falsePositiveReasonDraft.trim()
-                if (remark.isBlank()) {
-                    falsePositiveError = "请输入误报说明"
+                val remark = when (falsePositiveReasonMode) {
+                    "not_issue" -> "不是问题"
+                    "other" -> falsePositiveReasonDraft.trim()
+                    else -> ""
+                }
+                if (falsePositiveReasonMode == null) {
+                    falsePositiveError = "请选择误报原因"
+                    renderIssueState()
+                    return@addActionListener
+                }
+                if (falsePositiveReasonMode == "other" && remark.isBlank()) {
+                    falsePositiveError = "请输入其他原因"
                     renderIssueState()
                     return@addActionListener
                 }
@@ -1227,20 +1293,35 @@ class LineCommentManager(private val project: Project) {
                 submitAiIssue(2, remark, submitControls)
             }
 
-            val actionRow = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0)).apply {
+            val actionRow = JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0)).apply {
                 isOpaque = false
                 alignmentX = Component.LEFT_ALIGNMENT
                 add(cancelButton)
+                add(Box.createHorizontalStrut(JBUI.scale(8)))
                 add(submitButton)
+                maximumSize = Dimension(Int.MAX_VALUE, preferredSize.height)
             }
 
-            panel.add(scroll, BorderLayout.CENTER)
-            panel.add(actionRow, BorderLayout.SOUTH)
+            val centerPanel = JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                isOpaque = false
+                add(radioRow)
+                if (falsePositiveReasonMode == "other") {
+                    add(Box.createVerticalStrut(JBUI.scale(8)))
+                    add(reasonInputWrapper)
+                }
+                add(Box.createVerticalStrut(JBUI.scale(8)))
+                add(actionRow)
+            }
+
+            panel.add(centerPanel, BorderLayout.CENTER)
             panel.maximumSize = Dimension(Int.MAX_VALUE, panel.preferredSize.height)
 
             SwingUtilities.invokeLater {
-                reasonArea.requestFocusInWindow()
-                reasonArea.caretPosition = reasonArea.document.length
+                if (falsePositiveReasonMode == "other") {
+                    reasonArea.requestFocusInWindow()
+                    reasonArea.caretPosition = reasonArea.document.length
+                }
             }
             return panel
         }
@@ -1287,6 +1368,8 @@ class LineCommentManager(private val project: Project) {
 
                 falsePositiveButton.addActionListener {
                     falsePositiveFormVisible = true
+                    falsePositiveReasonMode = null
+                    falsePositiveReasonDraft = ""
                     falsePositiveError = null
                     renderIssueState()
                 }
@@ -1305,8 +1388,7 @@ class LineCommentManager(private val project: Project) {
 
                 if (falsePositiveFormVisible) {
                     val composerHost = JPanel(BorderLayout()).apply {
-                        isOpaque = true
-                        background = bgHeader
+                        isOpaque = false
                         border = JBUI.Borders.empty(6, 12, 12, 12)
                     }
                     composerHost.add(buildFalsePositiveComposerPanel(actionButtons), BorderLayout.CENTER)
